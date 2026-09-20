@@ -1,0 +1,33 @@
+name: sdlc-controls
+on:
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  SDLC_CONTROLS_VERSION: v0.2.0
+jobs:
+  controls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - uses: pnpm/action-setup@v4
+        # Derives pnpm from packageManager to prevent CI/local version drift.
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tools/sdlc-controls/*.test.mjs
+      - name: Generate graph-derived component map
+        run: |
+          pnpm exec nx graph --file="$RUNNER_TEMP/graph.json"
+          node tools/sdlc-controls/generate-component-map.mjs "$RUNNER_TEMP/graph.json" > "$RUNNER_TEMP/components.yaml"
+      - name: Tier change and emit evidence
+        run: |
+          go install "github.com/codeaiforge/git-native-sdlc-controls/cmd/sdlc-controls@${SDLC_CONTROLS_VERSION}"
+          "$(go env GOPATH)/bin/sdlc-controls" tier --base "origin/${{ github.base_ref }}" --head "${{ github.sha }}" --config "$RUNNER_TEMP/components.yaml" --change-id "PR-${{ github.event.pull_request.number }}" --evidence-out evidence.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: sdlc-controls-evidence, path: evidence.json, if-no-files-found: warn }
