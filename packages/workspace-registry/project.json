@@ -1,0 +1,12 @@
+{
+  "name": "workspace-registry",
+  "sourceRoot": "packages/workspace-registry/src",
+  "projectType": "library",
+  "implicitDependencies": ["contracts"],
+  "tags": ["scope:registry", "criticality:high"],
+  "targets": {
+    "test": { "command": "node --test packages/workspace-registry/src/*.test.mjs" },
+    "typecheck": { "command": "node --check packages/workspace-registry/src/registry.mjs" },
+    "build": { "command": "node --check packages/workspace-registry/src/registry.mjs" }
+  }
+}
