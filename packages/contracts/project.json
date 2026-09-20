@@ -1,0 +1,11 @@
+{
+  "name": "contracts",
+  "sourceRoot": "packages/contracts/src",
+  "projectType": "library",
+  "tags": ["scope:contracts", "criticality:critical"],
+  "targets": {
+    "test": { "command": "node --test packages/contracts/src/*.test.mjs" },
+    "typecheck": { "command": "node --check packages/contracts/src/schema.mjs" },
+    "build": { "command": "node --check packages/contracts/src/schema.mjs" }
+  }
+}
