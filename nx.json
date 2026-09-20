@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "sharedGlobals"],
+    "sharedGlobals": ["{workspaceRoot}/config/control-plane/**"]
+  },
+  "targetDefaults": {
+    "test": { "inputs": ["default", "^default"] },
+    "build": { "inputs": ["default", "^default"] }
+  }
+}

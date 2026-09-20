@@ -1,0 +1,18 @@
+{
+  "name": "@codeaiforge/sdlc-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.15.1",
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "start:api": "pnpm nx serve control-plane-api",
+    "test": "pnpm nx run-many -t test",
+    "build": "pnpm nx run-many -t build",
+    "typecheck": "pnpm nx run-many -t typecheck",
+    "test:controls": "node --test tools/sdlc-controls/*.test.mjs"
+  },
+  "devDependencies": {
+    "nx": "22.5.1",
+    "prettier": "^3.5.3"
+  }
+}
