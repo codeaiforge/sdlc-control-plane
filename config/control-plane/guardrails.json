@@ -1,0 +1,16 @@
+{
+  "policy_version": "guardrails/0",
+  "policy_id": "baseline-engineering-controls@1",
+  "effective_from": "2026-09-18T00:00:00Z",
+  "approval": {
+    "decision_id": "LPM-EXAMPLE-001",
+    "approved_by": "lean-portfolio-management",
+    "approved_at": "2026-09-18T00:00:00Z"
+  },
+  "rules": {
+    "minimum_evidence_schema": "evidence/0",
+    "blocked_tiers": [],
+    "require_ai_provenance_when_assisted": true,
+    "require_verified_controls": ["CAF-SDLC-002:tier"]
+  }
+}

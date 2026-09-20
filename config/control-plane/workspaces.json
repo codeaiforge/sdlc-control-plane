@@ -1,0 +1,15 @@
+{
+  "registry_version": "workspace-registry/0",
+  "workspaces": [
+    {
+      "workspace_id": "payments-art",
+      "display_name": "Payments ART engineering workspace",
+      "value_stream": "payment-services",
+      "solution": "digital-payments",
+      "repository_url": "https://example.invalid/platform/payments-art",
+      "evidence_endpoint": "https://control-plane.example.invalid/v1/evidence",
+      "owners": ["payments-platform"],
+      "status": "active"
+    }
+  ]
+}
