@@ -1,0 +1,12 @@
+{
+  "name": "indicators",
+  "sourceRoot": "packages/indicators/src",
+  "projectType": "library",
+  "implicitDependencies": ["contracts"],
+  "tags": ["scope:reporting", "criticality:medium"],
+  "targets": {
+    "test": { "command": "node --test packages/indicators/src/*.test.mjs" },
+    "typecheck": { "command": "node --check packages/indicators/src/summarize.mjs" },
+    "build": { "command": "node --check packages/indicators/src/summarize.mjs" }
+  }
+}
