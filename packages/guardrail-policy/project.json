@@ -1,0 +1,12 @@
+{
+  "name": "guardrail-policy",
+  "sourceRoot": "packages/guardrail-policy/src",
+  "projectType": "library",
+  "implicitDependencies": ["contracts"],
+  "tags": ["scope:policy", "criticality:critical"],
+  "targets": {
+    "test": { "command": "node --test packages/guardrail-policy/src/*.test.mjs" },
+    "typecheck": { "command": "node --check packages/guardrail-policy/src/evaluate.mjs" },
+    "build": { "command": "node --check packages/guardrail-policy/src/evaluate.mjs" }
+  }
+}
