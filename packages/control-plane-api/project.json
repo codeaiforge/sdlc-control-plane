@@ -2,7 +2,7 @@
   "name": "control-plane-api",
   "sourceRoot": "packages/control-plane-api/src",
   "projectType": "application",
-  "implicitDependencies": ["contracts", "guardrail-policy", "workspace-registry", "indicators"],
+  "implicitDependencies": ["guardrail-policy", "workspace-registry", "indicators"],
   "tags": ["scope:api", "criticality:high"],
   "targets": {
     "serve": { "command": "node packages/control-plane-api/src/main.mjs" },

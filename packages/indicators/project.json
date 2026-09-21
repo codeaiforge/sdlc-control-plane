@@ -2,7 +2,6 @@
   "name": "indicators",
   "sourceRoot": "packages/indicators/src",
   "projectType": "library",
-  "implicitDependencies": ["contracts"],
   "tags": ["scope:reporting", "criticality:medium"],
   "targets": {
     "test": { "command": "node --test packages/indicators/src/*.test.mjs" },
