@@ -39,16 +39,16 @@
 
 ## Task Status
 
-| # | Task | Status | Notes |
-| - | ---- | ------ | ----- |
-| {{N.1}} | {{Task name, copied from the roadmap}} | {{Done}} | `{{branch-name}}` — {{what shipped, one line}} |
-| {{N.2}} | {{Task name}} | {{In progress}} | {{current state}} |
-| {{N.3}} | {{Task name}} | {{Not started}} | {{blocked on N.2, or empty}} |
+| #       | Task                                   | Status          | Notes                                          |
+| ------- | -------------------------------------- | --------------- | ---------------------------------------------- |
+| {{N.1}} | {{Task name, copied from the roadmap}} | {{Done}}        | `{{branch-name}}` — {{what shipped, one line}} |
+| {{N.2}} | {{Task name}}                          | {{In progress}} | {{current state}}                              |
+| {{N.3}} | {{Task name}}                          | {{Not started}} | {{blocked on N.2, or empty}}                   |
 
 ## Additional Work Completed (not in roadmap)
 
-| Item | Commit | Notes |
-| ---- | ------ | ----- |
+| Item              | Commit    | Notes                                          |
+| ----------------- | --------- | ---------------------------------------------- |
 | {{What was done}} | `{{sha}}` | {{Why it happened here — e.g. "supports N.4"}} |
 
 ## Summary

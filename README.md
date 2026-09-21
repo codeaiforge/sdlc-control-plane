@@ -4,12 +4,12 @@ The SDLC Control Plane is a federation layer for engineering governance. It aggr
 
 ## Scope
 
-| Concern | This control plane does | It does not do |
-| --- | --- | --- |
-| Team / ART execution | Receives Nx graph, SDLC gate, provenance, and delivery signals | Replace the workspace CI/CD pipeline |
-| ART coordination | Registers workspaces and presents cross-workspace indicators | Plan work or resolve dependencies for teams |
-| Large Solution | Supplies traceable evidence to solution-intent/MBSE tools | Own solution intent or supplier management |
-| Portfolio | Exposes indicators and distributes approved guardrails | Make investment, staffing, or budget decisions |
+| Concern              | This control plane does                                        | It does not do                                 |
+| -------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
+| Team / ART execution | Receives Nx graph, SDLC gate, provenance, and delivery signals | Replace the workspace CI/CD pipeline           |
+| ART coordination     | Registers workspaces and presents cross-workspace indicators   | Plan work or resolve dependencies for teams    |
+| Large Solution       | Supplies traceable evidence to solution-intent/MBSE tools      | Own solution intent or supplier management     |
+| Portfolio            | Exposes indicators and distributes approved guardrails         | Make investment, staffing, or budget decisions |
 
 The architecture and delivery sequence are in [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/specs/implementation-roadmap.md](docs/specs/implementation-roadmap.md). Every deployable and library is an Nx project under `packages/`, defined by its `project.json`. The API is the sole initial deployable artifact; the other projects are internal libraries it composes.
 

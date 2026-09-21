@@ -12,8 +12,10 @@ export function createRegistry(initial = []) {
 
 function register(entries, registration) {
   const validation = validateWorkspaceRegistration(registration);
-  if (!validation.ok) throw new Error(`invalid workspace registration: ${validation.errors.join('; ')}`);
-  if (entries.has(registration.workspace_id)) throw new Error(`workspace already registered: ${registration.workspace_id}`);
+  if (!validation.ok)
+    throw new Error(`invalid workspace registration: ${validation.errors.join('; ')}`);
+  if (entries.has(registration.workspace_id))
+    throw new Error(`workspace already registered: ${registration.workspace_id}`);
   entries.set(registration.workspace_id, Object.freeze({ ...registration }));
   return entries.get(registration.workspace_id);
 }

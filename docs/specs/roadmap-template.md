@@ -45,13 +45,13 @@
 
 ## Guiding Principles
 
-| Principle | In practice |
-| --------- | ----------- |
+| Principle       | In practice                                                                  |
+| --------------- | ---------------------------------------------------------------------------- |
 | {{Principle 1}} | {{Concrete behaviour or counter-example that operationalises the principle}} |
-| {{Principle 2}} | {{...}} |
-| {{Principle 3}} | {{...}} |
-| {{Principle 4}} | {{...}} |
-| {{Principle 5}} | {{...}} |
+| {{Principle 2}} | {{...}}                                                                      |
+| {{Principle 3}} | {{...}}                                                                      |
+| {{Principle 4}} | {{...}}                                                                      |
+| {{Principle 5}} | {{...}}                                                                      |
 
 <!--
   Aim for 4-6 principles. Each row should be a tension you've already
@@ -88,24 +88,24 @@ timeline
             : {{Alpha launch / final milestone}}
 ```
 
-| Sprint | Dates | Theme | Alpha-testable? |
-| ------ | ----- | ----- | --------------- |
-| {{N}} | {{Date range}} | {{Theme}} | {{Yes — what user can do / No — reason}} |
-| {{N+1}} | {{Date range}} | {{Theme}} | {{...}} |
-| {{N+last}} | {{Date range}} | {{Theme}} | **{{Final milestone}}** |
+| Sprint     | Dates          | Theme     | Alpha-testable?                          |
+| ---------- | -------------- | --------- | ---------------------------------------- |
+| {{N}}      | {{Date range}} | {{Theme}} | {{Yes — what user can do / No — reason}} |
+| {{N+1}}    | {{Date range}} | {{Theme}} | {{...}}                                  |
+| {{N+last}} | {{Date range}} | {{Theme}} | **{{Final milestone}}**                  |
 
 **Target {{milestone name}}**: {{Date}}
 **Buffer**: {{e.g. "2 weeks built in (Sprint N is P1 — can be cut if behind schedule)"}}
 
 ### Story Point Reference
 
-| SP | Effort | Typical examples |
-| -- | ------ | ---------------- |
-| 1 | {{< 2 hours}} | {{Trivial scope examples}} |
-| 2 | {{Half day}} | {{Small-feature scope examples}} |
-| 3 | {{~1 day}} | {{Standard-feature scope examples}} |
-| 5 | {{2–3 days}} | {{Large-feature scope examples}} |
-| 8 | {{~1 week}} | {{Architectural / refactor scope — should be rare}} |
+| SP  | Effort        | Typical examples                                    |
+| --- | ------------- | --------------------------------------------------- |
+| 1   | {{< 2 hours}} | {{Trivial scope examples}}                          |
+| 2   | {{Half day}}  | {{Small-feature scope examples}}                    |
+| 3   | {{~1 day}}    | {{Standard-feature scope examples}}                 |
+| 5   | {{2–3 days}}  | {{Large-feature scope examples}}                    |
+| 8   | {{~1 week}}   | {{Architectural / refactor scope — should be rare}} |
 
 <!--
   SP buckets are 1, 2, 3, 5, 8 (Fibonacci minus 4). Do not introduce 4 — the
@@ -118,21 +118,21 @@ timeline
 
 ### Sprint Velocity Summary
 
-| Sprint | SP total | Risk level | Largest task | Notes |
-| ------ | -------- | ---------- | ------------ | ----- |
-| {{N}} | {{SP}} | {{Low / Medium / **High**}} | {{Task name + SP}} | {{Why this sprint is shaped this way}} |
-| {{N+1}} | {{SP}} | {{Low / Medium / **High**}} | {{...}} | {{...}} |
-| **Total** | **{{Sum}}** | | | {{Average SP/sprint}} |
+| Sprint    | SP total    | Risk level                  | Largest task       | Notes                                  |
+| --------- | ----------- | --------------------------- | ------------------ | -------------------------------------- |
+| {{N}}     | {{SP}}      | {{Low / Medium / **High**}} | {{Task name + SP}} | {{Why this sprint is shaped this way}} |
+| {{N+1}}   | {{SP}}      | {{Low / Medium / **High**}} | {{...}}            | {{...}}                                |
+| **Total** | **{{Sum}}** |                             |                    | {{Average SP/sprint}}                  |
 
 ### Task Priority (MoSCoW)
 
 Each task within a sprint carries a **MoSCoW** priority:
 
-| Priority | Meaning | Action if behind schedule |
-| -------- | ------- | ------------------------ |
-| **Must** | Blocks the sprint's Definition of Done or the next sprint's start | Cannot defer — reduce scope elsewhere |
-| **Should** | Important but sprint can close without it; typically blocks the *next* sprint | Defer to next sprint's first wave |
-| **Could** | Adds value but has no downstream dependency | Drop or defer without impact |
+| Priority   | Meaning                                                                       | Action if behind schedule             |
+| ---------- | ----------------------------------------------------------------------------- | ------------------------------------- |
+| **Must**   | Blocks the sprint's Definition of Done or the next sprint's start             | Cannot defer — reduce scope elsewhere |
+| **Should** | Important but sprint can close without it; typically blocks the _next_ sprint | Defer to next sprint's first wave     |
+| **Could**  | Adds value but has no downstream dependency                                   | Drop or defer without impact          |
 
 ### Task Ordering and Execution Waves
 
@@ -178,13 +178,13 @@ Each sprint includes an **Execution Waves** section showing which tasks can proc
 
 **Deliverables:**
 
-| # | Task | SP | Priority | Layer | Depends on | Trace | Done when |
-| - | ---- | -- | -------- | ----- | ---------- | ----- | --------- |
+| #       | Task                                                                                       | SP                | Priority                | Layer     | Depends on        | Trace                               | Done when                 |
+| ------- | ------------------------------------------------------------------------------------------ | ----------------- | ----------------------- | --------- | ----------------- | ----------------------------------- | ------------------------- |
 | {{N}}.1 | {{Task description with concrete artifact, e.g. "Scaffold Next.js app in `packages/web`"}} | {{1\|2\|3\|5\|8}} | {{Must\|Should\|Could}} | {{Layer}} | {{— or task IDs}} | {{FR-N.M, NFR-N.M, Infra, Testing}} | {{Observable acceptance}} |
-| {{N}}.2 | {{Task description}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}} | {{Trace}} | {{Done when}} |
-| {{N}}.3 | {{...}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}} | {{Trace}} | {{Done when}} |
-| {{N}}.4 | {{...}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}} | {{Trace}} | {{Done when}} |
-| {{N}}.5 | {{...}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}} | {{Trace}} | {{Done when}} |
+| {{N}}.2 | {{Task description}}                                                                       | {{SP}}            | {{Priority}}            | {{Layer}} | {{Deps}}          | {{Trace}}                           | {{Done when}}             |
+| {{N}}.3 | {{...}}                                                                                    | {{SP}}            | {{Priority}}            | {{Layer}} | {{Deps}}          | {{Trace}}                           | {{Done when}}             |
+| {{N}}.4 | {{...}}                                                                                    | {{SP}}            | {{Priority}}            | {{Layer}} | {{Deps}}          | {{Trace}}                           | {{Done when}}             |
+| {{N}}.5 | {{...}}                                                                                    | {{SP}}            | {{Priority}}            | {{Layer}} | {{Deps}}          | {{Trace}}                           | {{Done when}}             |
 
 <!--
   Continue rows {{N}}.6, {{N}}.7, ... for every task in this sprint.
@@ -196,12 +196,12 @@ Each sprint includes an **Execution Waves** section showing which tasks can proc
 
 **Execution waves:**
 
-| Wave | Tasks | Rationale |
-| ---- | ----- | --------- |
-| 1 | {{Comma-separated task IDs}} | {{Why this group is unblocked first — usually "no dependencies" or "depends only on prior sprints"}} |
-| 2 | {{Task IDs}} | {{Unblocked by wave 1 — name the dependency}} |
-| 3 | {{Task IDs}} | {{...}} |
-| 4 | {{Task IDs}} | {{Polish + tests, depends on prior waves}} |
+| Wave | Tasks                        | Rationale                                                                                            |
+| ---- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 1    | {{Comma-separated task IDs}} | {{Why this group is unblocked first — usually "no dependencies" or "depends only on prior sprints"}} |
+| 2    | {{Task IDs}}                 | {{Unblocked by wave 1 — name the dependency}}                                                        |
+| 3    | {{Task IDs}}                 | {{...}}                                                                                              |
+| 4    | {{Task IDs}}                 | {{Polish + tests, depends on prior waves}}                                                           |
 
 **Risk checkpoint:**
 
@@ -244,17 +244,17 @@ Each sprint includes an **Execution Waves** section showing which tasks can proc
 
 **Deliverables:**
 
-| # | Task | SP | Priority | Layer | Depends on | Trace | Done when |
-| - | ---- | -- | -------- | ----- | ---------- | ----- | --------- |
-| {{N+1}}.1 | {{...}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}} | {{Trace}} | {{Done when}} |
+| #         | Task    | SP     | Priority     | Layer     | Depends on | Trace     | Done when     |
+| --------- | ------- | ------ | ------------ | --------- | ---------- | --------- | ------------- |
+| {{N+1}}.1 | {{...}} | {{SP}} | {{Priority}} | {{Layer}} | {{Deps}}   | {{Trace}} | {{Done when}} |
 
 **Sprint total: {{Sum}} SP** — {{Risk}}. {{Rationale}}
 
 **Execution waves:**
 
-| Wave | Tasks | Rationale |
-| ---- | ----- | --------- |
-| 1 | {{Task IDs}} | {{Rationale}} |
+| Wave | Tasks        | Rationale     |
+| ---- | ------------ | ------------- |
+| 1    | {{Task IDs}} | {{Rationale}} |
 
 **Definition of done:**
 
@@ -264,10 +264,10 @@ Each sprint includes an **Execution Waves** section showing which tasks can proc
 
 ## Risk Register
 
-| Risk | Likelihood | Impact | Mitigation | Checkpoint |
-| ---- | ---------- | ------ | ---------- | ---------- |
+| Risk                 | Likelihood              | Impact                  | Mitigation                     | Checkpoint                                   |
+| -------------------- | ----------------------- | ----------------------- | ------------------------------ | -------------------------------------------- |
 | {{Risk description}} | {{Low / Medium / High}} | {{Low / Medium / High}} | {{Concrete mitigation action}} | {{Sprint or date when this is re-evaluated}} |
-| {{Risk description}} | {{...}} | {{...}} | {{...}} | {{...}} |
+| {{Risk description}} | {{...}}                 | {{...}}                 | {{...}}                        | {{...}}                                      |
 
 <!--
   Aim for 5-10 risks. Include risks across categories: technical (AI quality,
@@ -286,11 +286,11 @@ These are explicit go/no-go decisions at specific points in the timeline.
 
 **Question**: {{The single question this gate answers, framed yes/no.}}
 
-| Signal | Go | No-go |
-| ------ | -- | ----- |
+| Signal          | Go                               | No-go                               |
+| --------------- | -------------------------------- | ----------------------------------- |
 | {{Signal name}} | {{Concrete observable for "go"}} | {{Concrete observable for "no-go"}} |
-| {{Signal name}} | {{...}} | {{...}} |
-| {{Signal name}} | {{...}} | {{...}} |
+| {{Signal name}} | {{...}}                          | {{...}}                             |
+| {{Signal name}} | {{...}}                          | {{...}}                             |
 
 **No-go actions**: {{What the team does if the gate fails — iterate, defer, accept lowered expectations, abandon.}}
 
@@ -298,9 +298,9 @@ These are explicit go/no-go decisions at specific points in the timeline.
 
 **Question**: {{...}}
 
-| Signal | {{Go branch label}} | {{No-go branch label}} |
-| ------ | ------------------- | ---------------------- |
-| {{Signal}} | {{Go criterion}} | {{No-go criterion}} |
+| Signal     | {{Go branch label}} | {{No-go branch label}} |
+| ---------- | ------------------- | ---------------------- |
+| {{Signal}} | {{Go criterion}}    | {{No-go criterion}}    |
 
 ### Gate {{N}}: {{Final Gate Name}} (End of Sprint {{last}})
 
@@ -314,11 +314,11 @@ These are explicit go/no-go decisions at specific points in the timeline.
 
 {{One paragraph: how does forward planning shift after this phase? Usually: from pre-determined plan to user-feedback driven.}}
 
-| Timeframe | Focus | Trigger |
-| --------- | ----- | ------- |
+| Timeframe                                        | Focus                  | Trigger                                          |
+| ------------------------------------------------ | ---------------------- | ------------------------------------------------ |
 | {{Phase + dates, e.g. "Alpha (Jul – Aug 2026)"}} | {{Primary focus area}} | {{What signals the focus shift to the next row}} |
-| {{Phase + dates}} | {{...}} | {{...}} |
-| {{Phase + dates}} | {{...}} | {{...}} |
+| {{Phase + dates}}                                | {{...}}                | {{...}}                                          |
+| {{Phase + dates}}                                | {{...}}                | {{...}}                                          |
 
 ---
 
@@ -347,4 +347,4 @@ graph TD
 
 ---
 
-*Version {{X.Y}} — {{Month YYYY}}*
+_Version {{X.Y}} — {{Month YYYY}}_

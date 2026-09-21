@@ -34,14 +34,14 @@
 
 ## EARS Pattern Reference
 
-| Pattern | Template | Use when |
-| ------- | -------- | -------- |
-| Ubiquitous | The system shall [action] | Requirement is always active |
-| Event-driven | When [event], the system shall [action] | Triggered by a specific event |
-| State-driven | While [state], the system shall [action] | Active during a specific state |
-| Unwanted behavior | If [unwanted condition], the system shall [action] | Handling failures or edge cases |
-| Optional | Where [feature is included], the system shall [action] | Configurable or conditional |
-| Complex | Combination of patterns above | Multiple conditions apply |
+| Pattern           | Template                                               | Use when                        |
+| ----------------- | ------------------------------------------------------ | ------------------------------- |
+| Ubiquitous        | The system shall [action]                              | Requirement is always active    |
+| Event-driven      | When [event], the system shall [action]                | Triggered by a specific event   |
+| State-driven      | While [state], the system shall [action]               | Active during a specific state  |
+| Unwanted behavior | If [unwanted condition], the system shall [action]     | Handling failures or edge cases |
+| Optional          | Where [feature is included], the system shall [action] | Configurable or conditional     |
+| Complex           | Combination of patterns above                          | Multiple conditions apply       |
 
 ---
 
@@ -256,19 +256,19 @@ The system shall {{compliance guarantee citing the specific regulation}}.
   `Dependencies` column uses `None` or an FR-range (e.g. `FR-1.x (input)`).
 -->
 
-| Requirement ID | Feature | Priority | Dependencies |
-| -------------- | ------- | -------- | ------------ |
-| FR-1.1–1.{{last}} | {{Feature Area 1}} | P0 | {{None or FR-range}} |
-| FR-2.1–2.{{last}} | {{Feature Area 2}} | P0 | {{FR-range}} |
-| FR-{{N}}.1–{{N}}.{{last}} | {{P1 Feature Area}} | P1 | {{FR-range}} |
-| NFR-1.1–1.{{last}} | Performance | — | All FR |
-| NFR-2.1–2.{{last}} | Security | — | All FR |
-| NFR-3.1–3.{{last}} | Reliability | — | All FR |
-| NFR-4.1–4.{{last}} | Usability | — | All FR |
-| NFR-5.1–5.{{last}} | Scalability | — | All FR |
-| NFR-6.1–6.{{last}} | Compliance | — | NFR-2.x (security) |
+| Requirement ID            | Feature             | Priority | Dependencies         |
+| ------------------------- | ------------------- | -------- | -------------------- |
+| FR-1.1–1.{{last}}         | {{Feature Area 1}}  | P0       | {{None or FR-range}} |
+| FR-2.1–2.{{last}}         | {{Feature Area 2}}  | P0       | {{FR-range}}         |
+| FR-{{N}}.1–{{N}}.{{last}} | {{P1 Feature Area}} | P1       | {{FR-range}}         |
+| NFR-1.1–1.{{last}}        | Performance         | —        | All FR               |
+| NFR-2.1–2.{{last}}        | Security            | —        | All FR               |
+| NFR-3.1–3.{{last}}        | Reliability         | —        | All FR               |
+| NFR-4.1–4.{{last}}        | Usability           | —        | All FR               |
+| NFR-5.1–5.{{last}}        | Scalability         | —        | All FR               |
+| NFR-6.1–6.{{last}}        | Compliance          | —        | NFR-2.x (security)   |
 
 ---
 
-*Version {{X.Y}} — {{Month YYYY}}*
-*Next review: {{trigger, e.g. "after technical design completion" or "end of Sprint N"}}*
+_Version {{X.Y}} — {{Month YYYY}}_
+_Next review: {{trigger, e.g. "after technical design completion" or "end of Sprint N"}}_

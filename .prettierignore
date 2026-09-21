@@ -1,0 +1,32 @@
+node_modules
+.nx
+.memsearch
+dist
+coverage
+pnpm-lock.yaml
+
+# Rendered output — regenerated from overview.md, not hand-edited.
+docs/architecture/overview.html
+
+# Vendored from ai-nx-ready-framework (commit 4430cfc). Reformatting upstream content
+# destroys the pristine baseline the next sync diffs against. Agent-written sprint
+# records under .ai/sprints/sprint-*/ are ours and are formatted.
+.ai/README.md
+.ai/context/
+.ai/prompts/
+.ai/roles/
+.ai/sprints/README.md
+.ai/standards/
+.ai/tasks/
+.ai/workflows/
+.claude/
+.githooks/
+.github/git-workflow.md
+.github/prompts/
+CLAUDE.md
+docs/adr/0000-template.md
+docs/adr/README.md
+docs/architecture/README.md
+docs/commit-message-conventions.md
+docs/diagrams/README.md
+tools/adr/

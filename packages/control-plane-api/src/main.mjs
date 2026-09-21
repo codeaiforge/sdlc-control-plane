@@ -4,8 +4,12 @@ import { evaluateGuardrails } from '../../guardrail-policy/src/evaluate.mjs';
 import { summarizeEvidence } from '../../indicators/src/summarize.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 
-const workspaces = JSON.parse(readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url))).workspaces;
-const policy = JSON.parse(readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)));
+const workspaces = JSON.parse(
+  readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url)),
+).workspaces;
+const policy = JSON.parse(
+  readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
+);
 const registry = createRegistry(workspaces);
 const evidence = [];
 
@@ -16,9 +20,12 @@ function send(response, status, body) {
 
 export function createRequestHandler({ registry, policy, evidence }) {
   return async (request, response) => {
-    if (request.method === 'GET' && request.url === '/health') return send(response, 200, { status: 'ok' });
-    if (request.method === 'GET' && request.url === '/v1/workspaces') return send(response, 200, { data: registry.list() });
-    if (request.method === 'GET' && request.url === '/v1/indicators') return send(response, 200, { data: summarizeEvidence(evidence) });
+    if (request.method === 'GET' && request.url === '/health')
+      return send(response, 200, { status: 'ok' });
+    if (request.method === 'GET' && request.url === '/v1/workspaces')
+      return send(response, 200, { data: registry.list() });
+    if (request.method === 'GET' && request.url === '/v1/indicators')
+      return send(response, 200, { data: summarizeEvidence(evidence) });
     if (request.method === 'POST' && request.url === '/v1/evidence') {
       let raw = '';
       for await (const chunk of request) raw += chunk;
