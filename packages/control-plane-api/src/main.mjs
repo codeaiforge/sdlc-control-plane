@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { evaluateGuardrails } from '../../guardrail-policy/src/evaluate.mjs';
 import { summarizeEvidence } from '../../indicators/src/summarize.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
-import { createInMemoryEvidenceStore } from './evidence-store.mjs';
+import { createInMemoryEvidenceStore, project } from './evidence-store.mjs';
 
 const workspaces = JSON.parse(
   readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url)),
@@ -81,6 +81,11 @@ export const routes = [
         const chunks = [];
         for await (const chunk of request) chunks.push(Buffer.from(chunk));
         const record = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        // Projected before the policy is evaluated, not after. JSON.stringify is recursive where
+        // JSON.parse is not, so a body the seam parses can still be unprojectable; running policy
+        // first would let the control plane compute "accepted" for a record it then loses, and
+        // answer the caller with a body-fault 400 for JSON that was valid. Refuse it first.
+        project(record);
         const decision = evaluateGuardrails(record, policy);
         if (!decision.accepted) return send(response, 422, { decision });
         evidenceStore.append(record);

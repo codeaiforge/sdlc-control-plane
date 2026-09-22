@@ -418,3 +418,66 @@ test('the accepted decision still names the policy that granted it', () => {
   assert.equal(accepted.additionalProperties, false);
   assert.equal(document.components.schemas.HealthResponse.properties.status.enum.length, 1);
 });
+
+// Phase 4 review of task 1.2 found a valid, policy-accepted record deeper than JSON.stringify's
+// recursion limit answered 400 and silently dropped: JSON.parse is iterative in V8 while
+// JSON.stringify is recursive, so the seam parsed a body the store could not project. The seam
+// now projects before evaluating policy, so the control plane never computes an acceptance for a
+// record it would then fail to store. Divergence 5 in info.description records what remains.
+test('divergence: a record too deep to project is refused, and never reaches the store', async () => {
+  const depth = 6000;
+  const body =
+    '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
+    '"tier":"T1","affected_set":[],"tool":{"name":"n","version":"v"},' +
+    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},' +
+    '"deep":' +
+    '{"n":'.repeat(depth) +
+    '"x"' +
+    '}'.repeat(depth) +
+    '}';
+  assert.doesNotThrow(() => JSON.parse(body), 'the seam can parse this body');
+  const store = createInMemoryEvidenceStore();
+  const { status, body: answered } = await call(seam(store), post(body));
+  assert.equal(status, 400);
+  assert.deepEqual(answered, { error: 'request body must be valid JSON' });
+  assert.equal(store.list().length, 0, 'nothing is stored');
+});
+
+// The 400 above was also the answer before the fix - what changed is the order, and the order is
+// not observable on the wire. evaluateGuardrails reads policy.policy_version first, so a getter on
+// it records whether policy was reached at all. If this fails, the seam is computing a disposition
+// for a record it cannot store, which is how an acceptance gets granted and then lost.
+test('policy is never evaluated for a record the store cannot hold', async () => {
+  const depth = 6000;
+  const body =
+    '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
+    '"tier":"T1","affected_set":[],"tool":{"name":"n","version":"v"},' +
+    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},' +
+    '"deep":' +
+    '{"n":'.repeat(depth) +
+    '"x"' +
+    '}'.repeat(depth) +
+    '}';
+  let policyRead = false;
+  const watched = { ...policy };
+  Object.defineProperty(watched, 'policy_version', {
+    get() {
+      policyRead = true;
+      return 'guardrails/0';
+    },
+  });
+  const store = createInMemoryEvidenceStore();
+  const handler = createRequestHandler({
+    registry: { list: () => [workspace] },
+    policy: watched,
+    evidenceStore: store,
+  });
+  const { status } = await call(handler, post(body));
+  assert.equal(status, 400);
+  assert.equal(policyRead, false, 'the policy was evaluated for a record that cannot be stored');
+
+  // The same watcher must see a storable record reach policy, or the test proves nothing.
+  policyRead = false;
+  await call(handler, post(JSON.stringify(validEvidence)));
+  assert.equal(policyRead, true, 'control: a normal record does reach policy');
+});

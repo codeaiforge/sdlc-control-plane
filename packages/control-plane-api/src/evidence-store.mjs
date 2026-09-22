@@ -31,12 +31,16 @@ function deepFreeze(value) {
 // column reshapes values on the way in — a Date becomes its ISO string, an undefined-valued
 // property disappears. An in-memory adapter that kept the original would accept values 2.2's
 // PostgreSQL adapter cannot store unchanged, and the conformance suite would not notice.
-function project(record) {
+export function project(record) {
   let text;
   try {
     text = JSON.stringify(record);
   } catch (cause) {
-    // A cycle (or a BigInt) throws here, before anything is indexed, so nothing is stored.
+    // A cycle or a BigInt throws here, before anything is indexed, so nothing is stored. So does
+    // a record nested deeper than JSON.stringify's recursion limit - which JSON.parse does NOT
+    // share, so the seam can parse a body this cannot project. The seam therefore projects
+    // immediately after parsing, before policy runs, so the control plane never grants an
+    // acceptance to a record it is about to fail to store.
     throw new TypeError('evidence record must be JSON-serialisable', { cause });
   }
   if (typeof text !== 'string') throw new TypeError('evidence record must be JSON-serialisable');

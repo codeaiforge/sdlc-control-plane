@@ -59,7 +59,9 @@ shape is indicative — 2.2 owns the migration — but the constraints are the d
 CREATE TABLE evidence_envelope (
   id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   envelope_version text        NOT NULL,
-  workspace_id     text        NOT NULL,
+  workspace_id     text,                   -- nullable on purpose: see the fourth collision row.
+                                           -- Postgres treats NULLs as distinct under UNIQUE, so a
+                                           -- null workspace claims no uniqueness with no app code.
   change_id        text        NOT NULL,
   received_at      timestamptz NOT NULL,   -- the control plane's clock, never the submitter's
   evidence         jsonb,                  -- NULL once redacted; see Expiry behaviour
@@ -222,10 +224,20 @@ never read as the receipt time.
 startup. Git is the MVP audit trail** for them, and it is a real one rather than a placeholder:
 that path tiers `critical` in the component map, so a change to it goes through the
 `sdlc-controls` gate, and the gate emits an evidence artifact tied to an attributable commit.
-"Who changed the policy, when, and with what approval" is answerable, with a signature-grade
-chain, without the control plane storing anything.
+"Who changed the policy, when, and with what approval" is answerable from the commit history,
+without the control plane storing anything.
 
-What must be said plainly is the limit: **it is a trail, but not a queryable one.** It answers
+Two limits must be said plainly rather than left for a reader to discover.
+
+**It is not signature-grade.** Commits in this repository are unsigned today - `git log
+--format='%G?'` returns `N` for every commit, and `commit.gpgsign` and `user.signingkey` are
+unset - and no control verifies an authorship claim. Git's object graph gives integrity, not
+attribution: in an unsigned repository the author field is free text, so `git commit --author`
+plus a force-push rewrites who changed a policy and nothing notices. Making this trail
+attribution-grade needs signed commits and branch protection on `config/control-plane/**`, and
+that is a **Gate 2 condition rather than something this ADR delivers**.
+
+**It is not queryable.** It answers
 those questions only for somebody holding the repository and running `git log`. No route exposes
 it, no API returns it, and an auditor without repository access cannot reach it at all.
 
@@ -336,7 +348,9 @@ Sprint 2 may start on top of it.
 - Task 2.2 writes an adapter against a tested contract instead of a description of one. The port
   (`evidence-store.mjs`) and its conformance suite (`store-conformance.mjs`) exist now; adding
   the PostgreSQL adapter is one more `describeEvidenceStore('postgres', …)` line. Every call in
-  that suite is awaited, so an async adapter passes it unedited.
+  that suite is awaited except one: `reads are synchronous` deliberately does not await, and
+  asserts the result is not a thenable. An async adapter passes the other fifteen unedited and
+  deletes that one, in the same change that makes reads async and awaits them at the seam.
 - The seam takes the store by injection, so a test holds its own store and no test depends on
   another's appends.
 - Unrecognised additive fields survive storage unchanged, which is what NFR-1.1 asks of the
