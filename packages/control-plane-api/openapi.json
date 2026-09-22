@@ -1,0 +1,431 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "SDLC Control Plane API",
+    "version": "0.1.0",
+    "description": "The HTTP surface of the SDLC control plane. This document is the source of truth for the routes, the statuses each one can answer with, and the body shapes on either side of them; packages/control-plane-api/src/openapi.contract.test.mjs fails when it and the seam in packages/control-plane-api/src/main.mjs disagree.\n\nThe contract version above is the version of this document, not of the package and not of any evidence or policy schema.\n\nFour known divergences between this document and the running seam are recorded here rather than hidden, because a contract that quietly overstates its implementation is worse than one that states its own limits.\n\n1. Query strings are not ignored. Routing compares the raw request target, so GET /health?x=1 does not match the documented GET /health; it is answered by x-unmatched-request.\n\n2. There is no 405. A documented path addressed with an undeclared method - GET /v1/evidence, POST /health - is answered by x-unmatched-request, and no Allow header is sent.\n\n3. There is no 415. The request content-type is never inspected: a JSON body labelled text/plain is parsed and accepted exactly like one labelled application/json.\n\n4. Timestamps are not parsed. computed_at is documented as a non-empty string rather than a date-time, because the validator only checks that it is a non-empty string. No schema in this document carries a format keyword, and the checker that reads it rejects one as unsupported, so the document is structurally unable to claim a constraint the seam does not enforce.\n\n202 caveat: the 202 on POST /v1/evidence is not a promise of deferred work. The policy decision in the body is final, and the record is already in the in-process store when the response is written. Nothing is queued. Nothing is durable either - durable, idempotent intake is NFR-3.1 and is not built yet - so read the 202 as 'accepted into this process', not 'accepted for later processing'."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Relative to whatever origin serves the process. No deployment URL is published here; the host names in config/control-plane/workspaces.json are example.invalid placeholders and are not a deployment address."
+    }
+  ],
+  "x-unmatched-request": {
+    "status": 404,
+    "description": "OpenAPI has no vocabulary for 'every request I did not declare', and attaching a 404 to each declared operation would be a lie: no declared operation in this document can answer 404. This extension records the real behaviour instead. Any request whose method and raw target do not match a declared operation exactly is answered with this status and this body - including a documented path carrying a query string, and a documented path addressed with an undeclared method.",
+    "content": {
+      "application/json": {
+        "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "summary": "Liveness of the control-plane process.",
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Report that the process is serving requests.",
+        "description": "Answers from the in-process seam without checking any dependency. It does not prove that the workspace registry loaded, that the guardrail policy parsed, or that anything downstream is reachable. It is a liveness signal, not a readiness one.",
+        "responses": {
+          "200": {
+            "description": "The process is serving requests.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workspaces": {
+      "summary": "The governed workspaces this process was configured with.",
+      "get": {
+        "operationId": "listWorkspaces",
+        "summary": "List every registered workspace, sorted by workspace_id.",
+        "description": "Returns the registrations loaded at startup from config/control-plane/workspaces.json, in a deterministic order. There is no write path in this version. A listed workspace is a record of ownership and routing, not an assertion that the control plane can reach that repository (FR-1.1, FR-1.2).",
+        "responses": {
+          "200": {
+            "description": "Every registered workspace, sorted by workspace_id.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WorkspaceListResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/indicators": {
+      "summary": "Descriptive engineering indicators over accepted evidence.",
+      "get": {
+        "operationId": "getIndicators",
+        "summary": "Summarise accepted evidence by tier and passing result.",
+        "description": "Counts the evidence this process accepted. Records refused at 400 or 422 are never counted, so the summary describes what passed the contract and the policy, not what was submitted. The summary is descriptive only: it carries its own disclaimer field and never expresses a funding, staffing, prioritisation or release decision (FR-3.2, FR-4.1). The counts live in process memory and reset with it.",
+        "responses": {
+          "200": {
+            "description": "A descriptive summary of the evidence accepted so far.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IndicatorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/evidence": {
+      "summary": "Evidence intake for a governed workspace.",
+      "post": {
+        "operationId": "submitEvidence",
+        "summary": "Submit an evidence/0 record for contract validation and policy evaluation.",
+        "description": "Validates the record against the supported evidence/0 subset and then evaluates it against the approved guardrail policy (FR-2.1, FR-2.2, FR-3.1). Only a record that passes both is stored and counted. This endpoint is unauthenticated in this version; workload authentication and workspace authorization are NFR-2.1 and are not built yet.",
+        "requestBody": {
+          "required": true,
+          "description": "An evidence/0 record. The request content-type is never inspected and there is no 415: any body that JSON.parse accepts is processed, whatever it is labelled. A body that JSON.parse rejects is a 400.",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EvidenceRecord" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The record satisfied both the evidence/0 contract and the approved policy, and has been stored and counted. The decision in the body is final and was made before this response was written - see the 202 caveat in info.description.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EvidenceAcceptedResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "The body is not parseable JSON, or evaluating it faulted. No policy disposition is claimed, because none was reached.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "422": {
+            "description": "The submission was not accepted. One status deliberately covers both unaccepted outcomes, and they are told apart by the disposition field rather than by the status code. disposition 'rejected' means the body failed the evidence/0 contract, so no policy was reached and no policy_id is present. disposition 'needs-remediation' means the body satisfied the contract but not the approved policy, and policy_id names the policy that decided it. In both cases reasons is non-empty and is the actionable part of the response.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/EvidenceUnacceptedResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself, so an unexpected property is a defect rather than an upstream addition.",
+        "required": ["status"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ok"],
+            "description": "The only value this seam can produce. A degraded process does not answer at all rather than answering with another value."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "The error envelope shared by the 400 on evidence intake and by every unmatched request. Closed: the control plane constructs it itself. The message is deliberately not enumerated here - two different conditions share this schema, and pinning the string in the document would turn a wording change into a contract change while adding nothing a caller can rely on.",
+        "required": ["error"],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "A short human-readable reason. Not a stable identifier; callers must branch on the status code, not on this text."
+          }
+        }
+      },
+      "WorkspaceListResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this envelope itself. The entries inside it are open, because they are external configuration.",
+        "required": ["data"],
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "type": "array",
+            "description": "Every registered workspace, sorted by workspace_id. Empty when nothing is registered.",
+            "items": { "$ref": "#/components/schemas/Workspace" }
+          }
+        }
+      },
+      "Workspace": {
+        "type": "object",
+        "description": "Open: a workspace-registry/0 registration is external configuration that the control plane passes through unchanged, recognising only the subset it needs. An unrecognised field is carried, not an error. The required list is exactly what the registration validator enforces; nothing more is checked, and status is deliberately not enumerated because the validator only requires a non-empty string and the set of lifecycle states belongs to the registry contract, not to this API.",
+        "required": [
+          "workspace_id",
+          "display_name",
+          "value_stream",
+          "repository_url",
+          "evidence_endpoint",
+          "owners",
+          "status"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable identifier for the governed workspace, and the sort key of the listing."
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable name of the workspace."
+          },
+          "value_stream": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The value stream the workspace belongs to. Recorded, never inferred from a repository name (FR-1.2)."
+          },
+          "repository_url": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Reference to the repository. Checked for being a non-empty string only; it is never fetched, and no URL syntax is validated."
+          },
+          "evidence_endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the workspace is configured to send evidence. Checked for being a non-empty string only; the control plane never calls it."
+          },
+          "owners": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Accountable owners. The validator enforces that this is a non-empty array; the element type is documented from the registry contract rather than enforced here.",
+            "items": { "type": "string" }
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Lifecycle status of the registration, as the registry contract defines it."
+          },
+          "solution": {
+            "type": "string",
+            "description": "Optional solution the workspace rolls up to. Not validated by the control plane at all; documented because the registry contract carries it."
+          }
+        }
+      },
+      "IndicatorResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself.",
+        "required": ["data"],
+        "additionalProperties": false,
+        "properties": {
+          "data": { "$ref": "#/components/schemas/IndicatorSummary" }
+        }
+      },
+      "IndicatorSummary": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself.",
+        "required": ["total_records", "passing_records", "by_tier", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "total_records": {
+            "type": "integer",
+            "description": "How many records this process accepted. Refused submissions are not counted."
+          },
+          "passing_records": {
+            "type": "integer",
+            "description": "How many accepted records reported result.pass true."
+          },
+          "by_tier": { "$ref": "#/components/schemas/TierCounts" },
+          "note": {
+            "type": "string",
+            "description": "The response carries its own disclaimer so the number cannot be quoted without it: this is a descriptive engineering indicator, not a portfolio decision or a compliance conclusion (FR-3.2). The wording is not pinned here; callers must not parse it."
+          }
+        }
+      },
+      "TierCounts": {
+        "type": "object",
+        "description": "Accepted-record counts by SDLC tier. Closed, and every tier is required: a tier with no records reports 0 rather than being absent, so a missing key is a defect rather than a zero.",
+        "required": ["T0", "T1", "T2", "T3"],
+        "additionalProperties": false,
+        "properties": {
+          "T0": { "type": "integer", "description": "Accepted records at tier T0." },
+          "T1": { "type": "integer", "description": "Accepted records at tier T1." },
+          "T2": { "type": "integer", "description": "Accepted records at tier T2." },
+          "T3": { "type": "integer", "description": "Accepted records at tier T3." }
+        }
+      },
+      "EvidenceAcceptedResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself.",
+        "required": ["decision"],
+        "additionalProperties": false,
+        "properties": {
+          "decision": { "$ref": "#/components/schemas/AcceptedDecision" }
+        }
+      },
+      "AcceptedDecision": {
+        "type": "object",
+        "description": "The decision that accompanies a 202. Closed, and policy_id is required: an acceptance is only meaningful if it names the approved policy that granted it (FR-3.1, NFR-6.1).",
+        "required": ["accepted", "disposition", "policy_id", "reasons"],
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "enum": [true],
+            "description": "Always true on this response; the status code and this field cannot disagree."
+          },
+          "disposition": {
+            "type": "string",
+            "enum": ["accepted"],
+            "description": "A technical disposition about one evidence record. Never a portfolio, funding or release decision (FR-3.2)."
+          },
+          "policy_id": {
+            "type": "string",
+            "description": "The approved guardrail policy that accepted the record, traceable to the human approval recorded with that policy."
+          },
+          "reasons": {
+            "type": "array",
+            "description": "Empty on an acceptance. The field is still present so a caller reads the same shape on every disposition.",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "EvidenceUnacceptedResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself.",
+        "required": ["decision"],
+        "additionalProperties": false,
+        "properties": {
+          "decision": { "$ref": "#/components/schemas/UnacceptedDecision" }
+        }
+      },
+      "UnacceptedDecision": {
+        "type": "object",
+        "description": "The decision that accompanies a 422, covering both unaccepted outcomes. policy_id is optional here and that is the discriminator doing real work: a 'rejected' record failed the contract before any policy was consulted, so naming a policy would claim an evaluation that never happened, while a 'needs-remediation' record was evaluated and carries the policy_id that decided it.",
+        "required": ["accepted", "disposition", "reasons"],
+        "additionalProperties": false,
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "enum": [false],
+            "description": "Always false on this response; the status code and this field cannot disagree."
+          },
+          "disposition": {
+            "type": "string",
+            "enum": ["rejected", "needs-remediation"],
+            "description": "'rejected' is a contract failure: the body is not a supported evidence/0 record. 'needs-remediation' is a policy failure: the body is a valid record that the approved policy did not accept."
+          },
+          "policy_id": {
+            "type": "string",
+            "description": "Present only when a policy was actually evaluated, which is exactly the 'needs-remediation' case."
+          },
+          "reasons": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Why the submission was not accepted. Never empty on this response - an unaccepted submission without a reason would not be actionable (FR-2.2).",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "EvidenceRecord": {
+        "type": "object",
+        "description": "Open, at every level: this is the additive tolerance NFR-1.1 requires. evidence/0 is an external, experimental upstream contract, and the control plane recognises only the minimum stable subset listed here. An unrecognised field is carried, not an error; an unsupported major version is rejected rather than coerced. The required list and the constraints below are exactly what the contract validator enforces - no more, so that a caller cannot read a guarantee out of this document that the seam does not make.",
+        "required": [
+          "schema_version",
+          "change_id",
+          "binding_used",
+          "computed_at",
+          "tier",
+          "affected_set",
+          "tool",
+          "verification",
+          "result"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "enum": ["evidence/0"],
+            "description": "The only supported evidence contract version. Any other value is rejected rather than coerced, because accepting a later shape on a guess can under-report a control failure (NFR-1.1)."
+          },
+          "change_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Identifier of the change the evidence describes, such as a pull request reference."
+          },
+          "binding_used": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The git-native binding the producing tool computed the evidence against."
+          },
+          "computed_at": {
+            "type": "string",
+            "minLength": 1,
+            "description": "When the evidence was computed. Deliberately not a date-time: the control plane never parses this value, only checks that it is a non-empty string, so the document does not claim a timestamp format that nothing verifies."
+          },
+          "tier": {
+            "type": "string",
+            "enum": ["T0", "T1", "T2", "T3"],
+            "description": "The SDLC blast-radius tier the producing tool computed. An unknown tier fails the contract."
+          },
+          "affected_set": {
+            "type": "array",
+            "description": "The paths or components the change touched. The validator enforces only that this is an array; the element type is documented from the upstream contract rather than enforced here.",
+            "items": { "type": "string" }
+          },
+          "tool": {
+            "type": "object",
+            "description": "Identity of the tool that produced the evidence. Open: an upstream addition here is additive, not a breaking change.",
+            "required": ["name", "version"],
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "description": "Producing tool name." },
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Producing tool version."
+              }
+            }
+          },
+          "verification": {
+            "type": "object",
+            "description": "What the producing tool verified. Open, for the same additive reason.",
+            "required": ["verified"],
+            "additionalProperties": true,
+            "properties": {
+              "verified": {
+                "type": "array",
+                "description": "Control identifiers the tool verified, which the approved policy's required-control list is checked against. The validator enforces only that this is an array.",
+                "items": { "type": "string" }
+              }
+            }
+          },
+          "result": {
+            "type": "object",
+            "description": "The outcome the producing tool reported. Open, for the same additive reason.",
+            "required": ["pass"],
+            "additionalProperties": true,
+            "properties": {
+              "pass": {
+                "type": "boolean",
+                "description": "Whether the producing tool's own checks passed. Counted in the indicator summary; it does not by itself decide acceptance."
+              }
+            }
+          },
+          "ai_assisted": {
+            "type": "boolean",
+            "description": "Whether the change was AI-assisted. Optional, but when it is true the approved policy may require ai_tool, and a record that omits it then receives needs-remediation (FR-3.1)."
+          },
+          "ai_tool": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Which AI tool assisted the change. The provenance that makes ai_assisted auditable rather than a bare flag; an empty string counts as absent."
+          }
+        }
+      }
+    }
+  }
+}
