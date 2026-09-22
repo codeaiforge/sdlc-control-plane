@@ -71,7 +71,12 @@ function resolveRef(ref, document, pointer) {
     ref.includes('/', REF_PREFIX.length)
   )
     throw new Error(`unsupported $ref ${JSON.stringify(ref)} at ${pointer}`);
-  const target = document?.components?.schemas?.[ref.slice(REF_PREFIX.length)];
+  // Object.hasOwn, not a plain index: "#/components/schemas/__proto__" would otherwise
+  // resolve to Object.prototype, whose own enumerable keys are none, so it would pass
+  // assertSchemaSupported as a valid zero-keyword schema and then accept any value at all.
+  const schemas = isObject(document?.components?.schemas) ? document.components.schemas : {};
+  const name = ref.slice(REF_PREFIX.length);
+  const target = Object.hasOwn(schemas, name) ? schemas[name] : undefined;
   if (target === undefined)
     throw new Error(`unresolvable $ref ${JSON.stringify(ref)} at ${pointer}`);
   return target;
@@ -170,7 +175,12 @@ function checkObject(value, schema, document, path, errors) {
     if (!Object.hasOwn(value, name)) errors.push(at(path, `missing required property "${name}"`));
   }
   for (const [name, entry] of Object.entries(value)) {
-    const child = properties[name];
+    // Object.hasOwn, not a plain index: a body key naming an Object.prototype member
+    // ("constructor", "valueOf", "hasOwnProperty", ...) would otherwise resolve to a
+    // function, read as !== undefined, and so be neither reported against
+    // additionalProperties: false nor checked as a value. Ten of the twelve published
+    // schemas are closed, so that bypass would void the document's strongest claim.
+    const child = Object.hasOwn(properties, name) ? properties[name] : undefined;
     if (child !== undefined) {
       check(entry, child, document, path === '' ? name : `${path}.${name}`, errors);
       continue;

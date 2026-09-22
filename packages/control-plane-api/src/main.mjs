@@ -7,9 +7,29 @@ import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 const workspaces = JSON.parse(
   readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url)),
 ).workspaces;
+// createRegistry validates every registration at load and throws; the policy was the one
+// configuration loaded unchecked. openapi.json requires policy_id on an accepted decision
+// because an acceptance that names no approved policy is not traceable (FR-3.1, NFR-6.1), and
+// evaluateGuardrails passes policy.policy_id straight through - so an unvalidated policy file
+// makes the seam emit a 202 its own published schema rejects. Fail at startup instead.
+export function assertUsablePolicy(candidate) {
+  const errors = [];
+  if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))
+    return ['policy must be an object'];
+  if (candidate.policy_version !== 'guardrails/0')
+    errors.push('policy_version must be guardrails/0');
+  if (typeof candidate.policy_id !== 'string' || candidate.policy_id.length === 0)
+    errors.push('policy_id must be a non-empty string');
+  return errors;
+}
+
 const policy = JSON.parse(
   readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
 );
+const policyErrors = assertUsablePolicy(policy);
+if (policyErrors.length > 0)
+  throw new Error(`unusable guardrail policy: ${policyErrors.join('; ')}`);
+
 const registry = createRegistry(workspaces);
 const evidence = [];
 
@@ -42,15 +62,21 @@ export const routes = [
     method: 'POST',
     path: '/v1/evidence',
     handle: async ({ policy, evidence }, request, response) => {
-      let raw = '';
-      for await (const chunk of request) raw += chunk;
-      // The try spans both the parse and the evaluation, exactly as it did before the table
-      // existed. Narrowing it to JSON.parse would change what an evaluator fault puts on the
-      // wire: today a throw from evaluateGuardrails is answered with the documented 400
-      // envelope, whereas narrowed it would escape the handler, reject the returned promise
-      // and leave the caller with no response at all. That is a contract change, not a tidy-up.
+      // The try spans the body read, the parse and the evaluation. Narrowing it would change
+      // what a fault puts on the wire: a throw inside this span is answered with the
+      // documented 400 envelope, whereas outside it the throw escapes the handler, rejects
+      // the returned promise and leaves the caller with no response at all. The body read is
+      // inside for that reason and not only for tidiness — a client that opens a POST and
+      // drops the socket makes `for await` throw, and an unhandled rejection there terminates
+      // the process under Node's default behaviour, which `nx serve` runs with.
       try {
-        const record = JSON.parse(raw);
+        // Concat then decode once: `raw += chunk` stringifies each Buffer independently, so a
+        // multi-byte character straddling a chunk boundary becomes U+FFFD. The record still
+        // parses and still satisfies every published schema, so no contract check can catch it
+        // - it is silent corruption of the change_id that ties evidence to a change.
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const record = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         const decision = evaluateGuardrails(record, policy);
         if (!decision.accepted) return send(response, 422, { decision });
         evidence.push(Object.freeze(record));

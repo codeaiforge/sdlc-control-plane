@@ -209,3 +209,52 @@ test('the documented 202 rejects a decision that is not an acceptance', () => {
   assert.equal(ok, false);
   assert.deepEqual(errors, ['decision.accepted: expected one of [true], got false']);
 });
+
+// Regression — Phase 4 review of task 1.1 found both lookups reachable through the
+// prototype chain, which voided additionalProperties: false on ten of the twelve published
+// schemas and turned a bad $ref into a permissive any-schema. Fixing without pinning would
+// leave the next refactor free to reintroduce it.
+test('a prototype key cannot slip past additionalProperties: false', () => {
+  const schema = {
+    type: 'object',
+    properties: { a: { type: 'string' } },
+    additionalProperties: false,
+  };
+  for (const key of [
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+    'toString',
+    'isPrototypeOf',
+    '__proto__',
+  ]) {
+    const { ok, errors } = validateAgainstSchema({ a: 'x', [key]: 'pwned' }, schema, {});
+    assert.equal(ok, false, `${key} was accepted as a known property`);
+    assert.deepEqual(errors, [`unexpected property "${key}"`]);
+  }
+  assert.equal(validateAgainstSchema({ a: 'x' }, schema, {}).ok, true);
+});
+
+test('a prototype key is checked as a value when the schema does declare it', () => {
+  const schema = {
+    type: 'object',
+    properties: { constructor: { type: 'string' } },
+    additionalProperties: false,
+  };
+  assert.equal(validateAgainstSchema({ constructor: 'fine' }, schema, {}).ok, true);
+  assert.deepEqual(validateAgainstSchema({ constructor: 7 }, schema, {}).errors, [
+    'constructor: expected string, got number',
+  ]);
+});
+
+test('a $ref naming a prototype member is unresolvable, not an any-schema', () => {
+  const document = { components: { schemas: { Real: { type: 'string' } } } };
+  for (const name of ['__proto__', 'constructor', 'toString']) {
+    assert.throws(
+      () => assertSchemaSupported({ $ref: `#/components/schemas/${name}` }, document),
+      /unresolvable \$ref/,
+      `${name} resolved instead of throwing`,
+    );
+  }
+  assert.doesNotThrow(() => assertSchemaSupported({ $ref: '#/components/schemas/Real' }, document));
+});

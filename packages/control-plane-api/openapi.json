@@ -16,7 +16,9 @@
     "description": "OpenAPI has no vocabulary for 'every request I did not declare', and attaching a 404 to each declared operation would be a lie: no declared operation in this document can answer 404. This extension records the real behaviour instead. Any request whose method and raw target do not match a declared operation exactly is answered with this status and this body - including a documented path carrying a query string, and a documented path addressed with an undeclared method.",
     "content": {
       "application/json": {
-        "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+        "schema": {
+          "$ref": "#/components/schemas/ErrorResponse"
+        }
       }
     }
   },
@@ -32,7 +34,9 @@
             "description": "The process is serving requests.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -50,7 +54,9 @@
             "description": "Every registered workspace, sorted by workspace_id.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/WorkspaceListResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceListResponse"
+                }
               }
             }
           }
@@ -68,7 +74,9 @@
             "description": "A descriptive summary of the evidence accepted so far.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/IndicatorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/IndicatorResponse"
+                }
               }
             }
           }
@@ -86,7 +94,9 @@
           "description": "An evidence/0 record. The request content-type is never inspected and there is no 415: any body that JSON.parse accepts is processed, whatever it is labelled. A body that JSON.parse rejects is a 400.",
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/EvidenceRecord" }
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceRecord"
+              }
             }
           }
         },
@@ -95,7 +105,9 @@
             "description": "The record satisfied both the evidence/0 contract and the approved policy, and has been stored and counted. The decision in the body is final and was made before this response was written - see the 202 caveat in info.description.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/EvidenceAcceptedResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceAcceptedResponse"
+                }
               }
             }
           },
@@ -103,15 +115,19 @@
             "description": "The body is not parseable JSON, or evaluating it faulted. No policy disposition is claimed, because none was reached.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           },
           "422": {
-            "description": "The submission was not accepted. One status deliberately covers both unaccepted outcomes, and they are told apart by the disposition field rather than by the status code. disposition 'rejected' means the body failed the evidence/0 contract, so no policy was reached and no policy_id is present. disposition 'needs-remediation' means the body satisfied the contract but not the approved policy, and policy_id names the policy that decided it. In both cases reasons is non-empty and is the actionable part of the response.",
+            "description": "The submission was not accepted. One status deliberately covers both unaccepted outcomes, and they are told apart by the disposition field rather than by the status code. disposition 'rejected' means no policy was evaluated - either the body failed the evidence/0 contract, or the control plane's own configured policy is not a supported guardrails/0 policy - and no policy_id is present. A caller that sees 'rejected' should not assume the fault is in its own record; the reasons list says which it was. disposition 'needs-remediation' means the body satisfied the contract but not the approved policy, and policy_id names the policy that decided it. In both cases reasons is non-empty and is the actionable part of the response.",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/EvidenceUnacceptedResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceUnacceptedResponse"
+                }
               }
             }
           }
@@ -155,7 +171,9 @@
           "data": {
             "type": "array",
             "description": "Every registered workspace, sorted by workspace_id. Empty when nothing is registered.",
-            "items": { "$ref": "#/components/schemas/Workspace" }
+            "items": {
+              "$ref": "#/components/schemas/Workspace"
+            }
           }
         }
       },
@@ -202,7 +220,9 @@
             "type": "array",
             "minItems": 1,
             "description": "Accountable owners. The validator enforces that this is a non-empty array; the element type is documented from the registry contract rather than enforced here.",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "status": {
             "type": "string",
@@ -221,7 +241,9 @@
         "required": ["data"],
         "additionalProperties": false,
         "properties": {
-          "data": { "$ref": "#/components/schemas/IndicatorSummary" }
+          "data": {
+            "$ref": "#/components/schemas/IndicatorSummary"
+          }
         }
       },
       "IndicatorSummary": {
@@ -238,7 +260,9 @@
             "type": "integer",
             "description": "How many accepted records reported result.pass true."
           },
-          "by_tier": { "$ref": "#/components/schemas/TierCounts" },
+          "by_tier": {
+            "$ref": "#/components/schemas/TierCounts"
+          },
           "note": {
             "type": "string",
             "description": "The response carries its own disclaimer so the number cannot be quoted without it: this is a descriptive engineering indicator, not a portfolio decision or a compliance conclusion (FR-3.2). The wording is not pinned here; callers must not parse it."
@@ -251,10 +275,22 @@
         "required": ["T0", "T1", "T2", "T3"],
         "additionalProperties": false,
         "properties": {
-          "T0": { "type": "integer", "description": "Accepted records at tier T0." },
-          "T1": { "type": "integer", "description": "Accepted records at tier T1." },
-          "T2": { "type": "integer", "description": "Accepted records at tier T2." },
-          "T3": { "type": "integer", "description": "Accepted records at tier T3." }
+          "T0": {
+            "type": "integer",
+            "description": "Accepted records at tier T0."
+          },
+          "T1": {
+            "type": "integer",
+            "description": "Accepted records at tier T1."
+          },
+          "T2": {
+            "type": "integer",
+            "description": "Accepted records at tier T2."
+          },
+          "T3": {
+            "type": "integer",
+            "description": "Accepted records at tier T3."
+          }
         }
       },
       "EvidenceAcceptedResponse": {
@@ -263,7 +299,9 @@
         "required": ["decision"],
         "additionalProperties": false,
         "properties": {
-          "decision": { "$ref": "#/components/schemas/AcceptedDecision" }
+          "decision": {
+            "$ref": "#/components/schemas/AcceptedDecision"
+          }
         }
       },
       "AcceptedDecision": {
@@ -289,7 +327,9 @@
           "reasons": {
             "type": "array",
             "description": "Empty on an acceptance. The field is still present so a caller reads the same shape on every disposition.",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -299,7 +339,9 @@
         "required": ["decision"],
         "additionalProperties": false,
         "properties": {
-          "decision": { "$ref": "#/components/schemas/UnacceptedDecision" }
+          "decision": {
+            "$ref": "#/components/schemas/UnacceptedDecision"
+          }
         }
       },
       "UnacceptedDecision": {
@@ -316,23 +358,25 @@
           "disposition": {
             "type": "string",
             "enum": ["rejected", "needs-remediation"],
-            "description": "'rejected' is a contract failure: the body is not a supported evidence/0 record. 'needs-remediation' is a policy failure: the body is a valid record that the approved policy did not accept."
+            "description": "'rejected' means no policy was evaluated: either the body is not a supported evidence/0 record, or the configured guardrail policy is itself unsupported, which is the control plane's fault and not the caller's. 'needs-remediation' is a policy failure: the body is a valid record that the approved policy did not accept."
           },
           "policy_id": {
             "type": "string",
-            "description": "Present only when a policy was actually evaluated, which is exactly the 'needs-remediation' case."
+            "description": "Present only when a policy was actually evaluated, which is exactly the 'needs-remediation' case. Absent on 'rejected', including when the configured policy was the thing found unsupported."
           },
           "reasons": {
             "type": "array",
             "minItems": 1,
             "description": "Why the submission was not accepted. Never empty on this response - an unaccepted submission without a reason would not be actionable (FR-2.2).",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
       "EvidenceRecord": {
         "type": "object",
-        "description": "Open, at every level: this is the additive tolerance NFR-1.1 requires. evidence/0 is an external, experimental upstream contract, and the control plane recognises only the minimum stable subset listed here. An unrecognised field is carried, not an error; an unsupported major version is rejected rather than coerced. The required list and the constraints below are exactly what the contract validator enforces - no more, so that a caller cannot read a guarantee out of this document that the seam does not make.",
+        "description": "Open, at every level: this is the additive tolerance NFR-1.1 requires. evidence/0 is an external, experimental upstream contract, and the control plane recognises only the minimum stable subset listed here. An unrecognised field is carried, not an error; an unsupported major version is rejected rather than coerced. The required list is exactly what the contract validator enforces. Some optional fields and element types below are documented from the upstream contract rather than enforced here, and each says so on itself - so a caller can tell, field by field, which constraints the seam will actually hold it to.",
         "required": [
           "schema_version",
           "change_id",
@@ -374,7 +418,9 @@
           "affected_set": {
             "type": "array",
             "description": "The paths or components the change touched. The validator enforces only that this is an array; the element type is documented from the upstream contract rather than enforced here.",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "tool": {
             "type": "object",
@@ -382,7 +428,11 @@
             "required": ["name", "version"],
             "additionalProperties": true,
             "properties": {
-              "name": { "type": "string", "minLength": 1, "description": "Producing tool name." },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Producing tool name."
+              },
               "version": {
                 "type": "string",
                 "minLength": 1,
@@ -399,7 +449,9 @@
               "verified": {
                 "type": "array",
                 "description": "Control identifiers the tool verified, which the approved policy's required-control list is checked against. The validator enforces only that this is an array.",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -417,12 +469,12 @@
           },
           "ai_assisted": {
             "type": "boolean",
-            "description": "Whether the change was AI-assisted. Optional, but when it is true the approved policy may require ai_tool, and a record that omits it then receives needs-remediation (FR-3.1)."
+            "description": "Whether the change was AI-assisted. Optional, but when it is true the approved policy may require ai_tool, and a record that omits it then receives needs-remediation (FR-3.1). The type is documented from the upstream contract rather than enforced here: the validator does not inspect this field, and the policy reads it for truthiness, so a non-empty string is read as assisted."
           },
           "ai_tool": {
             "type": "string",
             "minLength": 1,
-            "description": "Which AI tool assisted the change. The provenance that makes ai_assisted auditable rather than a bare flag; an empty string counts as absent."
+            "description": "Which AI tool assisted the change. An empty string counts as absent, which is why minLength is 1. The provenance that makes ai_assisted auditable rather than a bare flag. The type is documented from the upstream contract rather than enforced here: the validator does not inspect this field, and the policy tests it only for truthiness, so a non-string value satisfies the provenance rule today. Named as a known weakness rather than left to be discovered - see the Sprint 1 progress record."
           }
         }
       }

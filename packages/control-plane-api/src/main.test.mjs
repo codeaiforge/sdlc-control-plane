@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createRequestHandler } from './main.mjs';
+import { readFileSync } from 'node:fs';
+import { assertUsablePolicy, createRequestHandler } from './main.mjs';
 
 const policy = {
   policy_version: 'guardrails/0',
@@ -118,4 +119,69 @@ test('an unknown path is a 404, not a silent success', async () => {
   const { status, body } = await call(seam(), { method: 'GET', url: '/v1/nope' });
   assert.equal(status, 404);
   assert.deepEqual(body, { error: 'not found' });
+});
+
+// Regression — Phase 4 review of task 1.1 found the body read sitting outside the try, so a
+// client that opened a POST and dropped the socket made `for await` throw, rejected the
+// handler's promise, and terminated the process under Node's default unhandled-rejection
+// behaviour. Driving the throw through the iterator reproduces the rejection without a socket.
+test('a body stream that aborts mid-read is answered, not left to reject', async () => {
+  const aborting = {
+    method: 'POST',
+    url: '/v1/evidence',
+    async *[Symbol.asyncIterator]() {
+      yield '{"partial":';
+      throw Object.assign(new Error('aborted'), { code: 'ECONNRESET' });
+    },
+  };
+  const { status, body } = await call(seam(), aborting);
+  assert.equal(status, 400);
+  assert.deepEqual(body, { error: 'request body must be valid JSON' });
+});
+
+// Regression — Phase 4 cycle 2 found the guardrail policy was the one configuration loaded
+// without validation, so a policy file missing policy_id made the seam emit a 202 that its own
+// published schema rejects, and an unsupported policy version made a valid record come back as
+// disposition "rejected" - telling the caller its evidence was malformed when the fault was ours.
+test('a policy that cannot honour the published contract is refused at load', () => {
+  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0', policy_id: 'p@1' }), []);
+  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0' }), [
+    'policy_id must be a non-empty string',
+  ]);
+  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0', policy_id: '' }), [
+    'policy_id must be a non-empty string',
+  ]);
+  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/1', policy_id: 'p@1' }), [
+    'policy_version must be guardrails/0',
+  ]);
+  assert.deepEqual(assertUsablePolicy(null), ['policy must be an object']);
+  assert.deepEqual(assertUsablePolicy([]), ['policy must be an object']);
+});
+
+test('the shipped guardrail policy satisfies that guard', () => {
+  const shipped = JSON.parse(
+    readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
+  );
+  assert.deepEqual(assertUsablePolicy(shipped), []);
+});
+
+// Regression — Phase 4 cycle 2 found `raw += chunk` stringified each Buffer independently, so a
+// multi-byte character split across a chunk boundary became U+FFFD. The record still parsed and
+// still satisfied every published schema, so no contract check could ever catch it.
+test('a multi-byte character split across body chunks is not corrupted', async () => {
+  const record = { ...validEvidence, change_id: 'PR-é-☃' };
+  const body = Buffer.from(JSON.stringify(record), 'utf8');
+  const split = body.indexOf(Buffer.from('é', 'utf8')) + 1;
+  const evidence = [];
+  const handler = createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+  const { status } = await call(handler, {
+    method: 'POST',
+    url: '/v1/evidence',
+    async *[Symbol.asyncIterator]() {
+      yield body.subarray(0, split);
+      yield body.subarray(split);
+    },
+  });
+  assert.equal(status, 202);
+  assert.equal(evidence[0].change_id, 'PR-é-☃');
 });
