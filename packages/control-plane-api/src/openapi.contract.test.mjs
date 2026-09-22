@@ -345,3 +345,75 @@ test('divergence: the 202 is synchronous, so it promises nothing about later wor
     'the record is already stored when the response is written; nothing is queued',
   );
 });
+
+// Phase 4 cycle 3 found the drift protection above to be one-directional. Every request-schema
+// assertion was of the form "this fixture conforms" or "this fixture does not", so a constraint
+// the document DROPPED was a constraint nothing missed: reducing EvidenceRecord.required to
+// ["schema_version"], deleting a minLength, removing policy_id from AcceptedDecision and widening
+// the health enum all left the suite green, while the weakened document declared records valid
+// that the seam answers 422 to. The tests below close that direction by deriving the cases from
+// the document itself, so a relaxed constraint has nothing left to hide behind.
+
+// recordSchema is a $ref; validateAgainstSchema resolves it internally, but introspecting the
+// document's own constraints needs the resolved node.
+const evidenceSchema = document.components.schemas.EvidenceRecord;
+
+test('every required evidence field the document names is one the seam also requires', async () => {
+  const required = evidenceSchema.required;
+  assert.ok(
+    required.length >= 9,
+    'EvidenceRecord.required has been relaxed below the enforced set',
+  );
+  for (const field of required) {
+    const { [field]: _dropped, ...withoutField } = validEvidence;
+    assert.equal(
+      conforms(withoutField, recordSchema).ok,
+      false,
+      `document accepts a record missing "${field}"`,
+    );
+    const { status, body } = await call(seam(), post(JSON.stringify(withoutField)));
+    assert.equal(status, 422, `seam accepted a record missing "${field}"`);
+    assert.equal(body.decision.disposition, 'rejected');
+  }
+});
+
+test('every minLength the document claims on an evidence field is one the seam also rejects', async () => {
+  const constrained = Object.entries(evidenceSchema.properties).filter(
+    ([name, schema]) => schema.minLength === 1 && evidenceSchema.required.includes(name),
+  );
+  assert.ok(constrained.length >= 3, 'the minLength constraints have been relaxed');
+  for (const [field] of constrained) {
+    const emptied = { ...validEvidence, [field]: '' };
+    assert.equal(conforms(emptied, recordSchema).ok, false, `document accepts empty "${field}"`);
+    const { status, body } = await call(seam(), post(JSON.stringify(emptied)));
+    assert.equal(status, 422, `seam accepted empty "${field}"`);
+    assert.equal(body.decision.disposition, 'rejected');
+  }
+});
+
+test('every enum the document claims on an evidence field is one the seam also enforces', async () => {
+  const enums = Object.entries(evidenceSchema.properties).filter(([, schema]) =>
+    Array.isArray(schema.enum),
+  );
+  assert.deepEqual(
+    sorted(enums.map(([name]) => name)),
+    ['schema_version', 'tier'],
+    'the documented evidence enums have changed',
+  );
+  for (const [field, schema] of enums) {
+    const offEnum = { ...validEvidence, [field]: `${schema.enum[0]}-not-a-member` };
+    assert.equal(conforms(offEnum, recordSchema).ok, false, `document accepts off-enum "${field}"`);
+    const { status, body } = await call(seam(), post(JSON.stringify(offEnum)));
+    assert.equal(status, 422, `seam accepted off-enum "${field}"`);
+    assert.equal(body.decision.disposition, 'rejected');
+  }
+});
+
+test('the accepted decision still names the policy that granted it', () => {
+  // policy_id is what makes an acceptance traceable to an approved decision (FR-3.1, NFR-6.1),
+  // and dropping it from required was one of the relaxations cycle 3 slipped past the suite.
+  const accepted = document.components.schemas.AcceptedDecision;
+  assert.ok(accepted.required.includes('policy_id'));
+  assert.equal(accepted.additionalProperties, false);
+  assert.equal(document.components.schemas.HealthResponse.properties.status.enum.length, 1);
+});
