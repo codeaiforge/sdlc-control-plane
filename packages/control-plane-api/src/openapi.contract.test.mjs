@@ -447,7 +447,7 @@ test('divergence: a record too deep to project is refused, and never reaches the
 // not observable on the wire. evaluateGuardrails reads policy.policy_version first, so a getter on
 // it records whether policy was reached at all. If this fails, the seam is computing a disposition
 // for a record it cannot store, which is how an acceptance gets granted and then lost.
-test('policy is never evaluated for a record the store cannot hold', async () => {
+test('a record well past the serialiser limit is refused before policy is evaluated', async () => {
   const depth = 6000;
   const body =
     '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
@@ -475,6 +475,12 @@ test('policy is never evaluated for a record the store cannot hold', async () =>
   const { status } = await call(handler, post(body));
   assert.equal(status, 400);
   assert.equal(policyRead, false, 'the policy was evaluated for a record that cannot be stored');
+  // Not a universal, and the difference matters. The seam projects and then append projects
+  // again one stack frame deeper, so there is a narrow band - about seven levels wide on this
+  // runtime - where the first projection fits and the second does not, and policy IS evaluated
+  // for a record that is then refused. The wire outcome is identical at every depth (400,
+  // nothing stored) and evaluateGuardrails is pure, so no acceptance escapes; what fails inside
+  // the band is the ordering claim, not the behaviour. This fixture sits well clear of it.
 
   // The same watcher must see a storable record reach policy, or the test proves nothing.
   policyRead = false;

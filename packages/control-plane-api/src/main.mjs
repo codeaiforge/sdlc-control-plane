@@ -88,7 +88,7 @@ export const routes = [
         project(record);
         const decision = evaluateGuardrails(record, policy);
         if (!decision.accepted) return send(response, 422, { decision });
-        evidenceStore.append(record);
+        evidenceStore.append(record, { policy_id: decision.policy_id ?? null });
         return send(response, 202, { decision });
       } catch {
         return send(response, 400, { error: 'request body must be valid JSON' });

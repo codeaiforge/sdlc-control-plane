@@ -63,6 +63,7 @@ test('the envelope version is the one the port exports', () => {
     'workspace_id',
     'received_at',
     'idempotency_key',
+    'policy_id',
     'evidence',
   ]);
 });

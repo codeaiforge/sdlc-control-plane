@@ -64,6 +64,8 @@ CREATE TABLE evidence_envelope (
                                            -- null workspace claims no uniqueness with no app code.
   change_id        text        NOT NULL,
   received_at      timestamptz NOT NULL,   -- the control plane's clock, never the submitter's
+  policy_id        text,                   -- the approved policy that granted the acceptance;
+                                           -- NULL only where no policy was named (NFR-6.1)
   evidence         jsonb,                  -- NULL once redacted; see Expiry behaviour
   redacted_at      timestamptz,
   UNIQUE (workspace_id, change_id)
@@ -227,6 +229,14 @@ that path tiers `critical` in the component map, so a change to it goes through 
 "Who changed the policy, when, and with what approval" is answerable from the commit history,
 without the control plane storing anything.
 
+The envelope also carries **`policy_id`, the approved policy that granted the acceptance**. NFR-6.1's
+first clause is "retain the approving decision reference", and `openapi.json` already requires
+`policy_id` on an accepted decision because an acceptance naming no approved policy is not
+traceable. Without that column a stored record could say _when_ it was accepted but not _under
+which policy_, and since `config/control-plane/guardrails.json` can change between two appends the
+answer would not be recoverable from the record afterwards — only inferable from `received_at` and
+the commit history. It is `NULL` only where no policy was named, never guessed.
+
 Two limits must be said plainly rather than left for a reader to discover.
 
 **It is not signature-grade.** Commits in this repository are unsigned today - `git log
@@ -374,9 +384,15 @@ Sprint 2 may start on top of it.
   the evidence route spans the body read, the parse and the evaluation, and answers any throw
   with the documented 400 envelope, `{"error": "request body must be valid JSON"}`. A store that
   throws would therefore blame the caller's body for the control plane's own fault. It is
-  unreachable today — the in-memory adapter throws only on preconditions the seam has already
-  validated — but 2.2 must close it with a store-failure status, since a database is the first
-  thing in this path that can fail for reasons the caller did not cause.
+  almost unreachable today: the seam projects the record before evaluating policy, so a record it
+  cannot store is refused before any acceptance is computed. The exception is a narrow band — about
+  seven nesting levels wide on the current runtime — where the seam's projection fits and the
+  store's, one stack frame deeper, does not. Inside that band policy is evaluated for a record that
+  is then refused. No acceptance escapes, because the wire outcome is identical at every depth and
+  `evaluateGuardrails` is pure; what fails in the band is the ordering, not the behaviour. 2.2 must
+  close the whole class with a store-failure status, since a database is the first thing in this
+  path that can fail for reasons the caller did not cause, and should reuse the seam's projection
+  rather than recomputing it if it wants the band gone as well.
 - The in-memory adapter compares the **projection string** to tell `duplicate` from `conflict`,
   while PostgreSQL's `jsonb` comparison normalises key order. Two bodies differing only in key
   order are a conflict in memory and a duplicate in Postgres. The conformance suite does not pin

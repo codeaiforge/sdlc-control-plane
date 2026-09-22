@@ -266,6 +266,19 @@ export function describeEvidenceStore(name, createStore) {
     assert.notEqual(typeof records.then, 'function');
   });
 
+  // NFR-6.1's first clause is "retain the approving decision reference". A store that keeps the
+  // record but not the policy that accepted it can say when evidence arrived and not under which
+  // approved policy - and guardrails.json is editable between two appends, so the answer is not
+  // recoverable from the record alone afterwards. 2.2's adapter must carry this column.
+  test(`${name}: the approving policy is retained with the record`, async (t) => {
+    const store = await openStore(t, createStore);
+    await store.append(evidenceRecord(), { policy_id: 'baseline-engineering-controls@1' });
+    await store.append({ ...evidenceRecord(), change_id: 'PR-2' });
+    const [first, second] = await store.list();
+    assert.equal(first.policy_id, 'baseline-engineering-controls@1');
+    assert.equal(second.policy_id, null, 'absent rather than guessed when no policy is named');
+  });
+
   test(`${name}: every envelope declares the envelope version`, async (t) => {
     // The literal is spelled out rather than imported: a version bump in the module under test
     // is exactly what this assertion exists to notice.

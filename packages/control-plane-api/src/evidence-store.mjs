@@ -58,7 +58,7 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
   // The port does not re-validate `evidence/0` — that is the contracts package's job and the
   // seam does it before calling here. These three preconditions are the store's own: it cannot
   // key a record it cannot read, and it must not half-store one it then refuses.
-  function append(record, { workspace_id = null, received_at } = {}) {
+  function append(record, { workspace_id = null, received_at, policy_id = null } = {}) {
     if (!isObject(record)) throw new TypeError('evidence record must be an object');
     const { text, value } = project(record);
     if (!hasString(value, 'change_id'))
@@ -95,6 +95,12 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
       // backdate itself out of the window or park a record outside it indefinitely.
       received_at: received_at ?? now(),
       idempotency_key: key,
+      // The approved policy that granted the acceptance. NFR-6.1's first clause is "retain the
+      // approving decision reference", and openapi.json already requires policy_id on an accepted
+      // decision because an acceptance naming no approved policy is not traceable. Without this
+      // slot the durable record could only answer *when* it was accepted, leaving *under which
+      // policy* to be inferred from the git history of config/control-plane/guardrails.json.
+      policy_id,
       evidence: value,
     });
     envelopes.push(envelope);
