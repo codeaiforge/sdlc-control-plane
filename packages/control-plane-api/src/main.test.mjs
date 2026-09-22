@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { assertUsablePolicy, createRequestHandler } from './main.mjs';
+import { createInMemoryEvidenceStore } from './evidence-store.mjs';
 
 const policy = {
   policy_version: 'guardrails/0',
@@ -35,8 +36,8 @@ const workspace = {
   status: 'active',
 };
 
-const seam = (evidence = []) =>
-  createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+const seam = (evidenceStore = createInMemoryEvidenceStore()) =>
+  createRequestHandler({ registry: { list: () => [workspace] }, policy, evidenceStore });
 
 const call = async (handler, request) => {
   let status;
@@ -96,8 +97,7 @@ test('rejects an unparseable body without claiming a policy disposition', async 
 });
 
 test('rejected evidence never reaches the indicator summary', async () => {
-  const evidence = [];
-  const handler = createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+  const handler = seam();
   await call(handler, post(JSON.stringify({ ...validEvidence, tier: 'T9' })));
   const { status, body } = await call(handler, { method: 'GET', url: '/v1/indicators' });
   assert.equal(status, 200);
@@ -106,8 +106,7 @@ test('rejected evidence never reaches the indicator summary', async () => {
 });
 
 test('counts accepted evidence by tier in the indicator summary', async () => {
-  const evidence = [];
-  const handler = createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+  const handler = seam();
   await call(handler, post(JSON.stringify(validEvidence)));
   const { body } = await call(handler, { method: 'GET', url: '/v1/indicators' });
   assert.equal(body.data.total_records, 1);
@@ -172,8 +171,8 @@ test('a multi-byte character split across body chunks is not corrupted', async (
   const record = { ...validEvidence, change_id: 'PR-é-☃' };
   const body = Buffer.from(JSON.stringify(record), 'utf8');
   const split = body.indexOf(Buffer.from('é', 'utf8')) + 1;
-  const evidence = [];
-  const handler = createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+  const store = createInMemoryEvidenceStore();
+  const handler = seam(store);
   const { status } = await call(handler, {
     method: 'POST',
     url: '/v1/evidence',
@@ -183,5 +182,22 @@ test('a multi-byte character split across body chunks is not corrupted', async (
     },
   });
   assert.equal(status, 202);
-  assert.equal(evidence[0].change_id, 'PR-é-☃');
+  assert.equal(store.list()[0].evidence.change_id, 'PR-é-☃');
+});
+
+// Regression — task 1.2. The seam used to store `Object.freeze(record)`, and Object.freeze is
+// shallow: `stored.result.pass = false` succeeded on an accepted record and flipped
+// passing_records from 1 to 0 in an indicator the control plane had already published. Nothing
+// in the request path could catch it, because the mutation happens after the 202 is written.
+test('a stored record cannot be edited into a different indicator', async () => {
+  const store = createInMemoryEvidenceStore();
+  const handler = seam(store);
+  await call(handler, post(JSON.stringify(validEvidence)));
+  assert.throws(() => {
+    store.list()[0].evidence.result.pass = false;
+  }, TypeError);
+  const { status, body } = await call(handler, { method: 'GET', url: '/v1/indicators' });
+  assert.equal(status, 200);
+  assert.equal(body.data.total_records, 1);
+  assert.equal(body.data.passing_records, 1);
 });

@@ -8,10 +8,10 @@
     "serve": { "command": "node packages/control-plane-api/src/main.mjs" },
     "test": { "command": "node --test packages/control-plane-api/src/*.test.mjs" },
     "typecheck": {
-      "command": "node --check packages/control-plane-api/src/main.mjs && node --check packages/control-plane-api/src/openapi-schema.mjs"
+      "command": "node --check packages/control-plane-api/src/main.mjs && node --check packages/control-plane-api/src/openapi-schema.mjs && node --check packages/control-plane-api/src/evidence-store.mjs"
     },
     "build": {
-      "command": "node --check packages/control-plane-api/src/main.mjs && node --check packages/control-plane-api/src/openapi-schema.mjs"
+      "command": "node --check packages/control-plane-api/src/main.mjs && node --check packages/control-plane-api/src/openapi-schema.mjs && node --check packages/control-plane-api/src/evidence-store.mjs"
     }
   }
 }

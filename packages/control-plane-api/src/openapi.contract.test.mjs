@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createRequestHandler, routes } from './main.mjs';
+import { createInMemoryEvidenceStore } from './evidence-store.mjs';
 import { validateAgainstSchema } from './openapi-schema.mjs';
 
 // openapi.json is read by URL rather than imported, so the workspace's Nx-edge control - which
@@ -76,8 +77,8 @@ const workspace = {
   status: 'active',
 };
 
-const seam = (evidence = []) =>
-  createRequestHandler({ registry: { list: () => [workspace] }, policy, evidence });
+const seam = (evidenceStore = createInMemoryEvidenceStore()) =>
+  createRequestHandler({ registry: { list: () => [workspace] }, policy, evidenceStore });
 
 const call = async (handler, request) => {
   let status;
@@ -301,11 +302,11 @@ test('invalid evidence (an unknown tier) is rejected and names no policy', async
 test('an unrecognised additive field satisfies the document and is still accepted (NFR-1.1)', async () => {
   const record = { ...validEvidence, upstream_addition: { added: 'in a later evidence version' } };
   assert.deepEqual(conforms(record, recordSchema).errors, []);
-  const evidence = [];
-  const { status, body } = await call(seam(evidence), post(JSON.stringify(record)));
+  const store = createInMemoryEvidenceStore();
+  const { status, body } = await call(seam(store), post(JSON.stringify(record)));
   assert.equal(status, 202);
   assert.equal(body.decision.disposition, 'accepted');
-  assert.equal(evidence.length, 1);
+  assert.equal(store.list().length, 1);
 });
 
 // Four divergence freezes. Each one is behaviour info.description admits to; freezing it here
@@ -327,20 +328,20 @@ test('divergence: an undeclared method on a documented path is a 404, never a 40
 });
 
 test('divergence: a JSON body labelled text/plain is accepted, because content-type is never read', async () => {
-  const evidence = [];
+  const store = createInMemoryEvidenceStore();
   const request = post(JSON.stringify(validEvidence), { 'content-type': 'text/plain' });
-  const { status, body } = await call(seam(evidence), request);
+  const { status, body } = await call(seam(store), request);
   assert.equal(status, 202);
   assert.equal(body.decision.disposition, 'accepted');
-  assert.equal(evidence.length, 1, 'there is no 415; the label is not inspected at all');
+  assert.equal(store.list().length, 1, 'there is no 415; the label is not inspected at all');
 });
 
 test('divergence: the 202 is synchronous, so it promises nothing about later work', async () => {
-  const evidence = [];
-  const { status } = await call(seam(evidence), post(JSON.stringify(validEvidence)));
+  const store = createInMemoryEvidenceStore();
+  const { status } = await call(seam(store), post(JSON.stringify(validEvidence)));
   assert.equal(status, 202);
   assert.equal(
-    evidence.length,
+    store.list().length,
     1,
     'the record is already stored when the response is written; nothing is queued',
   );

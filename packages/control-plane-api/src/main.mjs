@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { evaluateGuardrails } from '../../guardrail-policy/src/evaluate.mjs';
 import { summarizeEvidence } from '../../indicators/src/summarize.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
+import { createInMemoryEvidenceStore } from './evidence-store.mjs';
 
 const workspaces = JSON.parse(
   readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url)),
@@ -31,7 +32,10 @@ if (policyErrors.length > 0)
   throw new Error(`unusable guardrail policy: ${policyErrors.join('; ')}`);
 
 const registry = createRegistry(workspaces);
-const evidence = [];
+// One store per process, created at module scope exactly as the array it replaces was, so the
+// running service keeps the singleton it has today. createApp() takes an injection seam instead
+// of reaching for this binding, so a test can hold its own store without sharing this one.
+const defaultEvidenceStore = createInMemoryEvidenceStore();
 
 function send(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -55,13 +59,13 @@ export const routes = [
   {
     method: 'GET',
     path: '/v1/indicators',
-    handle: ({ evidence }, request, response) =>
-      send(response, 200, { data: summarizeEvidence(evidence) }),
+    handle: ({ evidenceStore }, request, response) =>
+      send(response, 200, { data: summarizeEvidence(evidenceStore.listRecords()) }),
   },
   {
     method: 'POST',
     path: '/v1/evidence',
-    handle: async ({ policy, evidence }, request, response) => {
+    handle: async ({ policy, evidenceStore }, request, response) => {
       // The try spans the body read, the parse and the evaluation. Narrowing it would change
       // what a fault puts on the wire: a throw inside this span is answered with the
       // documented 400 envelope, whereas outside it the throw escapes the handler, rejects
@@ -79,7 +83,7 @@ export const routes = [
         const record = JSON.parse(Buffer.concat(chunks).toString('utf8'));
         const decision = evaluateGuardrails(record, policy);
         if (!decision.accepted) return send(response, 422, { decision });
-        evidence.push(Object.freeze(record));
+        evidenceStore.append(record);
         return send(response, 202, { decision });
       } catch {
         return send(response, 400, { error: 'request body must be valid JSON' });
@@ -101,8 +105,8 @@ export function createRequestHandler(context) {
   };
 }
 
-export function createApp() {
-  return createServer(createRequestHandler({ registry, policy, evidence }));
+export function createApp({ evidenceStore = defaultEvidenceStore } = {}) {
+  return createServer(createRequestHandler({ registry, policy, evidenceStore }));
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
