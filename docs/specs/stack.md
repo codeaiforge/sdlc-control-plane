@@ -2,12 +2,12 @@
 
 ## Identity
 
-| Field                | Value                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------- |
-| Language             | Node.js 20+ / native ESM JavaScript                                                             |
-| Framework            | Node `http` composition seam; production framework and persistence adapter selected in Sprint 1 |
-| Nx plugin / executor | Explicit `project.json` command targets                                                         |
-| Package manager      | pnpm 10.15.1                                                                                    |
+| Field                | Value                                                                                                                                                                                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language             | Node.js 20+ / native ESM JavaScript                                                                                                                                                                                                 |
+| Framework            | Node `http` composition seam; production framework still unselected. Persistence adapter selected in Sprint 1: PostgreSQL 16+, per [ADR-0002](../adr/0002-append-only-evidence-envelope-log.md) — Proposed, pending Gate 2 approval |
+| Nx plugin / executor | Explicit `project.json` command targets                                                                                                                                                                                             |
+| Package manager      | pnpm 10.15.1                                                                                                                                                                                                                        |
 
 ## Commands
 
