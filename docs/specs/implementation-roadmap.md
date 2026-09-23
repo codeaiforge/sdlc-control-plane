@@ -74,7 +74,7 @@ Sprint 1, which is the first sprint executed through the pipeline.
 | 1         | 12       | Medium     | Four tasks at 3 SP each                | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner.                                                               |
 | 2         | 21       | **High**   | 2.1 OIDC (8) and 2.2 durable store (8) | **Over capacity** — 21 SP against a ~20 SP solo sprint, and the only sprint with two 8-SP tasks. Deferring 2.3 brings it to 16 SP. Both Musts are gated on human approval of the threat model. |
 | 3         | 13       | Medium     | 3.2 portfolio/ALM integration (8)      | Depends on an external integration owner who is not yet named. Absorbs 2.3 if it defers, taking the sprint to 18 SP.                                                                           |
-| **Total** | **59**   |            |                                        | Average 14 SP per sprint against ~20 SP solo capacity.                                                                                                                                         |
+| **Total** | **59**   |            |                                        | Average 14.75 SP per sprint against ~20 SP solo capacity.                                                                                                                                      |
 
 ### Task Priority (MoSCoW)
 

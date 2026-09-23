@@ -51,9 +51,13 @@ import { routes } from '../../packages/control-plane-api/src/main.mjs';
 // `routes` is imported from the seam rather than transcribed, so a route added there without a
 // boundary fails here. Importing main.mjs is safe and adds no graph edge: its listen is guarded
 // on process.argv[1] (main.mjs:117), and tools/ is not an Nx project, so graph-fidelity's import
-// scan (which reads only packages/*/src/) never sees it. Everything else is an inline literal
-// for the same reason - importing packages/contracts would take its fan-in from 2 to 3 and
-// permanently retier every change under a critical package.
+// scan (which reads only packages/*/src/) never sees it.
+//
+// Everything else is an inline literal, but NOT for a fan-in reason: since tools/ contributes no
+// edge, importing packages/contracts from here could not change its fan-in either, and an earlier
+// version of this comment claimed it could. The real reason is the one openapi.contract.test.mjs
+// records - a fixture imported from the package under test follows a version bump silently, which
+// is the drift these checks exist to notice.
 
 const DOC = 'docs/architecture/threat-model.md';
 const ROADMAP = 'docs/specs/implementation-roadmap.md';
@@ -349,6 +353,9 @@ test('T5 every ID referenced resolves, and every ID declared is referenced', () 
 
   // Boundary -> abuse, and the letters each abuse is indexed under.
   const indexedUnder = new Map();
+  // Which boundaries index each abuse case, so the abuse row's own Boundary cell can be held to
+  // one of them rather than to mere existence.
+  const indexingBoundaries = new Map();
   for (const row of boundaries) {
     const coverage = parseCoverage(row['STRIDE coverage']);
     if (!coverage) continue; // T4 reports the malformed cell; this test would only echo it.
@@ -362,6 +369,8 @@ test('T5 every ID referenced resolves, and every ID declared is referenced', () 
           );
         if (!indexedUnder.has(id)) indexedUnder.set(id, new Set());
         indexedUnder.get(id).add(letter);
+        if (!indexingBoundaries.has(id)) indexingBoundaries.set(id, new Set());
+        indexingBoundaries.get(id).add(row.ID);
       }
     }
   }
@@ -375,6 +384,17 @@ test('T5 every ID referenced resolves, and every ID declared is referenced', () 
       errors.push(
         `${row.ID} is declared but no trust boundary indexes it, so nothing says where it ` +
           `applies. Add ${row.ID} to the STRIDE coverage cell of the boundary it crosses.`,
+      );
+    // The Boundary cell must name a boundary that actually indexes this case, not merely one
+    // that exists. Checking only existence left the column decorative: every abuse case could be
+    // repointed at an unrelated boundary and the suite stayed green, which is the one-directional
+    // integrity this file's own header claims not to have.
+    const indexedBy = indexingBoundaries.get(row.ID);
+    if (indexedBy && !indexedBy.has(row.Boundary))
+      errors.push(
+        `${row.ID}: Boundary says "${row.Boundary}" but the STRIDE coverage that files this ` +
+          `case is on ${[...indexedBy].sort().join(', ')}. Point the row at a boundary that ` +
+          `indexes it, or index it under the boundary the row names.`,
       );
     else {
       const declared = row.STRIDE.split(',').map((value) => value.trim());
@@ -648,6 +668,45 @@ test('T9 a boundary conditional on ADR-0002 retires itself once that ADR is deci
 });
 
 // ---------------------------------------------------------------- T10: guards on the guard
+
+// Every assertion above checks that the document's *structure* holds together. None of them
+// required it to say anything: a review demonstrated an 88-line document with the letter "x" in
+// every descriptive cell, "n/a" in seven prose sections and a one-byte cap passing all ten. A
+// threat model that describes nothing is not a threat model, and "it parsed" is not the claim
+// this file exists to make. T7 already refused a blank "Why accepted"; this applies the same
+// rule to the three tables that had no content requirement at all.
+//
+// The bar is deliberately low - a short sentence clears it. It cannot tell a considered abuse
+// case from a plausible-sounding one, and nothing here should be read as claiming it can. What
+// it removes is the case where a cell says nothing whatsoever.
+const MIN_PROSE = 24;
+const PLACEHOLDER = /^(x+|n\/a|tbd|todo|-|\u2014|\.+|\?+)$/i;
+
+test('T11 the descriptive cells actually describe something', () => {
+  const errors = [];
+  const check = (rows, columns, table) => {
+    for (const row of rows) {
+      for (const column of columns) {
+        const value = (row[column] ?? '').trim();
+        if (PLACEHOLDER.test(value))
+          errors.push(
+            `${row.ID}: "${column}" is "${value}", which states nothing. A row whose ` +
+              `text is a placeholder passes every structural check here and tells a reader nothing.`,
+          );
+        else if (value.length < MIN_PROSE)
+          errors.push(
+            `${row.ID}: "${column}" is ${value.length} characters, under the ${MIN_PROSE} this ` +
+              `check requires. Describe it in a sentence, or remove the row.`,
+          );
+      }
+    }
+  };
+  check(boundaries, ['Boundary', 'Untrusted side', 'Trusted side', 'Assets crossing'], 'boundary');
+  check(abuses, ['Abuse case'], 'abuse case');
+  check(mitigations, ['Mitigation'], 'mitigation');
+  check(residuals, ['Residual risk'], 'residual risk');
+  assert.deepEqual(errors, [], errors.join('\n'));
+});
 
 test('T10 the parser behind every assertion above actually read the document', () => {
   for (const [name, table] of Object.entries(TABLES)) {
