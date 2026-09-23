@@ -6,3 +6,4 @@ coverage
 graph.json
 evidence.json
 tier.txt
+.vendor-patches

@@ -12,6 +12,7 @@
     "build": "pnpm nx run-many -t build",
     "typecheck": "pnpm nx run-many -t typecheck",
     "test:controls": "node --test tools/sdlc-controls/*.test.mjs && node tools/adr/check-numbering.mjs",
+    "vendor:drift": "node tools/vendor/drift.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
