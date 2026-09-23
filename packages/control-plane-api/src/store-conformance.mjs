@@ -145,6 +145,10 @@ export function describeEvidenceStore(name, createStore) {
     assert.equal(replay.key, first.key);
     assert.equal(replay.envelope.received_at, first.envelope.received_at);
     assert.equal((await store.list()).length, 1);
+    // Compared against what is actually stored, not only against the first return value: an
+    // adapter that fabricated a fresh envelope for the replay would satisfy every assertion
+    // above, since the fabrication would copy the fields they read.
+    assert.deepEqual(replay.envelope, (await store.list())[0]);
   });
 
   test(`${name}: the same key with a different body is a conflict and the first record stands`, async (t) => {
@@ -306,6 +310,20 @@ export function describeEvidenceStore(name, createStore) {
       first.payload_sha256,
       'a different body must not digest the same, or a conflict would read as a duplicate',
     );
+  });
+
+  // "Append-only is structural, not a convention" is ADR-0002's central claim. At the database
+  // layer that is a missing UPDATE grant; at this layer it is the absence of any method that
+  // could remove or rewrite a record. 2.2 writes its adapter against this suite, so without
+  // this an adapter carrying a destructive method would pass it unedited.
+  //
+  // The list is exact, not a denylist of scary names. Retention in 2.2 adds the one deliberate
+  // exception to append-only, so 2.2 will have to edit this line — which is the point: a new
+  // mutating method should not be able to appear without touching the file that documents why
+  // there are none.
+  test(`${name}: the port exposes no method that could remove or rewrite a record`, async (t) => {
+    const store = await openStore(t, createStore);
+    assert.deepEqual(Object.keys(store).sort(), ['append', 'list', 'listRecords']);
   });
 
   test(`${name}: every envelope declares the envelope version`, async (t) => {

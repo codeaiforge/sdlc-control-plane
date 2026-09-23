@@ -68,3 +68,26 @@ test('the envelope version is the one the port exports', () => {
     'evidence',
   ]);
 });
+
+// The portable suite can only compare a replay against what the store holds, because it has no
+// way to control a PostgreSQL adapter's clock. On this adapter both appends land in the same
+// millisecond, so an envelope fabricated for the replay and stamped with a fresh now() compares
+// equal on every field and the suite's assertions cannot see it. An advancing clock can, and
+// this is the adapter whose clock the test owns.
+test('a duplicate hands back the stored envelope, not one minted for the replay', () => {
+  let tick = 0;
+  const store = createInMemoryEvidenceStore({
+    now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString(),
+  });
+  const record = { schema_version: 'evidence/0', change_id: 'PR-1' };
+  const first = store.append(record, { workspace_id: 'payments-art' });
+  const replay = store.append(record, { workspace_id: 'payments-art' });
+  assert.equal(first.outcome, 'appended');
+  assert.equal(replay.outcome, 'duplicate');
+  assert.equal(replay.envelope.received_at, first.envelope.received_at);
+  assert.notEqual(
+    replay.envelope.received_at,
+    new Date(Date.UTC(2026, 0, 1, 0, 0, 1)).toISOString(),
+  );
+  assert.equal(store.list().length, 1);
+});

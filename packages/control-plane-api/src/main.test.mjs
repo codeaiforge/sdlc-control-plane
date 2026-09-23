@@ -189,6 +189,31 @@ test('a multi-byte character split across body chunks is not corrupted', async (
 // shallow: `stored.result.pass = false` succeeded on an accepted record and flipped
 // passing_records from 1 to 0 in an indicator the control plane had already published. Nothing
 // in the request path could catch it, because the mutation happens after the 202 is written.
+// The conformance suite pins that an envelope *can* carry policy_id and *can* take the
+// store's clock. Both are options at this call site, and no port test reaches a call site —
+// the suite calls append() with options of its own. So until this test existed, the seam
+// could stop passing either one and nothing would fail: NFR-6.1's approving decision
+// reference, and the audit boundary's "the control plane's clock, never the submitter's",
+// were conventions here rather than controls.
+test('the seam stores the approving policy and its own receipt time', async () => {
+  const store = createInMemoryEvidenceStore();
+  const backdated = { ...validEvidence, received_at: '1999-01-01T00:00:00.000Z' };
+  const { status, body } = await call(seam(store), post(JSON.stringify(backdated)));
+  assert.equal(status, 202);
+  const [envelope] = store.list();
+  assert.equal(envelope.policy_id, policy.policy_id);
+  assert.equal(
+    envelope.policy_id,
+    body.decision.policy_id,
+    'the stored policy is the one the caller was told granted the acceptance',
+  );
+  assert.notEqual(
+    envelope.received_at,
+    backdated.received_at,
+    'a submitter that sets its own receipt time would set its own retention clock',
+  );
+});
+
 test('a stored record cannot be edited into a different indicator', async () => {
   const store = createInMemoryEvidenceStore();
   const handler = seam(store);
