@@ -71,10 +71,10 @@ Sprint 1, which is the first sprint executed through the pipeline.
 | Sprint    | SP total | Risk level | Largest task                           | Notes                                                                                                                                                                                          |
 | --------- | -------- | ---------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0         | 13       | Low        | 0.1 Nx boundaries + control map (5)    | Complete. All four tasks landed and the exit gate is verified green.                                                                                                                           |
-| 1         | 9        | Medium     | Three tasks at 3 SP each               | Design-heavy: two of three tasks produce documents, not running code.                                                                                                                          |
+| 1         | 12       | Medium     | Four tasks at 3 SP each                | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner.                                                               |
 | 2         | 21       | **High**   | 2.1 OIDC (8) and 2.2 durable store (8) | **Over capacity** — 21 SP against a ~20 SP solo sprint, and the only sprint with two 8-SP tasks. Deferring 2.3 brings it to 16 SP. Both Musts are gated on human approval of the threat model. |
 | 3         | 13       | Medium     | 3.2 portfolio/ALM integration (8)      | Depends on an external integration owner who is not yet named. Absorbs 2.3 if it defers, taking the sprint to 18 SP.                                                                           |
-| **Total** | **56**   |            |                                        | Average 14 SP per sprint against ~20 SP solo capacity.                                                                                                                                         |
+| **Total** | **59**   |            |                                        | Average 14 SP per sprint against ~20 SP solo capacity.                                                                                                                                         |
 
 ### Task Priority (MoSCoW)
 
@@ -140,20 +140,22 @@ A governed workspace can read a published contract, post an evidence record agai
 
 **Deliverables:**
 
-| #   | Task                                                    | SP  | Priority | Layer    | Depends on | Trace            | Done when                                                                               |
-| --- | ------------------------------------------------------- | --- | -------- | -------- | ---------- | ---------------- | --------------------------------------------------------------------------------------- |
-| 1.1 | Define OpenAPI and error-response contract              | 3   | Must     | api      | 0.4        | FR-2.1, FR-2.2   | Contract tests exercise accepted, invalid, and incompatible evidence responses.         |
-| 1.2 | Add append-only persistence port and idempotency design | 3   | Must     | database | 0.2        | NFR-3.1, NFR-6.1 | ADR identifies the store, idempotency key, retention, and audit-event boundary.         |
-| 1.3 | Threat-model evidence ingress and policy administration | 3   | Must     | api+auth | 1.1        | NFR-2.1, NFR-6.1 | Threat model identifies trust boundaries, abuse cases, mitigations, and residual risks. |
+| #   | Task                                                    | SP  | Priority | Layer    | Depends on | Trace            | Done when                                                                                                          |
+| --- | ------------------------------------------------------- | --- | -------- | -------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1.1 | Define OpenAPI and error-response contract              | 3   | Must     | api      | 0.4        | FR-2.1, FR-2.2   | Contract tests exercise accepted, invalid, and incompatible evidence responses.                                    |
+| 1.2 | Add append-only persistence port and idempotency design | 3   | Must     | database | 0.2        | NFR-3.1, NFR-6.1 | ADR identifies the store, idempotency key, retention, and audit-event boundary.                                    |
+| 1.3 | Threat-model evidence ingress and policy administration | 3   | Must     | api+auth | 1.1        | NFR-2.1, NFR-6.1 | Threat model identifies trust boundaries, abuse cases, mitigations, and residual risks.                            |
+| 1.4 | Select OIDC issuer and authorization model              | 3   | Must     | auth     | 1.3        | NFR-2.1          | A named OIDC issuer and an authorization model binding a principal to a registered workspace, approved by a human. |
 
-**Sprint total: 9 SP** — Medium risk. Two of three tasks produce documents whose quality is not verifiable by a test run; 1.3 carries an NFR-6.1 trace and therefore a tier override.
+**Sprint total: 12 SP** — Medium risk. Three of four tasks produce documents whose quality is not verifiable by a test run; 1.3 carries an NFR-6.1 trace and therefore a tier override. **1.4 was added on 2026-09-23**, during 1.3's Phase ①: Gate 2 requires "a named OIDC issuer and authorization model approved" before Sprint 2 implementation, and the only task that would have produced it was 2.1 — inside the sprint the gate guards. Sprint 1 had the capacity; the gate signal had no owner.
 
 **Execution waves:**
 
-| Wave | Tasks    | Rationale                                                                                             |
-| ---- | -------- | ----------------------------------------------------------------------------------------------------- |
-| 1    | 1.1, 1.2 | Both depend only on completed Sprint 0 tasks and touch different layers, so they can run in parallel. |
-| 2    | 1.3      | Unblocked by 1.1 — the threat model needs the published ingress contract to model against.            |
+| Wave | Tasks    | Rationale                                                                                               |
+| ---- | -------- | ------------------------------------------------------------------------------------------------------- |
+| 1    | 1.1, 1.2 | Both depend only on completed Sprint 0 tasks and touch different layers, so they can run in parallel.   |
+| 2    | 1.3      | Unblocked by 1.1 — the threat model needs the published ingress contract to model against.              |
+| 3    | 1.4      | Depends on 1.3 — the authorization model is chosen against the trust boundaries the threat model names. |
 
 **Risk checkpoint:**
 
@@ -278,7 +280,7 @@ If no integration owner is named by sprint start, 3.2 drops rather than proceedi
 | Signal             | Go                                                                                    | No-go                                 |
 | ------------------ | ------------------------------------------------------------------------------------- | ------------------------------------- |
 | Threat model       | Trust boundaries, abuse cases, mitigations and residual risks documented and reviewed | Residual risks unlisted or unreviewed |
-| Identity selection | A named OIDC issuer and authorization model approved                                  | Selection still open                  |
+| Identity selection | A named OIDC issuer and authorization model approved — task **1.4**                   | Selection still open                  |
 | Store selection    | 1.2's ADR names store, idempotency key and retention                                  | ADR absent or does not name all three |
 
 **No-go actions**: Sprint 2 does not start. This gate is explicitly human — no automated check substitutes for the approval, per NFR-6.1.

@@ -13,6 +13,7 @@
 | 1.1 | Define OpenAPI and error-response contract              | Done        | `feat/1.1-openapi-error-contract` — `openapi.json` published and held to the seam by two-sided contract tests. 3 review cycles, 9 Blockers fixed.                                                                                                      |
 | 1.2 | Add append-only persistence port and idempotency design | Done        | `feat/1.2-persistence-port-idempotency` — ADR-0002 (Proposed) plus an evidence port and a portable conformance suite 2.2 writes its adapter against. 3 review cycles + 1 authorised round, 11 Blockers fixed; Phase ⑧ failed once and was re-verified. |
 | 1.3 | Threat-model evidence ingress and policy administration | Not started | Wave 2 — blocked on 1.1, which is now complete. Carries an NFR-6.1 trace, so it tiers up to Complex regardless of its 3 SP.                                                                                                                            |
+| 1.4 | Select OIDC issuer and authorization model              | Not started | Added 2026-09-23 during 1.3's Phase ①. Gate 2 requires a named OIDC issuer and authorization model approved before Sprint 2 implementation, and the only task producing it was 2.1 — inside the sprint the gate guards. Depends on 1.3.                |
 
 ## Additional Work Completed (not in roadmap)
 
@@ -23,10 +24,10 @@
 
 ## Summary
 
-- **Done**: 2 / 3 tasks
-- **In progress**: 0 / 3 tasks
-- **Not started**: 1 / 3 tasks
-- **Story points completed**: 6 / 9 SP
+- **Done**: 2 / 4 tasks
+- **In progress**: 1 / 4 tasks — 1.3, Phase ④ (Review)
+- **Not started**: 2 / 4 tasks
+- **Story points completed**: 6 / 12 SP
 
 ## Current Wave
 
