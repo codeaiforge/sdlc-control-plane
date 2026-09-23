@@ -66,20 +66,19 @@ CREATE TABLE evidence_envelope (
   received_at      timestamptz NOT NULL,   -- the control plane's clock, never the submitter's
   policy_id        text,                   -- the approved policy that granted the acceptance;
                                            -- NULL only where no policy was named (NFR-6.1)
-  payload_sha256   text        NOT NULL,   -- SHA-256 of the JSON projection, written at insert
-                                           -- and never rewritten. It is what the collision rule
-                                           -- compares, so the rule stays decidable after the
-                                           -- payload is redacted; see Expiry behaviour.
-  evidence         jsonb,                  -- NULL once redacted; see Expiry behaviour
+  evidence         jsonb,                  -- NULL once redacted; see Expiry behaviour. No digest
+                                           -- of it is kept: see the fifth collision row.
   redacted_at      timestamptz,
   UNIQUE (workspace_id, change_id)
 );
 ```
 
 **Append-only is structural, not a convention.** The application role is granted `INSERT` and
-`SELECT` on this table and nothing else. A rule enforced only by the code that writes the rows
-is a rule any later code path can forget; a missing `UPDATE` grant is enforced by the server for
-every path at once. This is the database-layer equivalent of the workspace's own principle that
+`SELECT` on this table and nothing else, and **owns nothing** — a separate DDL role owns every
+object here, because an owner holds `UPDATE`, `DELETE` and `ALTER` implicitly and no grant would
+be recorded to say so. A rule enforced only by the code that writes the rows is a rule any later
+code path can forget; a missing `UPDATE` grant, against a table the role does not own, is
+enforced by the server for every path at once. See Expiry behaviour for the roles in full. This is the database-layer equivalent of the workspace's own principle that
 a rule nothing checks is a convention rather than a control.
 
 `UNIQUE (workspace_id, change_id)` is the idempotency claim itself, not an optimisation of it.
@@ -118,14 +117,20 @@ one process's lifetime, which is exactly what NFR-3.1 says is insufficient.
 string. `workspace_id` comes from 2.1's authenticated principal and **is `null` today**, because
 nothing in the request path produces one.
 
-The four-row collision rule the port implements:
+The five-row collision rule. Task 1.2's port implements the first, third, fourth and fifth; the
+second becomes reachable when 2.2 implements expiry.
 
-| Key state                             | Outcome     | What the store does                                       |
-| ------------------------------------- | ----------- | --------------------------------------------------------- |
-| Key absent                            | `appended`  | Append the envelope; return it.                           |
-| Key present, identical payload digest | `duplicate` | Append nothing; return the existing envelope.             |
-| Key present, differing payload digest | `conflict`  | Append nothing; return the existing envelope.             |
-| `workspace_id === null`               | `appended`  | Append with `idempotency_key: null`; claim no uniqueness. |
+| Key state                      | Outcome     | What the store does                                       |
+| ------------------------------ | ----------- | --------------------------------------------------------- |
+| Key absent                     | `appended`  | Append the envelope; return it.                           |
+| Key present, payload redacted  | `duplicate` | Append nothing; return the existing envelope.             |
+| Key present, identical payload | `duplicate` | Append nothing; return the existing envelope.             |
+| Key present, differing payload | `conflict`  | Append nothing; return the existing envelope.             |
+| `workspace_id === null`        | `appended`  | Append with `idempotency_key: null`; claim no uniqueness. |
+
+A `conflict` response carries the key and the outcome and **never the stored payload**. The
+second submitter did not write that record and is not entitled to read it back; 2.2 must not
+answer a conflict with the envelope simply because the port hands it one internally.
 
 **`conflict` is not `duplicate`, and collapsing the two would be a real loss.** A duplicate is a
 producer doing the correct thing — retrying after an ambiguous response. A conflict is two
@@ -137,15 +142,18 @@ disagrees with what the workspace believes it submitted, with nothing anywhere r
 the disagreement happened. The store distinguishes them so that a caller — and 2.3's telemetry —
 can tell a healthy retry from a fault.
 
-**The comparand is a digest, not the payload, because the payload does not survive retention.**
-Comparing the stored body directly would make the rule undecidable the moment expiry redacts it:
-a replay would find a row whose `evidence` is `NULL`, match nothing, and fall to `conflict` — the
-outcome this table reserves for a producer fault or tampering. Every honest retry of an expired
-submission would be labelled tampering, and that is exactly the signal 2.3's telemetry is built
-to read. A `payload_sha256` written at insert and carried through redaction keeps the rule
-decidable for the row's whole life, at 32 bytes a row and with no new dependency — `node:crypto`
-is a builtin. Retention and idempotency have to be designed against each other here, because
-each one's mechanism is the other's input.
+**A redacted row needs no comparand, which is why no digest of the payload is kept.** Expiry
+removes the body, so a replay of an expired submission has nothing to be compared against — and
+nothing to disagree with. It resolves to `duplicate` on the key alone, which is the second row
+above. The alternative considered and rejected was retaining a `payload_sha256` written at
+insert and carried through redaction: it keeps the rule uniform, but an unkeyed digest that
+outlives the body it was taken from is an offline oracle for that body. `evidence/0` has
+low-entropy fields and the surviving identity columns bound the search, so the payload expiry
+exists to remove is recoverable from the row that replaced it — measured at well under a second
+over a realistic candidate set. Keying the digest would close that, at the cost of making this
+the first secret the system owns. Dropping it closes the same hole and costs only the ability to
+distinguish a fault from a retry on a row whose body is already gone, where the distinction has
+nothing left to describe.
 
 Both outcomes are **unreachable over HTTP until 2.1**, because `workspace_id` is `null` and the
 null row of the table above applies to every submission the seam can currently receive. They are
@@ -198,25 +206,59 @@ the payload — which is the part carrying the undetermined classification, and 
 exists to remove. It removes exactly the wrong half.
 
 So: **payload removed, identity retained.** A redacted envelope keeps `workspace_id`,
-`change_id`, `idempotency_key`, `received_at`, `envelope_version` and `payload_sha256`, and gains
-`redacted_at`. A replay of an expired submission still resolves to its key, and is still answered
-as a duplicate rather than a conflict, because the digest it is compared against outlived the
-body it was computed from. That is the whole reason the digest is a column: drop it and
-tombstoning breaks idempotency one layer further in than a plain delete does, and less visibly.
+`change_id`, `idempotency_key`, `received_at` and `envelope_version`, and gains `redacted_at`.
+Nothing derived from the payload survives it. A replay of an expired submission resolves to its
+key and is answered `duplicate`, because a row with no body has nothing to disagree with.
 **Task 2.2 must pin this with a conformance test** — append, redact, replay, assert `duplicate` —
-in the same change that implements redaction, because 1.2 implements no expiry and so cannot
-pin it here.
+in the same change that implements redaction, because 1.2 implements no expiry and so cannot pin
+it here.
 
 The honest cost: **a redaction is an in-place write, and it is the single deliberate exception
-to append-only.** Two mitigations, both structural rather than procedural:
+to append-only.** An earlier draft of this ADR mitigated it with a column-level `UPDATE` grant
+and a convention that the job also writes an audit row. Both were tested against PostgreSQL 16
+and **both fail**, so both are replaced here:
 
-- The retention job runs under **its own database role**, holding `UPDATE` on the `evidence` and
-  `redacted_at` columns of this one table and nothing else. The application role still holds no
-  `UPDATE` at all, so the exception is available to one scheduled job and to no request path.
-- Every redaction **appends a row to a separate `evidence_redaction` table**, so the _fact_ of a
-  redaction is itself recorded append-only even though its target was modified in place. A
-  redaction that leaves no trace is indistinguishable from tampering; one that appends its own
-  record is not.
+- A column grant constrains _which columns_ a role may write, never _what values_. Under
+  `UPDATE (evidence, redacted_at)` the retention role can substitute a forged payload and set
+  `redacted_at` back to `NULL`, leaving a failed control reading as passed, in place, on a row
+  that looks untouched. That is the one thing an append-only log exists to prevent.
+- "Every redaction appends a row to `evidence_redaction`" was offered as structural. It is
+  procedural: the `UPDATE` and the `INSERT` are two independent statements under two independent
+  grants, and a job that performs the first and not the second leaves a redaction with no trace —
+  which is indistinguishable from tampering, the exact failure the mitigation claimed to remove.
+
+**The control is a `BEFORE UPDATE` trigger, owned by the database and not by the job.** It
+rejects any write that sets `evidence` to anything other than `NULL`, and it writes the
+`evidence_redaction` row itself, so the audit record cannot be omitted by a caller that forgets
+it. A `CHECK` constraint cannot do this — it is row-local and cannot see `OLD`. Verified: with
+the trigger in place a forged rewrite is refused and a legitimate redaction succeeds, writing
+its own audit row.
+
+`evidence_redaction` is specified here rather than left to 2.2, because an audit table with no
+schema has no delete behaviour, and the natural one destroys it:
+
+```sql
+CREATE TABLE evidence_redaction (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  envelope_id  bigint NOT NULL REFERENCES evidence_envelope(id) ON DELETE RESTRICT,
+  redacted_at  timestamptz NOT NULL,
+  redacted_by  text NOT NULL            -- the database role that performed it
+);
+```
+
+`ON DELETE RESTRICT`, never `CASCADE`: under `CASCADE` deleting an envelope takes its redaction
+record with it, and the one artefact distinguishing a redaction from tampering disappears with
+the row it describes. The retention role holds `INSERT` and `SELECT` here and nothing else; no
+role holds `UPDATE` or `DELETE` on it at all.
+
+**A third role owns the schema.** The grants above are only meaningful if the application role
+is not the table owner — an owner holds `UPDATE`, `DELETE`, `TRUNCATE` and `ALTER` implicitly,
+with no `GRANT` recorded anywhere, and can drop `UNIQUE (workspace_id, change_id)`, which is the
+idempotency claim itself. Verified against PostgreSQL 16: a table created by the application
+role is fully writable by it despite no `UPDATE` grant existing. So the migration runs as a
+**dedicated DDL role that owns every object here**, and the application and retention roles own
+nothing. Task 2.2's migration must state which role it runs as; a stack profile with
+`Migrations + verify` still `Not selected` is what allowed this to go unstated.
 
 The second-order open question, recorded here rather than resolved: `(workspace_id, change_id)`
 **survives expiry**, and that pair is itself metadata — it says which workspace was active on

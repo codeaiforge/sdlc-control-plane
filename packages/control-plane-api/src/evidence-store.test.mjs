@@ -64,7 +64,6 @@ test('the envelope version is the one the port exports', () => {
     'received_at',
     'idempotency_key',
     'policy_id',
-    'payload_sha256',
     'evidence',
   ]);
 });
