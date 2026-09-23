@@ -370,8 +370,9 @@ Sprint 1's risk checkpoint asks whether 1.2's ADR can name a concrete store and 
 without reopening the evidence schema. It can, and this ADR does: `change_id` is already a
 required field of `evidence/0`; `workspace_id` rides in a control-plane-owned envelope that wraps
 the record rather than in the record itself; no field is added to, removed from or reinterpreted
-in `evidence/0`; `packages/contracts/src/schema.mjs` is unchanged; `openapi.json` and its
-`info.version` are unchanged. The contract fixed in task 0.2 is therefore not wrong, and
+in `evidence/0`; `packages/contracts/src/schema.mjs` is unchanged; no field, constraint or
+version in `openapi.json` changed, and its `info.version` is still `0.1.0` (its prose gained a
+divergence, which is a statement about the seam rather than a change to the contract). The contract fixed in task 0.2 is therefore not wrong, and
 Sprint 2 may start on top of it.
 
 ## Options Considered
