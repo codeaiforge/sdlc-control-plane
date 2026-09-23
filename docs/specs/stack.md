@@ -1,38 +1,61 @@
 # Stack Profile — SDLC Control Plane
 
+Row names follow [`stack-template.md`](stack-template.md) exactly, because the pipeline
+dispatches on them: `.github/prompts/run-task.prompt.md` looks up "the stack profile's
+**Affected lint/test/build** command" and "**Access control**" by name. A row under a
+different name is a row no phase can find. Rows beyond the template's are this workspace's own
+and no phase reads them.
+
+Some rows read **Not selected**. Those apply to this stack and simply have not been decided;
+each names who decides. That is deliberately not `N/A`, which tells the pipeline the check does
+not apply and to skip it — skipping is the wrong answer for a decision that is merely
+outstanding.
+
 ## Identity
 
-| Field                | Value                                                                                                                                                                                                                               |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Language             | Node.js 20+ / native ESM JavaScript                                                                                                                                                                                                 |
-| Framework            | Node `http` composition seam; production framework still unselected. Persistence adapter selected in Sprint 1: PostgreSQL 16+, per [ADR-0002](../adr/0002-append-only-evidence-envelope-log.md) — Proposed, pending Gate 2 approval |
-| Nx plugin / executor | Explicit `project.json` command targets                                                                                                                                                                                             |
-| Package manager      | pnpm 10.15.1                                                                                                                                                                                                                        |
+| Field                        | Value                                                                                                                                                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language                     | Node.js 20+ / native ESM JavaScript                                                                                                                                                                                                 |
+| Framework                    | Node `http` composition seam; production framework still unselected. Persistence adapter selected in Sprint 1: PostgreSQL 16+, per [ADR-0002](../adr/0002-append-only-evidence-envelope-log.md) — Proposed, pending Gate 2 approval |
+| Nx plugin                    | Explicit `project.json` command targets                                                                                                                                                                                             |
+| Package / dependency manager | pnpm 10.15.1                                                                                                                                                                                                                        |
 
 ## Commands
 
-| Purpose                   | Command                                                                                             |
-| ------------------------- | --------------------------------------------------------------------------------------------------- |
-| Test                      | `pnpm nx run-many -t test`                                                                          |
-| Build                     | `pnpm nx run-many -t build`                                                                         |
-| Typecheck                 | `pnpm nx run-many -t typecheck`                                                                     |
-| Graph-derived control map | `pnpm nx graph --file=graph.json && node tools/sdlc-controls/generate-component-map.mjs graph.json` |
-| SDLC adapter test         | `pnpm test:controls`                                                                                |
+| Purpose                              | Command                                                                                                                      |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Affected lint/test/build (main gate) | `pnpm nx affected -t test,build,typecheck` — this workspace has no `lint` target; `pnpm format:check` is the formatting gate |
+| Affected tests only                  | `pnpm nx affected -t test`                                                                                                   |
+| Dependency vulnerability audit       | `pnpm audit`                                                                                                                 |
+| Test (whole workspace)               | `pnpm nx run-many -t test`                                                                                                   |
+| Build (whole workspace)              | `pnpm nx run-many -t build`                                                                                                  |
+| Typecheck (whole workspace)          | `pnpm nx run-many -t typecheck`                                                                                              |
+| Graph-derived control map            | `pnpm nx graph --file=graph.json && node tools/sdlc-controls/generate-component-map.mjs graph.json`                          |
+| SDLC adapter test                    | `pnpm test:controls`                                                                                                         |
+| Scaffold new lib/module              | Not selected — every project's `project.json` has been written by hand                                                       |
 
-## Conventions
+## Conventions (per layer)
 
-| Concern            | Mechanism                                                                                 |
-| ------------------ | ----------------------------------------------------------------------------------------- |
-| Contracts          | Versioned, strict minimum-subset JavaScript validators in `packages/contracts`            |
-| Project boundaries | Nx `project.json` per project, tags, and graph-derived component map                      |
-| Evidence           | `evidence/0` compatibility with `git-native-sdlc-controls`                                |
-| Policy             | Versioned configuration with an approving decision reference; technical dispositions only |
-| Test harness       | Node built-in `node:test`                                                                 |
+| Concern                  | This stack's mechanism                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Validation / contracts   | Versioned, strict minimum-subset JavaScript validators in `packages/contracts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Access control           | Database layer, per [ADR-0002](../adr/0002-append-only-evidence-envelope-log.md) — Proposed, pending Gate 2: the application role holds `INSERT` and `SELECT` and nothing else; the retention job runs under its own role with `UPDATE` on the `evidence` and `redacted_at` columns of one table; every redaction appends a row to `evidence_redaction`. Not implemented — no database exists yet. At the port layer the equivalent is that the store exposes `append`, `list` and `listRecords` and no method that can remove or rewrite a record, which the conformance suite asserts |
+| Module / layer structure | `packages/<name>/src/` flat, one Nx project per package. A subdirectory under `src/` breaks `tools/sdlc-controls/graph-fidelity.test.mjs`, which reads every entry                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Test fixtures location   | Inline literals in the test that uses them, deliberately not shared. `store-conformance.mjs` states the reason: importing the contracts package for a fixture would take that project's fan-in from 2 to 3, flipping its `shared` flag and permanently retiering every change under it                                                                                                                                                                                                                                                                                                  |
+| Project boundaries       | Nx `project.json` per project, tags, and graph-derived component map                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Evidence                 | `evidence/0` compatibility with `git-native-sdlc-controls`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Policy                   | Versioned configuration with an approving decision reference; technical dispositions only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Test harness             | Node built-in `node:test`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Data access              | Not selected — task 2.2. The template's example for this row reads "no raw SQL", which the zero-dependency rule contradicts; resolving that contradiction is the decision                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Migrations + verify      | Not selected — task 2.2, alongside the migration ADR-0002 defers to it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Integration test harness | Not selected — task 2.2. No test in this workspace crosses a process or socket boundary today, so there is nothing to harness yet                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Auth mechanism           | Not selected — task 2.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## Deploy
 
-| Field       | Value                                                                        |
-| ----------- | ---------------------------------------------------------------------------- |
-| Artifact    | One `control-plane-api` service artifact composed from internal libraries    |
-| Target      | Not selected; requires approved identity, persistence, and operations design |
-| Verify gate | Authenticated integration and recovery tests before production deployment    |
+| Field                 | Value                                                                                  |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| Target                | Not selected; requires approved identity, persistence, and operations design           |
+| Preview / verify gate | Authenticated integration and recovery tests before production deployment              |
+| Merge strategy        | Squash-merge to `main`, per [`.github/git-workflow.md`](../../.github/git-workflow.md) |
+| Artifact              | One `control-plane-api` service artifact composed from internal libraries              |
