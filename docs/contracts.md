@@ -2,7 +2,7 @@
 
 ## Where the contract lives
 
-[`packages/control-plane-api/openapi.json`](../packages/control-plane-api/openapi.json) is the source of truth for the HTTP surface: which routes exist, which status codes each one can answer with, which fields every request and response body carries, and the shape of the error envelopes. It also records, in prose, the five places where the running seam diverges from what the document's own vocabulary would otherwise imply, and what the 202 on evidence intake does and does not promise.
+[`packages/control-plane-api/openapi.json`](../packages/control-plane-api/openapi.json) is the source of truth for the HTTP surface: which routes exist, which status codes each one can answer with, which fields every request and response body carries, and the shape of the error envelopes. It also records, in prose, the places where the running seam diverges from what the document's own vocabulary would otherwise imply, and what the 202 on evidence intake does and does not promise.
 
 [`packages/control-plane-api/src/openapi.contract.test.mjs`](../packages/control-plane-api/src/openapi.contract.test.mjs) is what holds that document to the seam. It compares the documented routes and statuses against the route table the seam dispatches on and against the status literals in the seam's own source, and validates every observed response body against the schema the document names for that exact path, method and status. A document that over-claims fails there rather than in review.
 
@@ -10,7 +10,7 @@ This page carries the reasoning behind the contracts. It deliberately does not r
 
 ## Inbound: SDLC evidence
 
-Each workspace posts an `evidence/0`-compatible record produced by `git-native-sdlc-controls`. This scaffold validates the minimum stable subset and tolerates unrecognised additive fields on a supported version; the fields themselves are the `EvidenceRecord` schema in `openapi.json`. Unknown fields are preserved at the transport boundary by a production persistence adapter — [ADR-0002](adr/0002-append-only-evidence-envelope-log.md) stores the record as `jsonb`, so an additive field survives storage as well as validation.
+Each workspace posts an `evidence/0`-compatible record produced by `git-native-sdlc-controls`. This scaffold validates the minimum stable subset and tolerates unrecognised additive fields on a supported version; the fields themselves are the `EvidenceRecord` schema in `openapi.json`. Unknown fields would be preserved at the transport boundary by a production persistence adapter — [ADR-0002](adr/0002-append-only-evidence-envelope-log.md) proposes storing the record as `jsonb`, so an additive field would survive storage as well as validation. That ADR is Proposed, pending Gate 2; nothing durable stores anything yet, and this page says `would` rather than `does` for that reason.
 
 The contract is rejected when its schema version is not `evidence/0`; accepting a later shape on a guess can under-report a control failure.
 

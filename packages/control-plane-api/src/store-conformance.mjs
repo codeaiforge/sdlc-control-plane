@@ -279,6 +279,35 @@ export function describeEvidenceStore(name, createStore) {
     assert.equal(second.policy_id, null, 'absent rather than guessed when no policy is named');
   });
 
+  // Retention redacts the payload and keeps the identity, so an adapter whose collision rule
+  // reads the body stops being able to decide one the moment a row expires: a replay of an
+  // expired submission would match nothing and fall to `conflict`, which ADR-0002 reserves for a
+  // producer fault or tampering. The digest is the part that has to outlive the body. The
+  // post-expiry replay itself is 2.2's test to write, because 1.2 implements no expiry; what is
+  // pinned here is the column that test will need, and the two properties that make it decidable.
+  //
+  // Deliberately not asserted: that the digest equals a hash of the evidence read back out.
+  // `jsonb` does not preserve key order, so 2.2 would re-serialise to a different string than it
+  // digested at insert. The rule the collision table needs is same-body-same-digest, and that is
+  // what this checks.
+  test(`${name}: the payload digest is retained, stable per body, and differs across bodies`, async (t) => {
+    const store = await openStore(t, createStore);
+    await store.append(evidenceRecord(), { workspace_id: WORKSPACE });
+    await store.append(evidenceRecord(), { workspace_id: 'ledger-art' });
+    await store.append(evidenceRecord({ result: { pass: false } }), {
+      workspace_id: 'billing-art',
+    });
+    const [first, same, different] = await store.list();
+    assert.equal(typeof first.payload_sha256, 'string');
+    assert.ok(first.payload_sha256.length > 0, 'a digest is retained with the record');
+    assert.equal(same.payload_sha256, first.payload_sha256, 'the same body digests the same');
+    assert.notEqual(
+      different.payload_sha256,
+      first.payload_sha256,
+      'a different body must not digest the same, or a conflict would read as a duplicate',
+    );
+  });
+
   test(`${name}: every envelope declares the envelope version`, async (t) => {
     // The literal is spelled out rather than imported: a version bump in the module under test
     // is exactly what this assertion exists to notice.

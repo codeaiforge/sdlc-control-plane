@@ -66,6 +66,10 @@ CREATE TABLE evidence_envelope (
   received_at      timestamptz NOT NULL,   -- the control plane's clock, never the submitter's
   policy_id        text,                   -- the approved policy that granted the acceptance;
                                            -- NULL only where no policy was named (NFR-6.1)
+  payload_sha256   text        NOT NULL,   -- SHA-256 of the JSON projection, written at insert
+                                           -- and never rewritten. It is what the collision rule
+                                           -- compares, so the rule stays decidable after the
+                                           -- payload is redacted; see Expiry behaviour.
   evidence         jsonb,                  -- NULL once redacted; see Expiry behaviour
   redacted_at      timestamptz,
   UNIQUE (workspace_id, change_id)
@@ -116,12 +120,12 @@ nothing in the request path produces one.
 
 The four-row collision rule the port implements:
 
-| Key state                              | Outcome     | What the store does                                       |
-| -------------------------------------- | ----------- | --------------------------------------------------------- |
-| Key absent                             | `appended`  | Append the envelope; return it.                           |
-| Key present, identical JSON projection | `duplicate` | Append nothing; return the existing envelope.             |
-| Key present, differing JSON projection | `conflict`  | Append nothing; return the existing envelope.             |
-| `workspace_id === null`                | `appended`  | Append with `idempotency_key: null`; claim no uniqueness. |
+| Key state                             | Outcome     | What the store does                                       |
+| ------------------------------------- | ----------- | --------------------------------------------------------- |
+| Key absent                            | `appended`  | Append the envelope; return it.                           |
+| Key present, identical payload digest | `duplicate` | Append nothing; return the existing envelope.             |
+| Key present, differing payload digest | `conflict`  | Append nothing; return the existing envelope.             |
+| `workspace_id === null`               | `appended`  | Append with `idempotency_key: null`; claim no uniqueness. |
 
 **`conflict` is not `duplicate`, and collapsing the two would be a real loss.** A duplicate is a
 producer doing the correct thing — retrying after an ambiguous response. A conflict is two
@@ -132,6 +136,16 @@ rewrite accepted evidence. But quietly answering `duplicate` would mean the stor
 disagrees with what the workspace believes it submitted, with nothing anywhere recording that
 the disagreement happened. The store distinguishes them so that a caller — and 2.3's telemetry —
 can tell a healthy retry from a fault.
+
+**The comparand is a digest, not the payload, because the payload does not survive retention.**
+Comparing the stored body directly would make the rule undecidable the moment expiry redacts it:
+a replay would find a row whose `evidence` is `NULL`, match nothing, and fall to `conflict` — the
+outcome this table reserves for a producer fault or tampering. Every honest retry of an expired
+submission would be labelled tampering, and that is exactly the signal 2.3's telemetry is built
+to read. A `payload_sha256` written at insert and carried through redaction keeps the rule
+decidable for the row's whole life, at 32 bytes a row and with no new dependency — `node:crypto`
+is a builtin. Retention and idempotency have to be designed against each other here, because
+each one's mechanism is the other's input.
 
 Both outcomes are **unreachable over HTTP until 2.1**, because `workspace_id` is `null` and the
 null row of the table above applies to every submission the seam can currently receive. They are
@@ -184,9 +198,14 @@ the payload — which is the part carrying the undetermined classification, and 
 exists to remove. It removes exactly the wrong half.
 
 So: **payload removed, identity retained.** A redacted envelope keeps `workspace_id`,
-`change_id`, `idempotency_key`, `received_at` and `envelope_version`, and gains `redacted_at`. A
-replay of an expired submission still resolves to its key and is still answered as a duplicate,
-against a row that no longer carries the evidence body.
+`change_id`, `idempotency_key`, `received_at`, `envelope_version` and `payload_sha256`, and gains
+`redacted_at`. A replay of an expired submission still resolves to its key, and is still answered
+as a duplicate rather than a conflict, because the digest it is compared against outlived the
+body it was computed from. That is the whole reason the digest is a column: drop it and
+tombstoning breaks idempotency one layer further in than a plain delete does, and less visibly.
+**Task 2.2 must pin this with a conformance test** — append, redact, replay, assert `duplicate` —
+in the same change that implements redaction, because 1.2 implements no expiry and so cannot
+pin it here.
 
 The honest cost: **a redaction is an in-place write, and it is the single deliberate exception
 to append-only.** Two mitigations, both structural rather than procedural:
@@ -359,8 +378,8 @@ Sprint 2 may start on top of it.
   (`evidence-store.mjs`) and its conformance suite (`store-conformance.mjs`) exist now; adding
   the PostgreSQL adapter is one more `describeEvidenceStore('postgres', …)` line. Every call in
   that suite is awaited except one: `reads are synchronous` deliberately does not await, and
-  asserts the result is not a thenable. An async adapter passes the other fifteen unedited and
-  deletes that one, in the same change that makes reads async and awaits them at the seam.
+  asserts the result is not a thenable. An async adapter passes every other test in the
+  suite unedited and deletes that one, in the same change that makes reads async and awaits them at the seam.
 - The seam takes the store by injection, so a test holds its own store and no test depends on
   another's appends.
 - Unrecognised additive fields survive storage unchanged, which is what NFR-1.1 asks of the
@@ -385,9 +404,9 @@ Sprint 2 may start on top of it.
   with the documented 400 envelope, `{"error": "request body must be valid JSON"}`. A store that
   throws would therefore blame the caller's body for the control plane's own fault. It is
   almost unreachable today: the seam projects the record before evaluating policy, so a record it
-  cannot store is refused before any acceptance is computed. The exception is a narrow band — about
-  seven nesting levels wide on the current runtime — where the seam's projection fits and the
-  store's, one stack frame deeper, does not. Inside that band policy is evaluated for a record that
+  cannot store is refused before any acceptance is computed. The exception is a band exactly as wide as the
+  gap between the two projections — one level, measured on the current runtime — where the seam's
+  projection fits and the store's, one stack frame deeper, does not. Inside that band policy is evaluated for a record that
   is then refused. No acceptance escapes, because the wire outcome is identical at every depth and
   `evaluateGuardrails` is pure; what fails in the band is the ordering, not the behaviour. 2.2 must
   close the whole class with a store-failure status, since a database is the first thing in this

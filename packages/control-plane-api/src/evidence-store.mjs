@@ -3,7 +3,17 @@
 // records the store, the key, the retention window and the audit-event boundary this shape
 // assumes, and why the envelope wraps the record instead of extending `evidence/0`.
 
+import { createHash } from 'node:crypto';
+
 export const ENVELOPE_VERSION = 'evidence-envelope/0';
+
+// The collision rule compares this, never the payload. Retention redacts the body and keeps the
+// identity, so a rule that compared bodies would stop being decidable the moment a row expired -
+// a replay of an expired submission would match nothing and fall to `conflict`, which ADR-0002
+// reserves for a producer fault or tampering. A digest computed at insert outlives the body it
+// was taken from, so the same replay is still answered `duplicate`. node:crypto is a builtin; the
+// zero-dependency rule is intact.
+const payloadDigest = (text) => createHash('sha256').update(text).digest('hex');
 
 // JSON.stringify, never a delimiter join. ['a|b','c'].join('|') and ['a','b|c'].join('|') are the
 // same string, so a joined key would alias two distinct (workspace, change) pairs: the second
@@ -69,6 +79,7 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
     // unrelated workspaces collide on a shared change_id. ADR-0002 requires 2.2 to refuse a
     // null workspace_id in production configuration rather than let this branch reach it.
     const key = workspace_id === null ? null : idempotencyKey(workspace_id, value.change_id);
+    const payload_sha256 = payloadDigest(text);
     const existing = key === null ? undefined : byKey.get(key);
     if (existing) {
       // `conflict` is not `duplicate`: two different bodies claiming the same (workspace,
@@ -77,11 +88,12 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
       // the first record stands and nothing is appended — replacing it would let a later caller
       // rewrite accepted evidence — but the caller is told which of the two happened.
       //
-      // Equality is on the projection string, the strictest reading of "identical projection":
-      // two bodies differing only in key order read as a conflict here, where 2.2's `jsonb`
-      // comparison would read them as a duplicate. The suite does not pin that case; 2.2 must.
+      // Equality is on a digest of the projection string, the strictest reading of "identical
+      // payload": two bodies differing only in key order read as a conflict here, where 2.2's
+      // `jsonb` comparison would read them as a duplicate. The suite does not pin that case;
+      // 2.2 must.
       return {
-        outcome: existing.text === text ? 'duplicate' : 'conflict',
+        outcome: existing.payload_sha256 === payload_sha256 ? 'duplicate' : 'conflict',
         key,
         envelope: existing.envelope,
       };
@@ -101,10 +113,16 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
       // slot the durable record could only answer *when* it was accepted, leaving *under which
       // policy* to be inferred from the git history of config/control-plane/guardrails.json.
       policy_id,
+      // Carried on the envelope, not just in the index, because it is a column of the row and
+      // 2.2's adapter maps the two one to one. It is also what survives redaction.
+      payload_sha256,
       evidence: value,
     });
     envelopes.push(envelope);
-    if (key !== null) byKey.set(key, { envelope, text });
+    // The digest, not `text`: a second full copy of every payload, retained for the process's
+    // lifetime with no eviction, doubles per-record memory the moment 2.1 starts sending a
+    // workspace_id. The digest is what the comparison reads, so the copy bought nothing.
+    if (key !== null) byKey.set(key, { envelope, payload_sha256 });
     return { outcome: 'appended', key, envelope };
   }
 
