@@ -11,7 +11,7 @@ The SDLC Control Plane is a federation layer for engineering governance. It aggr
 | Large Solution       | Supplies traceable evidence to solution-intent/MBSE tools      | Own solution intent or supplier management     |
 | Portfolio            | Exposes indicators and distributes approved guardrails         | Make investment, staffing, or budget decisions |
 
-The architecture and delivery sequence are in [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/specs/implementation-roadmap.md](docs/specs/implementation-roadmap.md). Every deployable and library is an Nx project under `packages/`, defined by its `project.json`. The API is the sole initial deployable artifact; the other projects are internal libraries it composes.
+The architecture and delivery sequence are in [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/specs/implementation-roadmap.md](docs/specs/implementation-roadmap.md), and the trust boundaries, abuse cases and residual risks the ingress path is designed against are in [docs/architecture/threat-model.md](docs/architecture/threat-model.md). Every deployable and library is an Nx project under `packages/`, defined by its `project.json`. The API is the sole initial deployable artifact; the other projects are internal libraries it composes.
 
 ## Quick start
 
