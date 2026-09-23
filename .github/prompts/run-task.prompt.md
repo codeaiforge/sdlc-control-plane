@@ -260,9 +260,9 @@ If the gate fails:
    confirm the diff actually contains what the bullet describes; after the commit lands,
    `git log --oneline <base>..HEAD -- <path>` checks the same claim against history. A commit
    message is a claim like any other, and it is the one claim in this pipeline that no gate
-   reads: `format:check`, `test` and `test:controls` all pass over a message that describes a
-   fix nobody made. A fix asserted but not made is worse than one never attempted, because it
-   closes the finding in the record while leaving the defect in the tree.
+   reads: the stack profile's **Affected lint/test/build** command passes over a message that
+   describes a fix nobody made. A fix asserted but not made is worse than one never
+   attempted, because it closes the finding in the record while leaving the defect in the tree.
 3. Re-enter Phase ④ (re-review the fixes)
 4. Maximum 3 review cycles — if still blocked after 3, escalate to user with the pattern of recurring issues
 
