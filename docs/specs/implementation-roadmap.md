@@ -167,6 +167,7 @@ The signal is whether 1.2's ADR can name a concrete store and idempotency key wi
 - [ ] Contract tests cover accepted, invalid and incompatible evidence
 - [ ] An ADR names the store, idempotency key, retention window and audit-event boundary
 - [ ] A threat model documents trust boundaries, abuse cases, mitigations and residual risks
+- [ ] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved
 
 ---
 
@@ -180,7 +181,7 @@ An authenticated workload from a registered workspace can submit evidence that s
 
 | #   | Task                                                               | SP  | Priority | Layer    | Depends on | Trace            | Done when                                                                                   |
 | --- | ------------------------------------------------------------------ | --- | -------- | -------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| 2.1 | Implement OIDC workload authentication and workspace authorization | 8   | Must     | auth     | 1.3        | NFR-2.1          | An identity can submit only to authorized registered workspace boundaries.                  |
+| 2.1 | Implement OIDC workload authentication and workspace authorization | 8   | Must     | auth     | 1.4        | NFR-2.1          | An identity can submit only to authorized registered workspace boundaries.                  |
 | 2.2 | Implement durable evidence store and idempotent intake             | 8   | Must     | database | 1.2, 2.1   | NFR-3.1          | A replay is safe, durable records survive restart, and audit events are queryable.          |
 | 2.3 | Add telemetry, health, and retention verification                  | 5   | Should   | infra    | 2.2        | NFR-3.1, NFR-6.1 | Operators can detect failed ingestion, delayed processing, and retention-policy violations. |
 

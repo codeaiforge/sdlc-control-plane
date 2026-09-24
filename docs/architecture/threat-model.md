@@ -58,7 +58,8 @@ the grammar are live in this document, not just the one it will grow into.
 **What is checked, and what is not.** `tools/sdlc-controls/threat-model-conformance.test.mjs`
 holds this document's structure: its header, its sections, the totality of the route coverage,
 the totality of the STRIDE index, referential integrity in both directions, that every
-mitigation has an owner and every residual risk an acceptance. It cannot judge whether an abuse
+mitigation has an owner, and every residual risk either an acceptance or an explicit record that
+nobody has made one yet. It cannot judge whether an abuse
 case is well chosen, whether a mitigation mitigates, or whether the set is complete. Those are
 Phase ④'s to review, and the check says so in its own header rather than letting a green run
 read as a review.
@@ -66,6 +67,14 @@ read as a review.
 **Task 1.3 ships no production code.** The ingress body limit below is a specification for task
 2.1, stated to the byte, with its reasons, so that 2.1 implements a decision rather than making
 one. Nothing under `packages/` changes in this task.
+
+**No retained field is personal data today.** Classification answers how sensitive the record is,
+not whether erasure is an obligation, and RR-4 and RR-7 both turn on the second question. An
+`evidence/0` record carries no name, address or account identifier; the field that would change
+that is `owners` on a workspace registration, a free-form non-empty string array
+(`packages/contracts/src/schema.mjs:43-45`) that holds a team name today and is constrained to
+nothing. If a personal name is ever written there, retention stops being an operational choice and
+RR-4 and RR-7 need re-deciding rather than re-accepting.
 
 ## System under analysis
 
@@ -141,6 +150,11 @@ is this repository.
 
 ## Abuse cases
 
+`Boundary` names **one** crossing where the case applies — most cases cross more than one, and the
+row names a representative. `STRIDE` is the **union** of the letters every boundary files it under,
+not the letters for the boundary the row names. The conformance check holds both: the named
+boundary must be one that indexes the case, and the letters must match the union.
+
 | ID     | Boundary | STRIDE  | Abuse case                                                                                                              | Answered by   |
 | ------ | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------- | ------------- |
 | ABU-1  | TB-1     | S       | Anyone who can reach the port submits evidence as any workspace, and the control plane records it as accepted.          | MIT-1, MIT-2  |
@@ -210,6 +224,27 @@ for its own earlier version of the same overstatement. The harm is not technical
 a ticked box concludes an audit capability exists, which is exactly the representation NFR-6.1
 forbids the system to make.
 
+**ABU-9 — self-declared AI provenance. Reachable today; measured.** `evaluateGuardrails`
+(`packages/guardrail-policy/src/evaluate.mjs:23`) applies the provenance rule only when the
+record says `ai_assisted` is true, and `ai_assisted` is a field the submitter writes. Measured
+against the running seam: `ai_assisted: true` with no `ai_tool` is refused `422
+needs-remediation`, as FR-3.1 intends — but **omitting the field entirely returns `202`**, and so
+does `ai_assisted: false`. The submitter therefore decides whether the rule applies to it, and
+the record is then counted clean in `GET /v1/indicators`. This is a control that reports a pass
+it did not establish, which is the same shape as ABU-7 and bears on NFR-6.1's second clause.
+Deriving provenance from an authenticated principal is 2.1's (MIT-11); until then RR-8 records
+that the rule is opt-in.
+
+**ABU-10 — an approving reference that resolves to nothing. Reachable today; measured.**
+NFR-6.1's first clause is "retain the approving decision reference", and the envelope does retain
+`policy_id`. What nothing checks is that the policy the id names carries an approval at all.
+`assertUsablePolicy` (`main.mjs:16-25`) validates exactly two fields, and measured: a
+`guardrails.json` with its entire `approval` block deleted returns `[]` — no errors — the process
+starts, and every acceptance is stamped `policy_id: baseline-engineering-controls@1`. Nothing
+under `packages/` reads `policy.approval`; the only mention in the tree is `openapi.json:325`,
+which describes `policy_id` as "traceable to the human approval recorded with that policy" — a
+claim the seam does not enforce. MIT-12 gives it to 2.1 as a startup refusal.
+
 **ABU-8 — the refused body as a write primitive. Unreachable, by decision.** This is the abuse
 case ADR-0002 hands to 1.3 by name. A 400 body is by definition unparseable: retaining it means
 retaining an arbitrary byte sequence from an unauthenticated caller, of unbounded length and
@@ -237,7 +272,7 @@ arrive by relaxing this. What 2.3 needs is a count with a reason, not a body.
 | MIT-9  | Carry the not-a-compliance-conclusion disclaimer in every indicator response body.                   | ABU-7        | in place    | `packages/indicators/src/summarize.mjs`              |
 | MIT-10 | State the policy-administration gap in the published contract document instead of a coming surface.  | ABU-7        | in place    | `docs/contracts.md`                                  |
 | MIT-11 | Derive AI provenance from the submitting principal rather than a caller-supplied boolean.            | ABU-9        | 2.1         | —                                                    |
-| MIT-12 | Require an approval block, not just a policy id, before the process will start.                      | ABU-10       | 2.2         | —                                                    |
+| MIT-12 | Require an approval block, not just a policy id, before the process will start.                      | ABU-10       | 2.1         | —                                                    |
 
 `Owning task` is `in place` only where a path in this repository already enforces the mitigation,
 and the check below resolves that path and fails if it does not exist. Everything else names a
@@ -261,7 +296,7 @@ place.
 | RR-6  | The ingress body limit is specified and not shipped, so until 2.1 the seam buffers whatever is sent.             | ABU-2  | 1.3 writes no production code; shipping the limit here would put an unreviewed control on the live path.                                                                                                                                          | pending Gate 2                  | Task 2.1            |
 | RR-7  | The 90-day retention window has an operational basis only, now applied to data classified INTERNAL.              | ABU-4  | The shorter window is the conservative choice under a classification that was undetermined until today.                                                                                                                                           | dsofianos (founder), 2026-09-23 | Gate 2              |
 | RR-8  | `ai_assisted` stays submitter-declared until 2.1 authenticates the principal, so the provenance rule is opt-in.  | ABU-9  | The seam has no principal to derive it from; inferring it from the record is the same untrusted input under another name.                                                                                                                         | pending Gate 2                  | Task 2.1            |
-| RR-9  | `assertUsablePolicy` validates `policy_version` and `policy_id` only, so a policy with no approval block starts. | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.2's to enforce with the audit surface.                                                                                           | pending Gate 2                  | Task 2.2            |
+| RR-9  | `assertUsablePolicy` validates `policy_version` and `policy_id` only, so a policy with no approval block starts. | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.1's to enforce at startup, in the same change as MIT-12.                                                                         | pending Gate 2                  | Task 2.2            |
 | RR-10 | A per-request cap bounds one submission, not the store: N compliant submissions still exhaust memory.            | ABU-2  | The in-process store is a stand-in with no eviction; only 2.2's durable store, bounded by the retention window, changes that. Measured: 300 accepted records strictly under the 1 MiB cap grew resident memory by 521 MiB and did not release it. | pending Gate 2                  | Task 2.2            |
 
 ## Ingress body limit — specification for task 2.1
@@ -418,7 +453,9 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    `adr-conformance.test.mjs`, `graph-fidelity.test.mjs` and `stack-profile.test.mjs` — soon four
    with `threat-model-conformance.test.mjs`. The file is vendored from upstream and exempt from
    this repository's formatter, so correcting it is a vendor-sync decision rather than an edit.
-6. **The residual risks above are unaccepted.** Six of the seven read `pending Gate 2`. Gate 2's
+6. **The residual risks above are unaccepted.** Every one whose `Accepted by` reads `pending Gate 2` is
+   waiting on this gate; the table is the count, and stating a number here rotted the first time the
+   table grew. Gate 2's
    own no-go condition is "Residual risks unlisted or unreviewed"; they are now listed, and the
    review is the gate's. Acceptances are written back into this document as
    `<name>, YYYY-MM-DD` when they are made.

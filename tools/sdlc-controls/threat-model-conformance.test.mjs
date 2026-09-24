@@ -380,11 +380,17 @@ test('T5 every ID referenced resolves, and every ID declared is referenced', () 
     if (!boundaryIds.has(row.Boundary))
       errors.push(`${row.ID}: Boundary "${row.Boundary}" is not a declared trust boundary`);
     const letters = indexedUnder.get(row.ID);
-    if (!letters)
+    // `continue`, not a dangling else: everything below reads `letters`, and an earlier edit that
+    // inserted a check between this `if` and its `else` re-parented the `else` onto the new
+    // condition, so an unindexed abuse case threw TypeError instead of reporting itself. The
+    // diagnostic this branch exists to print is the most likely decay in the whole file.
+    if (!letters) {
       errors.push(
         `${row.ID} is declared but no trust boundary indexes it, so nothing says where it ` +
           `applies. Add ${row.ID} to the STRIDE coverage cell of the boundary it crosses.`,
       );
+      continue;
+    }
     // The Boundary cell must name a boundary that actually indexes this case, not merely one
     // that exists. Checking only existence left the column decorative: every abuse case could be
     // repointed at an unrelated boundary and the suite stayed green, which is the one-directional
@@ -396,7 +402,7 @@ test('T5 every ID referenced resolves, and every ID declared is referenced', () 
           `case is on ${[...indexedBy].sort().join(', ')}. Point the row at a boundary that ` +
           `indexes it, or index it under the boundary the row names.`,
       );
-    else {
+    {
       const declared = row.STRIDE.split(',').map((value) => value.trim());
       const invalid = declared.filter((letter) => !STRIDE_LETTERS.includes(letter));
       if (invalid.length > 0)
@@ -673,38 +679,66 @@ test('T9 a boundary conditional on ADR-0002 retires itself once that ADR is deci
 // required it to say anything: a review demonstrated an 88-line document with the letter "x" in
 // every descriptive cell, "n/a" in seven prose sections and a one-byte cap passing all ten. A
 // threat model that describes nothing is not a threat model, and "it parsed" is not the claim
-// this file exists to make. T7 already refused a blank "Why accepted"; this applies the same
-// rule to the three tables that had no content requirement at all.
+// this file exists to make.
+//
+// A first version of this test was defeated by substituting one character: it named "x+" and
+// ".+" as repeatable placeholders but "-" as a singleton, so a cell of twenty-four hyphens
+// passed where a single hyphen failed, and it measured length with whitespace included, so
+// "x x x x x x x x x x x x" cleared a twenty-four character bar. Both are fixed below by
+// testing the property rather than the counterexample: any cell that is one character repeated
+// is a placeholder whatever that character is, and length counts non-space characters only.
 //
 // The bar is deliberately low - a short sentence clears it. It cannot tell a considered abuse
 // case from a plausible-sounding one, and nothing here should be read as claiming it can. What
-// it removes is the case where a cell says nothing whatsoever.
+// it removes is a cell that carries no words.
 const MIN_PROSE = 24;
-const PLACEHOLDER = /^(x+|n\/a|tbd|todo|-|\u2014|\.+|\?+)$/i;
+// A boundary's name is a label, not a sentence - "Network peer to HTTP seam" is 21 non-space
+// characters and says everything it needs to. Holding a label to the prose bar would force
+// padding, which is the opposite of what this test is for.
+const MIN_LABEL = 12;
+// Named fillers, plus any run of a single character: "---", "___", "!!!" and "xxx" are all the
+// same non-statement, and enumerating the characters is what let the first version through.
+const PLACEHOLDER = /^(n\/a|tbd|todo|none|\u2014|(.)\2*)$/i;
+// `Review point` is structured, not prose - its real values are "Gate 2", "Task 2.1" - so it
+// gets a grammar instead of a length bar. Holding it to MIN_PROSE would fail the live document.
+const REVIEW_POINT = /^(Gate \d+|Task \d+\.\d+)( and task \d+\.\d+)?$/;
 
 test('T11 the descriptive cells actually describe something', () => {
   const errors = [];
-  const check = (rows, columns, table) => {
+  const check = (rows, columns, minimum = MIN_PROSE) => {
     for (const row of rows) {
       for (const column of columns) {
         const value = (row[column] ?? '').trim();
+        // Non-space length: whitespace is not content, and counting it is how a row of single
+        // letters separated by spaces cleared the bar.
+        const dense = value.replace(/\s+/g, '').length;
         if (PLACEHOLDER.test(value))
           errors.push(
             `${row.ID}: "${column}" is "${value}", which states nothing. A row whose ` +
               `text is a placeholder passes every structural check here and tells a reader nothing.`,
           );
-        else if (value.length < MIN_PROSE)
+        else if (dense < minimum)
           errors.push(
-            `${row.ID}: "${column}" is ${value.length} characters, under the ${MIN_PROSE} this ` +
-              `check requires. Describe it in a sentence, or remove the row.`,
+            `${row.ID}: "${column}" carries ${dense} non-space characters, under the ` +
+              `${minimum} this check requires. Say what it is, or remove the row.`,
           );
       }
     }
   };
-  check(boundaries, ['Boundary', 'Untrusted side', 'Trusted side', 'Assets crossing'], 'boundary');
-  check(abuses, ['Abuse case'], 'abuse case');
-  check(mitigations, ['Mitigation'], 'mitigation');
-  check(residuals, ['Residual risk'], 'residual risk');
+  check(boundaries, ['Boundary', 'Untrusted side', 'Trusted side'], MIN_LABEL);
+  check(boundaries, ['Assets crossing']);
+  check(abuses, ['Abuse case']);
+  check(mitigations, ['Mitigation']);
+  // "Why accepted" is the basis Gate 2 reads to decide. T7 only refused it empty, so a single
+  // hyphen - rejected everywhere else in this test - passed both checks.
+  check(residuals, ['Residual risk', 'Why accepted']);
+  for (const row of residuals) {
+    if (!REVIEW_POINT.test(row['Review point']))
+      errors.push(
+        `${row.ID}: "Review point" is "${row['Review point']}", which names no gate or task. ` +
+          `Use "Gate N" or "Task N.N" so the re-review has a trigger somebody owns.`,
+      );
+  }
   assert.deepEqual(errors, [], errors.join('\n'));
 });
 
