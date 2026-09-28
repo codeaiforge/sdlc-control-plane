@@ -12,10 +12,13 @@ This models the ingress path published in task 1.1 and the policy administration
 named but did not design: what crosses each boundary, who is on the untrusted side of it, and
 which of those crossings is an abuse case somebody has to answer.
 
-**Reachability is measured, not asserted.** Every claim below that an abuse case is reachable
-_today_ was established by running the seam — `createApp()` bound to an ephemeral port, driven
+**Reachability is measured, not asserted.** Every abuse case below marked _reachable today;
+measured_ was established by running the seam — `createApp()` bound to an ephemeral port, driven
 over a real socket — and the observed status, the observed store contents and the observed
-process RSS are quoted. A claim that something is unreachable is a claim about code that exists,
+process RSS are quoted. Two are reachable today without being measured on the socket, and are
+labelled so: ABU-6 rests on repository evidence (`git log --format='%G?'`, the absence of
+`CODEOWNERS`) and ABU-7 on the roadmap's own Definition of Done. Neither is a request an attacker
+sends, so there was no socket to measure. A claim that something is unreachable is a claim about code that exists,
 and it names the line that makes it so. Nothing here is inferred from reading a handler and
 imagining its behaviour, because the one thing this document must not do is describe a system
 that is not the one running.
@@ -71,9 +74,10 @@ one. Nothing under `packages/` changes in this task.
 **No retained field is personal data today.** Classification answers how sensitive the record is,
 not whether erasure is an obligation, and RR-4 and RR-7 both turn on the second question. An
 `evidence/0` record carries no name, address or account identifier; the field that would change
-that is `owners` on a workspace registration, a free-form non-empty string array
-(`packages/contracts/src/schema.mjs:43-45`) that holds a team name today and is constrained to
-nothing. If a personal name is ever written there, retention stops being an operational choice and
+that is `owners` on a workspace registration, a non-empty array
+(`packages/contracts/src/schema.mjs:48-49`) that holds a team name today and is constrained to
+nothing — the validator checks only that it is an array with at least one element, not even that
+the elements are strings. If a personal name is ever written there, retention stops being an operational choice and
 RR-4 and RR-7 need re-deciding rather than re-accepting.
 
 ## System under analysis
@@ -97,7 +101,8 @@ principal — and **no caller anywhere in the workspace invokes it**. The author
 NFR-2.1 requires is present in the code as an unused function.
 
 Three things load once, at module scope, and never reload: the workspace registry and the
-guardrail policy (`main.mjs:27-32`), and the in-process evidence store (`main.mjs:38`). A policy
+guardrail policy (the registry at `main.mjs:8-10` and `:34`, the policy at `main.mjs:27-32`), and
+the in-process evidence store (`main.mjs:38`). A policy
 change therefore takes effect on restart and not before, and the store is a process-local array
 that a restart destroys — ADR-0002 is the decision that replaces it, and is still `Proposed`.
 
@@ -296,7 +301,7 @@ place.
 | RR-6  | The ingress body limit is specified and not shipped, so until 2.1 the seam buffers whatever is sent.             | ABU-2  | 1.3 writes no production code; shipping the limit here would put an unreviewed control on the live path.                                                                                                                                          | pending Gate 2                  | Task 2.1            |
 | RR-7  | The 90-day retention window has an operational basis only, now applied to data classified INTERNAL.              | ABU-4  | The shorter window is the conservative choice under a classification that was undetermined until today.                                                                                                                                           | dsofianos (founder), 2026-09-23 | Gate 2              |
 | RR-8  | `ai_assisted` stays submitter-declared until 2.1 authenticates the principal, so the provenance rule is opt-in.  | ABU-9  | The seam has no principal to derive it from; inferring it from the record is the same untrusted input under another name.                                                                                                                         | pending Gate 2                  | Task 2.1            |
-| RR-9  | `assertUsablePolicy` validates `policy_version` and `policy_id` only, so a policy with no approval block starts. | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.1's to enforce at startup, in the same change as MIT-12.                                                                         | pending Gate 2                  | Task 2.2            |
+| RR-9  | `assertUsablePolicy` validates `policy_version` and `policy_id` only, so a policy with no approval block starts. | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.1's to enforce at startup, in the same change as MIT-12.                                                                         | pending Gate 2                  | Task 2.1            |
 | RR-10 | A per-request cap bounds one submission, not the store: N compliant submissions still exhaust memory.            | ABU-2  | The in-process store is a stand-in with no eviction; only 2.2's durable store, bounded by the retention window, changes that. Measured: 300 accepted records strictly under the 1 MiB cap grew resident memory by 521 MiB and did not release it. | pending Gate 2                  | Task 2.2            |
 
 ## Ingress body limit — specification for task 2.1
@@ -453,7 +458,7 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    `adr-conformance.test.mjs`, `graph-fidelity.test.mjs` and `stack-profile.test.mjs` — soon four
    with `threat-model-conformance.test.mjs`. The file is vendored from upstream and exempt from
    this repository's formatter, so correcting it is a vendor-sync decision rather than an edit.
-6. **The residual risks above are unaccepted.** Every one whose `Accepted by` reads `pending Gate 2` is
+6. **Every residual risk above whose `Accepted by` reads `pending Gate 2` is unaccepted**, and is
    waiting on this gate; the table is the count, and stating a number here rotted the first time the
    table grew. Gate 2's
    own no-go condition is "Residual risks unlisted or unreviewed"; they are now listed, and the
