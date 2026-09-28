@@ -269,7 +269,9 @@ test('T1 the threat model carries the five header bullets, in order, with usable
     scheduled.length > 0,
     `${ROADMAP}: task 1.3's row traces nothing, so this compares nothing`,
   );
-  const dropped = scheduled.filter((id) => !header.get('Trace').includes(id));
+  // Tokenised, not a substring test: NFR-2.10 must not stand in for NFR-2.1.
+  const traced = new Set(header.get('Trace').match(/N?FR-\d+\.\d+/g));
+  const dropped = scheduled.filter((id) => !traced.has(id));
   assert.deepEqual(
     dropped,
     [],
