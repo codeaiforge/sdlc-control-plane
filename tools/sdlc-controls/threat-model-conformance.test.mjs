@@ -149,6 +149,7 @@ const TRUST_HEADERS = [
   'Surfaces',
   'Assets crossing',
   'STRIDE coverage',
+  'Control',
   'Status',
 ];
 const ABUSE_HEADERS = ['ID', 'Boundary', 'STRIDE', 'Abuse case', 'Answered by'];
@@ -187,6 +188,9 @@ const SURFACE_PREFIXES = ['git', 'process', 'store', 'forge'];
 const ROUTE_TOKEN_RE = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/\S*$/;
 const NON_ROUTE_TOKEN_RE = new RegExp(`^(${SURFACE_PREFIXES.join('|')}):\\S+$`);
 const STATUS_CELL_RE = /^(current|conditional on ADR-(\d{4}))$/;
+// A boundary's control as it stands today. `executable check` has to name the file that fails when
+// the control breaks - a check nobody can find is a convention with a better name.
+const CONTROL_RE = /^(none|convention|executable check `([^`]+)`)$/;
 const ID_LIST_RE = (prefix) => new RegExp(`^${prefix}-\\d+(, ${prefix}-\\d+)*$`);
 const EVIDENCE_PATH_RE = /^`([^`]+)`$/;
 const TASK_ID_RE = /^\d+\.\d+$/;
@@ -218,6 +222,15 @@ const idList = (cell) => cell.split(',').map((value) => value.trim());
 // A task ID is real only if the roadmap declares a row for it. The two assertions inside the
 // mitigation test prove this predicate still discriminates - a predicate that answers true for
 // everything would make the ownership check unfalsifiable while it kept passing.
+// The roadmap row's Trace cell for this task. The document has to carry every requirement the
+// task was scheduled against; dropping one from its header is dropping it from the model.
+const roadmapTrace = (id) => {
+  const row = ROADMAP_SOURCE.split('\n').find((line) =>
+    new RegExp(`^\\|\\s*${id.replace(/\./g, '\\.')}\\s*\\|`).test(line),
+  );
+  return row ? [...row.matchAll(/N?FR-\d+\.\d+/g)].map((match) => match[0]) : [];
+};
+
 const roadmapHasTask = (id) =>
   new RegExp(`^\\|\\s*${id.replace(/\./g, '\\.')}\\s*\\|`, 'm').test(ROADMAP_SOURCE);
 
@@ -251,6 +264,17 @@ test('T1 the threat model carries the five header bullets, in order, with usable
     TRACE_RE,
     `${DOC}: Trace names no FR/NFR ID, so the chain requirement -> threat -> mitigation is broken`,
   );
+  const scheduled = roadmapTrace('1.3');
+  assert.ok(
+    scheduled.length > 0,
+    `${ROADMAP}: task 1.3's row traces nothing, so this compares nothing`,
+  );
+  const dropped = scheduled.filter((id) => !header.get('Trace').includes(id));
+  assert.deepEqual(
+    dropped,
+    [],
+    `${DOC}: Trace drops ${dropped.join(', ')}, which ${ROADMAP} schedules task 1.3 against`,
+  );
   const classification = header.get('Classification');
   assert.match(
     classification,
@@ -260,9 +284,15 @@ test('T1 the threat model carries the five header bullets, in order, with usable
       `handed the undetermined classification to this task; re-stating it as undetermined ` +
       `closes that question without answering it.`,
   );
+  const [, , , decider, decided] = CLASSIFICATION_RE.exec(classification);
   assert.ok(
-    isRealDate(CLASSIFICATION_RE.exec(classification)[4]),
+    isRealDate(decided),
     `${DOC}: the Classification decision date is not a real YYYY-MM-DD`,
+  );
+  assert.doesNotMatch(
+    decider,
+    PENDING_RE,
+    `${DOC}: the Classification is attributed to "${decider}", which says nobody decided it`,
   );
 });
 
@@ -287,6 +317,7 @@ test('T3 every route the seam exports appears as a surface on some trust boundar
   );
   const errors = [];
   const covered = new Set();
+  const served = new Set(routes.map((route) => `${route.method} ${route.path}`));
   for (const row of boundaries) {
     const { tokens, clean } = surfaceTokens(row.Surfaces);
     if (!clean)
@@ -296,8 +327,14 @@ test('T3 every route the seam exports appears as a surface on some trust boundar
       );
     if (tokens.length === 0) errors.push(`${row.ID}: Surfaces names nothing`);
     for (const token of tokens) {
-      if (ROUTE_TOKEN_RE.test(token)) covered.add(token);
-      else if (!NON_ROUTE_TOKEN_RE.test(token))
+      if (ROUTE_TOKEN_RE.test(token)) {
+        if (!served.has(token))
+          errors.push(
+            `${row.ID}: surface \`${token}\` is shaped like a route but the seam serves no such ` +
+              `route. A typo here reads as coverage of a surface that does not exist.`,
+          );
+        covered.add(token);
+      } else if (!NON_ROUTE_TOKEN_RE.test(token))
         errors.push(
           `${row.ID}: surface \`${token}\` is neither a route ("METHOD /path") nor a prefixed ` +
             `non-route surface (${SURFACE_PREFIXES.join('|')}:<path>)`,
@@ -320,7 +357,7 @@ test('T3 every route the seam exports appears as a surface on some trust boundar
 
 // ---------------------------------------------------------------- T4: STRIDE totality
 
-test('T4 every trust boundary indexes all six STRIDE letters, and every letter resolves', () => {
+test('T4 every trust boundary indexes all six STRIDE letters and records its control', () => {
   const errors = [];
   for (const row of boundaries) {
     if (!parseCoverage(row['STRIDE coverage']))
@@ -329,6 +366,17 @@ test('T4 every trust boundary indexes all six STRIDE letters, and every letter r
           `order. Write it as: S:<v> T:<v> R:<v> I:<v> D:<v> E:<v>, where each <v> is n/a or a ` +
           `comma-separated ABU list with no spaces. A dropped letter reads as a letter nobody ` +
           `considered, which is the one thing a STRIDE pass exists to rule out.`,
+      );
+    const control = CONTROL_RE.exec(row.Control);
+    if (!control)
+      errors.push(
+        `${row.ID}: Control "${row.Control}" is not none, convention, or executable check ` +
+          `\`<path>\`. A boundary whose control state is unrecorded reads as controlled.`,
+      );
+    else if (control[2] && !existsSync(control[2]))
+      errors.push(
+        `${row.ID}: Control names \`${control[2]}\`, which does not exist. The boundary claims ` +
+          `a check this repository does not have.`,
       );
     if (!STATUS_CELL_RE.test(row.Status))
       errors.push(
@@ -512,7 +560,12 @@ test('T6 every mitigation is owned by a task that exists or a control already in
       );
     }
 
-    if (evidence !== '—' && !path)
+    if (owner !== 'in place' && evidence !== '—')
+      errors.push(
+        `${row.ID}: owned by task ${owner} but Evidence is "${evidence}". A mitigation still to ` +
+          `be delivered has no evidence yet; citing a file reads as a control already in place.`,
+      );
+    else if (evidence !== '—' && !path)
       errors.push(
         `${row.ID}: Evidence is "${evidence}", which is neither "—" nor a backticked repo path`,
       );
@@ -563,6 +616,7 @@ test('T7 every residual risk records who accepted it, or that nobody has yet', (
 // ---------------------------------------------------------------- T8: body-limit completeness
 
 const BODY_LIMIT_SECTION = 'Ingress body limit — specification for task 2.1';
+const DISPOSITIONS = ['respond then destroy', 'respond then drain'];
 const BODY_LIMIT_BULLETS = [
   'Byte cap',
   'Counted',
@@ -607,9 +661,21 @@ test('T8 the ingress body limit names every field task 2.1 has to implement', ()
   );
   assert.match(
     value.get('Wire status'),
-    /^\d{3}$/,
-    `${DOC}: "Wire status" is "${value.get('Wire status')}", not an HTTP status code`,
+    /^4\d{2}$/,
+    `${DOC}: "Wire status" is "${value.get('Wire status')}", not a 4xx. An oversized body is ` +
+      `the client's to fix; any other class tells the producer something false about it.`,
   );
+  assert.ok(
+    DISPOSITIONS.includes(value.get('Disposition')),
+    `${DOC}: "Disposition" is "${value.get('Disposition')}", not one of ${DISPOSITIONS.join(' | ')}. ` +
+      `Whether the socket is destroyed or drained is the decision 2.1 must not make alone.`,
+  );
+  for (const required of ['openapi.json', 'info.version'])
+    assert.ok(
+      value.get('Contract consequence').includes(required),
+      `${DOC}: "Contract consequence" does not mention ${required}. A new status is a published ` +
+        `contract change and a version bump; 2.1 has to be told both.`,
+    );
   assert.ok(
     value.get('Contract consequence').includes(value.get('Wire status')),
     `${DOC}: "Contract consequence" does not mention status ${value.get('Wire status')}. The ` +
