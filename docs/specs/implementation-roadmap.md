@@ -189,11 +189,11 @@ An authenticated workload from a registered workspace can submit evidence that s
 
 **Execution waves:**
 
-| Wave | Tasks | Rationale                                                                                                      |
-| ---- | ----- | -------------------------------------------------------------------------------------------------------------- |
-| 1    | 2.1   | Unblocked by 1.3's threat model; authorization shape determines what the store must record.                    |
-| 2    | 2.2   | Unblocked by 1.2 and 2.1 — durable records need both the store design and the identity they are attributed to. |
-| 3    | 2.3   | Unblocked by 2.2; there is nothing to observe until intake is durable.                                         |
+| Wave | Tasks | Rationale                                                                                                               |
+| ---- | ----- | ----------------------------------------------------------------------------------------------------------------------- |
+| 1    | 2.1   | Unblocked by 1.4's issuer and authorization-model selection; authorization shape determines what the store must record. |
+| 2    | 2.2   | Unblocked by 1.2 and 2.1 — durable records need both the store design and the identity they are attributed to.          |
+| 3    | 2.3   | Unblocked by 2.2; there is nothing to observe until intake is durable.                                                  |
 
 **Risk checkpoint:**
 
