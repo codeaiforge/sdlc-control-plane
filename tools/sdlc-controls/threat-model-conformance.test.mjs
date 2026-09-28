@@ -32,6 +32,10 @@ import { routes } from '../../packages/control-plane-api/src/main.mjs';
 // What it can insist on is that somebody's name and a real date are present before the row stops
 // saying the acceptance is outstanding.
 //
+// It cannot tell whether a trust boundary's Control cell is true. An `executable check` citation
+// is held to an existing path, never to a file that actually fails when that boundary's control
+// breaks - Phase (5) found that by mutating the code the cell describes, and this file cannot.
+//
 // It does not verify the ingress body limit is implemented. Task 1.3 ships no production code;
 // the limit is a specification for 2.1, and all that is checked is that the specification names
 // every field 2.1 needs.
