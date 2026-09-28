@@ -31,7 +31,7 @@
 
 ## Current Wave
 
-**Wave 1 complete** — 1.1 and 1.2 are both Done. **Wave 2** is the remaining work: task 1.3, unblocked by 1.1's published ingress contract and now carrying four inputs from 1.2's security assessment (unbounded request body at ingress, evidence data classification, and the `Data access` decision that 2.2 inherits). 1.3 tiers up to Complex on its NFR-6.1 trace regardless of its 3 SP.
+**Wave 1 complete** — 1.1 and 1.2 are both Done. **Wave 2** and **Wave 3** are the remaining work: task 1.3, in review, and task 1.4, which depends on it. 1.3 tiers up to Complex on its NFR-6.1 trace regardless of its 3 SP.
 
 ## Sprint 1 Definition of Done
 
@@ -39,6 +39,7 @@
 - [x] Contract tests cover accepted, invalid and incompatible evidence — named tests in `openapi.contract.test.mjs`
 - [x] An ADR names the store, idempotency key, retention window and audit-event boundary — `docs/adr/0002-append-only-evidence-envelope-log.md`, Status **Proposed** pending Gate 2
 - [ ] A threat model documents trust boundaries, abuse cases, mitigations and residual risks (1.3)
+- [ ] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved (1.4)
 
 ## Blockers / Decisions Needed
 
