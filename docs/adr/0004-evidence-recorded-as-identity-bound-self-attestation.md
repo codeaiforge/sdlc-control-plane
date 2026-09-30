@@ -46,40 +46,51 @@ We will not sign, verify a signature over, or recompute evidence in the MVP.
 The evidence envelope gains a `submitted_by` object, built **only from verified token claims**
 (ADR-0003) and never from the request body:
 
-| Field                 | Source claim          | Notes                                                       |
-| --------------------- | --------------------- | ----------------------------------------------------------- |
-| `issuer`              | `iss`                 | the accepted issuer                                         |
-| `repository_owner_id` | `repository_owner_id` | string, as the claim is                                     |
-| `repository_id`       | `repository_id`       | string, as the claim is                                     |
-| `run_id`              | `run_id`              | the run a human can open on the forge to re-check the claim |
-| `run_attempt`         | `run_attempt`         | tells a re-run from the original                            |
-| `sha`                 | `sha`                 | the commit the run built                                    |
-| `ref`                 | `ref`                 | for a `pull_request` run, the merge ref                     |
-| `event_name`          | `event_name`          | the admitted event                                          |
-| `workflow_ref`        | `workflow_ref`        | the workflow file and ref that ran                          |
-| `job_workflow_ref`    | `job_workflow_ref`    | `null` when the token carries none; see below               |
+| Field                 | Source claim          | Notes                                                                                                             |
+| --------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `issuer`              | `iss`                 | the accepted issuer                                                                                               |
+| `repository_owner_id` | `repository_owner_id` | string, as the claim is                                                                                           |
+| `repository_id`       | `repository_id`       | string, as the claim is                                                                                           |
+| `run_id`              | `run_id`              | the run a human can open on the forge to re-check the claim                                                       |
+| `run_attempt`         | `run_attempt`         | tells a re-run from the original                                                                                  |
+| `sha`                 | `sha`                 | the commit the run built                                                                                          |
+| `ref`                 | `ref`                 | for a `pull_request` run, the merge ref                                                                           |
+| `event_name`          | `event_name`          | the admitted event                                                                                                |
+| `workflow_ref`        | `workflow_ref`        | the workflow file and ref that ran                                                                                |
+| `job_workflow_ref`    | `job_workflow_ref`    | `null` when the token carries none; see below                                                                     |
+| `job_workflow_sha`    | `job_workflow_sha`    | `null` when the token carries none; the reusable workflow's commit, which a SHA pin (ADR-0003) is checked against |
 
 - Every source claim is in the GitHub issuer's `claims_supported`
   (<https://token.actions.githubusercontent.com/.well-known/openid-configuration>, fetched
-  2026-09-29).
+  2026-09-29 and re-checked 2026-09-30).
 - `submitted_by` lives in the **envelope**, beside `workspace_id` and `policy_id`, never in the
   `evidence/0` record, as ADR-0002 requires.
 - On `duplicate` or `conflict` the first envelope's `submitted_by` stands, as the first record does.
   A replay is not a second submitter.
-- **`job_workflow_ref` may be absent.** GitHub documents the claim only "For jobs using a reusable
-  workflow" (<https://docs.github.com/en/actions/reference/security/oidc>, fetched 2026-09-30).
-  That it is absent for other jobs is _unverified_; `null` is the fail-safe representation either
-  way. If it is present for jobs outside a reusable workflow it presumably equals `workflow_ref`,
-  which a direct push to the pinned ref also satisfies (_unverified_; task 2.1 records a measured
-  token). ADR-0003's "Registration contract" states what that means for a pin.
-- **Retention.** `submitted_by` is identity, not payload: it is built from the token and never from
-  the record. Under ADR-0002's rule for an expired envelope — "payload removed, identity retained"
-  — it is therefore kept with `workspace_id` and `change_id` when the payload is redacted, and it
-  is not on ADR-0002's list of what a redacted envelope keeps only because that list predates it.
-  It holds repository IDs, `ref`, `sha` and `run_id`, identifiers the threat model classifies
-  INTERNAL, so it falls under the threat model's Gate 2 finding 1: whether the tombstone gets its
-  own retention window is Gate 2's to decide, for `submitted_by` with the rest of the tombstone,
-  and task 2.2 implements what Gate 2 decides.
+- **`job_workflow_ref` and `job_workflow_sha` may be absent.** GitHub documents both claims only
+  "For jobs using a reusable workflow" (<https://docs.github.com/en/actions/reference/security/oidc>,
+  fetched 2026-09-30). That they are absent for other jobs is _unverified_; `null` is the fail-safe
+  representation either way. If `job_workflow_ref` is present for jobs outside a reusable workflow
+  it presumably equals `workflow_ref`, which a direct push to the pinned ref also satisfies
+  (_unverified_; task 2.1 records a measured token). ADR-0003's "Registration contract" states what that means for a pin.
+- **Retention: ADR-0004 amends ADR-0002's redacted-envelope list.** ADR-0002 lists what a redacted
+  envelope keeps — `workspace_id`, `change_id`, `idempotency_key`, `received_at` and
+  `envelope_version` — under its rule "payload removed, identity retained". `submitted_by` is
+  identity, not payload: it is built from the token and never from the record. The list gains the
+  identifier fields of `submitted_by` only: `issuer`, `repository_owner_id`, `repository_id`,
+  `run_id`, `run_attempt`, `sha` and `job_workflow_sha`.
+  - Redaction sets `ref`, `event_name`, `workflow_ref` and `job_workflow_ref` to `null`. `ref`,
+    `workflow_ref` and `job_workflow_ref` are branch, tag and file names that people choose, and a
+    branch name can carry a person's name; `event_name` is not needed to find the run again.
+  - What is kept is enough to reopen the run on the forge (`run_id`, `run_attempt` and the two
+    repository IDs) and to name the commits it built and was pinned to (`sha`,
+    `job_workflow_sha`), and none of it is text a person wrote.
+  - Task 2.2's `BEFORE UPDATE` trigger (ADR-0002) therefore also refuses any redaction write that
+    sets a dropped field to anything but `null` or changes a kept one.
+  - The kept fields are identifiers the threat model classifies INTERNAL, so they still fall under
+    the threat model's Gate 2 finding 1: whether the tombstone gets its own retention window is
+    Gate 2's to decide, for `submitted_by` with the rest of the tombstone, and task 2.2 implements
+    what Gate 2 decides.
 - **Envelope version.** Adding `submitted_by` does not bump `evidence-envelope/0`
   (`packages/control-plane-api/src/evidence-store.mjs:6`). Every envelope accepted once task 2.1
   ships carries it, and no envelope is durable until task 2.2, which depends on 2.1 in the roadmap,
