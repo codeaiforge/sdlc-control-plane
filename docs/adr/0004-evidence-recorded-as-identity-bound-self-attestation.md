@@ -85,8 +85,12 @@ The evidence envelope gains a `submitted_by` object, built **only from verified 
   - What is kept is enough to reopen the run on the forge (`run_id`, `run_attempt` and the two
     repository IDs) and to name the commits it built and was pinned to (`sha`,
     `job_workflow_sha`), and none of it is text a person wrote.
-  - Task 2.2's `BEFORE UPDATE` trigger (ADR-0002) therefore also refuses any redaction write that
-    sets a dropped field to anything but `null` or changes a kept one.
+  - Task 2.2's `BEFORE UPDATE` trigger (ADR-0002) therefore also refuses **any** `UPDATE` that
+    changes a kept `submitted_by` field, and allows a dropped field to change only to `null`, only
+    in the same statement that sets `evidence` to `NULL`. A narrower rule scoped to "redaction
+    writes" would let an `UPDATE` touching `submitted_by` alone rewrite `repository_id`, `sha` or
+    `run_id` while the payload is still present — the forged provenance ADR-0002's trigger exists
+    to stop.
   - The kept fields are identifiers the threat model classifies INTERNAL, so they still fall under
     the threat model's Gate 2 finding 1: whether the tombstone gets its own retention window is
     Gate 2's to decide, for `submitted_by` with the rest of the tombstone, and task 2.2 implements
@@ -123,7 +127,9 @@ The evidence envelope gains a `submitted_by` object, built **only from verified 
 
 - **Task 2.1**: `submitted_by` on the in-memory envelope, `evidence_attestation` at the seam and in
   `indicators`, and the three `openapi.json` schemas.
-- **Task 2.2**: the `submitted_by` column in the PostgreSQL envelope table.
+- **Task 2.2**: the `submitted_by` column in the PostgreSQL envelope table, nulling the dropped
+  fields on redaction, and the trigger extension above. ADR-0002's redacted-envelope list and
+  trigger are read together with this amendment: ADR-0002 is not edited.
 
 ## Options Considered
 
