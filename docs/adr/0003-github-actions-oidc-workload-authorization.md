@@ -160,7 +160,8 @@ Every registration gains a **required** object `workload_identity`:
   `job_workflow_ref`, which passes. **A pin narrows the same-repository risk only when minting and
   submitting happen in a separate job of the pinned workflow that checks out and runs no
   pull-request-controlled code**, consuming the gate's output as data. Task 3.1 builds its adapter
-  in that shape (Consequences).
+  in that shape (Consequences). A pin constrains who mints the token, not what the record says;
+  the gate's output is produced by pull-request code (ADR-0004).
 - **A ref pin is only as strong as the ref.** A branch or tag can be moved by anyone allowed to
   push it. `required_job_workflow_sha` pins the file's commit instead, which cannot move; the cost
   is a reviewed registry commit for every change to the pinned workflow. A registration that pins
@@ -209,8 +210,12 @@ privileges cannot be admitted at all.
 - `workflow_run` "is able to access secrets and write tokens, even if the previous workflow was
   not" [S5].
 - For `event_name`, "OIDC tokens requested for Dependabot update jobs use `dynamic` as the value"
-  [S3], which is outside the allowlist. A run triggered by a Dependabot _pull request_ is a different case; it is
-  in the fork row below.
+  [S3], which is outside the allowlist. A run triggered by a Dependabot _pull request_ or push is a
+  different case; it has its own row below and is refused by actor.
+- **Refused-actor set.** A reviewed code constant, like `iss`, never an environment variable or a
+  registration field. A token whose `actor_id` is a member is refused (403) whatever its event and
+  whatever the registration admits. Its one member is the Dependabot account's ID, for the reason in
+  the Dependabot row below.
 - `issue_comment` is outside the allowlist.
 - `merge_group`, `workflow_dispatch` and `schedule` are outside the allowlist, so a gate that runs
   in a merge queue, by hand or on a schedule cannot submit evidence. That fails closed; admitting
@@ -218,8 +223,9 @@ privileges cannot be admitted at all.
 
 | Context                                                                                                               | Outcome                                                            | Claim that distinguishes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Pull request from a fork, including a run triggered by a Dependabot pull request                                      | **Refused**                                                        | **No claim distinguishes it.** Nothing in `claims_supported` names the head repository [S1]. The refusal therefore rests on GitHub not issuing an ID token to the run, and that is _inferred_; no cited page says it. For it: "You can use the permissions key to add and remove read permissions for forked repositories, but typically you can't grant write access. The exception to this behavior is where an admin user has selected the Send write tokens to workflows from pull requests option" [S6], and the permission's value is literally `write`. Against it: of `id-token: write`, "This setting only enables fetching and setting the OIDC token; it does not grant write access to other resources" [S3], so a fork run's inability to obtain a token is not the documented write restriction. "Workflows triggered by Dependabot pull requests are treated as though they are from a forked repository" [S5], so they rest on the same inference. Task 3.1 measures it before any registration admits `pull_request` or `pull_request_review` on a public repository (Consequences), and it is a Gate 2 residual. The exception setting applies "to private repositories only" [S7]. On a private or internal repository with it on, a fork token would be indistinguishable from a same-repository one. Registration therefore carries a **precondition**, confirmed by the registering human in the reviewed commit, that the setting is off. The control plane cannot verify it; it is a Gate 2 residual. Whether a fork token would carry the base repository's `repository_id` is _unverified_, and the refusal does not depend on it. |
+| Pull request from a fork                                                                                              | **Refused**                                                        | **No claim distinguishes it.** Nothing in `claims_supported` names the head repository [S1]. The refusal therefore rests on GitHub not issuing an ID token to the run, and that is _inferred_; no cited page says it. For it: "You can use the permissions key to add and remove read permissions for forked repositories, but typically you can't grant write access. The exception to this behavior is where an admin user has selected the Send write tokens to workflows from pull requests option" [S6], and the permission's value is literally `write`. Against it: of `id-token: write`, "This setting only enables fetching and setting the OIDC token; it does not grant write access to other resources" [S3], so a fork run's inability to obtain a token is not the documented write restriction. Task 3.1 measures it before any registration admits `pull_request` or `pull_request_review` on a public repository (Consequences), and it is a Gate 2 residual. The exception setting applies "to private repositories only" [S7]. On a private or internal repository with it on, a fork token would be indistinguishable from a same-repository one. Registration therefore carries a **precondition**, confirmed by the registering human in the reviewed commit, that the setting is off. The control plane cannot verify it; it is a Gate 2 residual. Whether a fork token would carry the base repository's `repository_id` is _unverified_, and the refusal does not depend on it.                                                                                                                                                     |
 | Pull request from outside the organisation, and any trigger that runs untrusted code in the base repository's context | **Refused**                                                        | An outsider cannot push a branch to the base repository (_inferred_ from the permission model), so an external pull request is a fork pull request, above. `event_name` of `pull_request_target`, `workflow_run` or `issue_comment` is refused by the allowlist.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Run triggered by Dependabot on `push`, `pull_request` or `pull_request_review`                                        | **Refused (403)**                                                  | `actor_id`, "The ID of personal account that initiated the workflow run" [S3], in `claims_supported` [S1], is a member of the refused-actor set. GitHub's Dependabot page tells these runs apart by actor, with "an expression like: if: github.actor != 'dependabot[bot]'" [S13]; that `actor_id` is that actor's ID is _inferred_ from the claim's description. The fork row's refusal does not cover these runs, because the fork treatment is only a default: "By default, GitHub Actions workflow runs that are triggered by Dependabot from push, pull_request, pull_request_review, or pull_request_review_comment events are treated as if they were opened from a repository fork" [S13], and it says "You can use the permissions key in your workflow to increase the access for the token" [S13]. Dependabot branches live in the base repository (_inferred_: Dependabot opens its pull requests from branches it pushes there), and the run executes the dependency update Dependabot pulled in. The page does not mention `id-token`, so that such a run can obtain an ID token is _inferred_; the refusal does not depend on it. GitHub's REST API reports the `dependabot[bot]` account as `"id": 49699333` [S14]; that the `actor_id` claim carries that value is _unverified_, so task 2.1 records the `actor_id` of a measured Dependabot-triggered run and sets the constant from it. A commit a human pushes to a Dependabot branch carries that human's `actor_id` (_inferred_) and is a same-repository run, below. Dependabot _update_ jobs are also refused by the event allowlist, since their `event_name` is `dynamic` (above). |
 | Re-run of an old pipeline                                                                                             | **Admitted if its event is admitted**                              | `run_attempt` other than `"1"` [S1], [S4]. A re-run is possible "up to 30 days after its initial run", uses "the same `GITHUB_SHA` … and `GITHUB_REF`", and uses "the privileges of the actor who initially triggered the workflow" [S8]. It is evaluated against the **current** registration, so a suspended workspace cannot be re-run into acceptance. Its evidence resolves through ADR-0002: an identical body is `duplicate`, a differing body is `conflict`, and the first record stands.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Pull request from a branch of the same repository                                                                     | **Admitted if `pull_request` / `pull_request_review` is admitted** | **No claim distinguishes it from a fork pull request**; it is admitted by `event_name`, relying on the fork-token precondition in the fork row above. For both events GITHUB_REF is the "PR merge branch `refs/pull/PULL_REQUEST_NUMBER/merge`" [S5], the same for a fork. That the OIDC `ref` claim, "The git ref that triggered the workflow run" [S3], equals GITHUB_REF is _inferred_ for both events, and `ref` is not compared ("Not compared"). The risk this admits is recorded as a residual: anyone with write access can edit the workflow on a branch and mint a valid token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -248,11 +254,12 @@ is read. Every route in `routes` (`main.mjs:48-98`):
 
 - **Authorized for W** means one predicate, applied identically on every route except
   `GET /health`: the verified token binds to W, W is `active`, W admits the token's `event_name`,
-  and any `required_job_workflow_ref` / `required_job_workflow_sha` pin matches. Reads get the full
-  predicate rather than an active binding alone, because a looser read rule would let a context the
-  registration refuses — `pull_request_target`, `workflow_dispatch`, `schedule` — read W's
-  registration and indicator, no caller needs that, and one predicate is one code path and one
-  set of 403 cases for task 2.1 to test.
+  any `required_job_workflow_ref` / `required_job_workflow_sha` pin matches, and the token's
+  `actor_id` is not in the refused-actor set. Reads get the full predicate rather than an active
+  binding alone, because a looser read rule would let a context the registration refuses —
+  `pull_request_target`, `workflow_dispatch`, `schedule` — read W's registration and indicator, no
+  caller needs that, and one predicate is one code path and one set of 403 cases for task 2.1 to
+  test.
 - This is MIT-3's shape ("Scope every read route to the authorized principal"), which task 2.1
   owns.
 - The organisation-wide and human view of the indicator is **lost** in the MVP, by the founder's
@@ -262,12 +269,12 @@ is read. Every route in `routes` (`main.mjs:48-98`):
 
 ### Wire statuses
 
-| Status | Meaning                       | When                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| ------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 401    | Unauthenticated               | Missing, malformed or repeated `Authorization` (a repeat is detected from `request.rawHeaders`: Node's `request.headers` silently keeps only the first); a token header with no `kid` or with `crit`; bad signature; wrong `iss`, `aud` or `alg`; unknown `kid` after the permitted refetch; expired or not yet valid; lifetime over the maximum; a claim of the wrong type. Sent with `WWW-Authenticate: Bearer error="invalid_token"`. |
-| 403    | Authenticated, not authorized | A valid token matching no `active` registration; an `event_name` the registration does not admit; a `job_workflow_ref` or `job_workflow_sha` pin mismatch. **One identical body for every case.**                                                                                                                                                                                                                                        |
-| 422    | Refused by policy             | Existing and unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| 503    | Key set unavailable           | No unexpired key set is cached and a fetch fails or yields an unusable set (an addition beyond requirement 6; see "Keys and rotation"). The fault is the control plane's, not the caller's credential.                                                                                                                                                                                                                                   |
+| Status | Meaning                       | When                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 401    | Unauthenticated               | Missing, malformed or repeated `Authorization` (a repeat is detected from `request.rawHeaders`: Node's `request.headers` silently keeps only the first); a token header with no `kid` or with `crit`; bad signature; wrong `iss`, `aud` or `alg`; unknown `kid` after the permitted refetch; expired or not yet valid; lifetime over the maximum; a claim of the wrong type, or a missing `repository_owner_id`, `repository_id`, `actor_id` or `event_name`. Sent with `WWW-Authenticate: Bearer error="invalid_token"`. |
+| 403    | Authenticated, not authorized | A valid token matching no `active` registration; an `event_name` the registration does not admit; a `job_workflow_ref` or `job_workflow_sha` pin whose claim is absent or unequal; an `actor_id` in the refused-actor set (Dependabot). **One identical body for every case.**                                                                                                                                                                                                                                            |
+| 422    | Refused by policy             | Existing and unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 503    | Key set unavailable           | No unexpired key set is cached and a fetch fails or yields an unusable set (an addition beyond requirement 6; see "Keys and rotation"). The fault is the control plane's, not the caller's credential.                                                                                                                                                                                                                                                                                                                    |
 
 - **403, not 404, for a valid token with no registration.** 404 already means "no such route" here,
   and a status that differed between "registered but not admitted" and "not registered" would let
@@ -336,9 +343,12 @@ is read. Every route in `routes` (`main.mjs:48-98`):
   2. key set available (503);
   3. `alg`, `kid` and signature (401);
   4. `iss`, `aud`, `exp`, `nbf`, `iat` and the lifetime cap (401);
-  5. claim types — the ID claims in canonical string form, `event_name` and any pinned claim as
-     strings (401);
-  6. binding, `status`, `event_name` and pin (403).
+  5. claim types — `repository_owner_id`, `repository_id` and `actor_id` present in canonical
+     string form, `event_name` present as a string, and `job_workflow_ref` / `job_workflow_sha`,
+     where present, strings (401). No registration is consulted yet, so a pin cannot decide
+     anything here;
+  6. binding, `status`, `event_name`, a pinned claim absent or unequal, and an `actor_id` in the
+     refused-actor set (403).
 - **Algorithms:** the token header's `alg` must be exactly `RS256`, the only value in the discovery
   document's `id_token_signing_alg_values_supported` [S1]. A key must have `kty` `RSA` and a modulus
   of at least 2048 bits, `use` `sig` where present, and `alg` `RS256` where present. The measured key
@@ -428,6 +438,10 @@ re-examined against the same facts.
   serves under this model.
 - **Task 2.1** records a measured token from a real run: its `exp − iat`, and whether a job outside
   any reusable workflow carries `job_workflow_ref` and `job_workflow_sha`.
+- **Task 2.1** records the `actor_id` of a measured Dependabot-triggered run and sets the
+  refused-actor constant from that measured value, not from this record. If a Dependabot-triggered
+  run cannot obtain a token at all, there is nothing to measure or to refuse: 2.1 records that
+  result, and the constant holds the account ID from [S14], marked unmeasured.
 - **Task 2.2** persists the `submitted_by` envelope field that ADR-0004 defines, under the
   retention and version rules ADR-0004 states.
 - **Task 3.1** requests the custom audience with `id-token: write`, and the registering human
@@ -436,9 +450,16 @@ re-examined against the same facts.
   `pull_request_review` on a public repository: a pull request from a fork, whose workflow declares
   `id-token: write`, calls `getIDToken`, and the call is shown to fail. If it succeeds, those
   events are not admitted on a public repository and this ADR is revisited.
+- **Task 3.1 measures the Dependabot refusal**: a run triggered by a Dependabot pull request in a
+  registered repository, whose workflow declares `id-token: write` and submits, is shown either to
+  fail to obtain a token or to be refused with 403.
 - **Task 3.1 builds its adapter so that a pin means something**: the job that holds
   `id-token: write`, mints the token and submits is a separate job of the pinned reusable workflow
   that checks out and runs no pull-request-controlled code, and takes the gate's output as data.
+  That job runs only on GitHub-hosted or other ephemeral runners: on a persistent self-hosted
+  runner the gate job can leave behind files or processes the mint job then meets (_inferred_). It
+  never interpolates a caller-supplied `inputs` value into a shell command, because the caller
+  workflow is editable by whoever pushes the branch. The control plane checks neither.
 
 ### Residuals for Gate 2
 
@@ -452,16 +473,21 @@ here:
   tag changes what the pin admits; only `required_job_workflow_sha` removes that, at the cost of a
   registry commit per workflow change.
 - **Fork pull requests on public repositories are refused only because GitHub is inferred not to
-  issue an ID token to them**; no cited page says so, and Dependabot pull-request runs rest on the
-  same inference. Task 3.1's measurement settles it before either pull-request event is admitted
-  on a public repository.
+  issue an ID token to them**; no cited page says so. Task 3.1's measurement settles it before
+  either pull-request event is admitted on a public repository.
+- **Dependabot runs are refused by a deny-list of one `actor_id`**, whose value is _unverified_
+  until task 2.1 measures it. A deny-list fails open: if Dependabot-triggered runs ever carry an
+  `actor_id` outside the set, they are admitted as same-repository runs until a reviewed commit
+  updates the constant.
 - **The private-repository fork-token setting cannot be verified** by the control plane. The
   registration precondition is a human's word.
 - **`jti` replay within the token lifetime**: 900 s of lifetime plus 60 s of skew, about 960 s
   after `iat` (Q-7).
 - **Availability depends on GitHub's key set.** With no stale use of keys, a key-set outage that
   outlasts the cached set's remaining lifetime (at most 3600 s) answers 503 on every authenticated
-  route.
+  route. Because every fetch shares one 60 s budget, an unknown-`kid` refetch that fails shortly
+  before the cache expires delays the expiry refetch, so 503 can last up to 60 s after GitHub
+  recovers.
 - **Revocation takes effect only on restart**, because policy and registrations are read at process
   start (TB-6): a suspended workspace keeps submitting until the process restarts.
 - **The organisation-wide and human view is lost** in the MVP (Q-4).
@@ -476,7 +502,7 @@ here:
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | 1 — bind to a registered `workspace_id` | Decision › Principal to workspace binding                                                                          |
 | 2 — usable as ADR-0002's `workspace_id` | Decision › Principal to workspace binding (survival table)                                                         |
-| 3 — workload credential; forks, re-runs | Decision › Workload contexts                                                                                       |
+| 3 — workload credential; forks, re-runs | Decision › Workload contexts (the event allowlist and the refused-actor set)                                       |
 | 4 — read routes                         | Decision › Route authorization                                                                                     |
 | 5 — `GET /health` unauthenticated       | Decision › Route authorization                                                                                     |
 | 6 — distinguishable failure             | Decision › Wire statuses                                                                                           |
@@ -503,8 +529,8 @@ Every task this ADR hands work to — 2.1, 2.2 and 3.1 — is a row in
 
 ### Sources
 
-Fetched 2026-09-29. [S12] was fetched, and [S3], [S5] and [S6] were re-fetched for the quotations
-added in review, on 2026-09-30.
+Fetched 2026-09-29. [S12], [S13] and [S14] were fetched, and [S1], [S3], [S4], [S5] and [S6] were
+re-fetched for the quotations added in review, on 2026-09-30.
 
 - [S1] <https://token.actions.githubusercontent.com/.well-known/openid-configuration>
 - [S2] <https://token.actions.githubusercontent.com/.well-known/jwks> (response header and body measured)
@@ -518,4 +544,6 @@ added in review, on 2026-09-30.
 - [S10] <https://docs.gitea.com/usage/actions/token-permissions/>
 - [S11] <https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines>
 - [S12] <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows>
+- [S13] <https://docs.github.com/en/code-security/reference/supply-chain-security/troubleshoot-dependabot/dependabot-on-actions>
+- [S14] <https://api.github.com/users/dependabot%5Bbot%5D> (the `dependabot[bot]` account; response body measured)
 - Secondary, not relied on: <https://github.com/actions/toolkit/issues/2048>
