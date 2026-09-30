@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 // ADR conformance check.
 //
@@ -97,11 +97,10 @@ test('every ADR carries the four mandated sections, in the standard order', () =
 
 test('an accepted compliance ADR names the roles that approved it', () => {
   // .ai/standards/adr.md: an ADR tracing a Compliance requirement (an NFR-6.* ID) needs
-  // Security-role sign-off in addition to Architect approval before it is Accepted. Two things
-  // are checked, because either one alone is passable by an ADR nobody approved: the roles have
-  // to be named, AND the record must not still say the approval is outstanding. "Accepted" on
-  // top of "pending Architect review" is a record contradicting itself, and the contradiction
-  // resolves in favour of the sentence that says nobody has signed.
+  // Security-role sign-off in addition to Architect approval before it is Accepted, so the roles
+  // have to be named. Naming them alone is passable by an ADR nobody approved ("pending Architect
+  // review" names the architect); the next test, which covers every Accepted ADR and not only
+  // this kind, is what refuses a Deciders line that still says the approval is outstanding.
   for (const { file, body } of adrs) {
     const header = new Map(headerBullets(body));
     if (header.get('Status') !== 'Accepted' || !/NFR-6\.\d+/.test(header.get('Trace'))) continue;
@@ -116,11 +115,6 @@ test('an accepted compliance ADR names the roles that approved it', () => {
       /security/i,
       `${file}: accepted with an NFR-6 trace but names no security role`,
     );
-    assert.doesNotMatch(
-      deciders,
-      OUTSTANDING_RE,
-      `${file}: Accepted, but Deciders still records the approval as outstanding`,
-    );
   }
 });
 
@@ -128,7 +122,10 @@ test('an accepted ADR no longer records its approval as outstanding, whatever it
   // The compliance check above fires only on an NFR-6 trace, so an ADR tracing anything else could
   // read Accepted over a Deciders line that still says "pending" and every check stayed green.
   // Acceptance is a human act at a point in time, so the line that records it has to carry the
-  // date it happened as well as stop saying it has not.
+  // date it happened as well as stop saying it has not. That date cannot precede the record's
+  // own Date: an approval dated before the decision was written is not an approval of it. A
+  // Deciders line whose only date is the day it was proposed still passes when the two days
+  // coincide; this check reads dates, not intent.
   for (const { file, body } of adrs) {
     const header = new Map(headerBullets(body));
     if (header.get('Status') !== 'Accepted') continue;
@@ -138,9 +135,15 @@ test('an accepted ADR no longer records its approval as outstanding, whatever it
       OUTSTANDING_RE,
       `${file}: Accepted, but Deciders still records the approval as outstanding`,
     );
+    const dates = (deciders.match(ANY_DATE_RE) ?? []).filter(isRealDate);
     assert.ok(
-      (deciders.match(ANY_DATE_RE) ?? []).some(isRealDate),
+      dates.length > 0,
       `${file}: Accepted, but Deciders carries no real YYYY-MM-DD for when the approval was made`,
+    );
+    // YYYY-MM-DD strings order the same way the dates do, so string comparison is date comparison.
+    assert.ok(
+      dates.some((date) => date >= header.get('Date')),
+      `${file}: Accepted, but no date in Deciders (${dates.join(', ')}) is on or after the record's Date ${header.get('Date')}`,
     );
   }
 });
@@ -160,46 +163,82 @@ test('a proposed ADR says in its Deciders that the approval is outstanding', () 
   }
 });
 
-test('the stack profile states each linked ADR at the status the ADR itself records', () => {
+test('the stack profile states each ADR it links at the status the ADR itself records', () => {
   // docs/specs/stack.md names ADRs with their status beside the link, in the form
-  // "[ADR-NNNN](<path>) — <Status>". That status is a copy, and a copy rots the moment the ADR is
-  // approved or superseded unless something compares the two. Every ADR link in the profile has
-  // to be in that form, so a status written some other way cannot slip past the comparison, and
-  // at least one must be found, so a change of format cannot make this check read nothing.
+  // "[<text>](<path>) — <Status>". That status is a copy, and a copy rots the moment the ADR is
+  // approved or superseded unless something compares the two. What is enforced, exactly:
+  //
+  // - An inline link is an ADR link when its target's file name is NNNN-*.md or its text names
+  //   ADR-NNNN (hyphen, space or nothing between), whatever else the text says. Each one must
+  //   resolve, relative to docs/specs/, to that ADR's actual file under docs/adr/ — a URL, a
+  //   broken relative path or a different ADR's file fails — and must be followed at once by
+  //   " — <Status>" equal to the ADR's own Status. A #fragment is allowed and ignored.
+  // - Outside links, "ADR-NNNN — <lifecycle word>" is a status statement too and is compared.
+  // - At least one ADR link must be found, so a change of format cannot make this read nothing.
+  //
+  // Not enforced: a status written in any other shape of prose ("ADR-0003 is Accepted",
+  // "ADR-0003 (Accepted)" without a link), and reference-style links.
   const PROFILE = 'docs/specs/stack.md';
   const profile = readFileSync(PROFILE, 'utf8');
-  const statusByNumber = new Map(
+  const byNumber = new Map(
     adrs.map(({ file, body }) => [
       file.slice(0, 4),
       { file, status: new Map(headerBullets(body)).get('Status') },
     ]),
   );
-  const links = [...profile.matchAll(/\[ADR-(\d{4})\]\(/g)];
-  const references = [
-    ...profile.matchAll(/\[ADR-(\d{4})\]\(([^)\s]+)\) — (Superseded by ADR-\d{4}|[A-Za-z]+)/g),
-  ];
-  assert.ok(
-    references.length > 0,
-    `${PROFILE} states no ADR status this check can read, so it checks nothing`,
-  );
-  assert.equal(
-    references.length,
-    links.length,
-    `${PROFILE}: every ADR link must be followed by " — <Status>", or its status escapes this check`,
-  );
-  for (const [, number, path, stated] of references) {
-    const adr = statusByNumber.get(number);
-    assert.ok(adr, `${PROFILE} states a status for ADR-${number}, which this check cannot read`);
-    assert.equal(
-      basename(path),
-      adr.file,
-      `${PROFILE}: the ADR-${number} link points at ${path}, not at ${adr.file}`,
-    );
+  const grandfathered = new Map([...GRANDFATHERED].map((file) => [file.slice(0, 4), file]));
+  const STATUS_AFTER = /^ — (Superseded by ADR-\d{4}|[A-Za-z]+)/;
+  const LINK_RE = /\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
+  const NAMED_RE = /\bADR[-\s]?(\d{4})\b/i;
+
+  const compare = (number, stated, where) => {
+    if (grandfathered.has(number)) {
+      assert.fail(
+        `${PROFILE} ${where} states a status for ADR-${number}, but ${grandfathered.get(number)} is grandfathered and carries no header Status to compare it with; name it without a status`,
+      );
+    }
+    const adr = byNumber.get(number);
+    assert.ok(adr, `${PROFILE} ${where} names ADR-${number}, but ${DIR} holds no such ADR`);
     assert.equal(
       stated,
       adr.status,
-      `${PROFILE} says ADR-${number} is ${stated}, but ${adr.file} says ${adr.status}`,
+      `${PROFILE} ${where} says ADR-${number} is ${stated}, but ${adr.file} says ${adr.status}`,
     );
+    return adr;
+  };
+
+  let found = 0;
+  for (const link of profile.matchAll(LINK_RE)) {
+    const [whole, text, target] = link;
+    const path = target.split('#')[0];
+    const byTarget = /^(\d{4})-.+\.md$/.exec(basename(path))?.[1];
+    const byText = NAMED_RE.exec(text)?.[1];
+    if (!byTarget && !byText) continue;
+    found += 1;
+    const where = `link ${whole}`;
+    assert.ok(
+      !byTarget || !byText || byTarget === byText,
+      `${PROFILE} ${where}: the text names ADR-${byText} but the target is ADR-${byTarget}'s file`,
+    );
+    const number = byTarget ?? byText;
+    const after = STATUS_AFTER.exec(profile.slice(link.index + whole.length));
+    assert.ok(
+      after,
+      `${PROFILE} ${where} is not followed by " — <Status>", so its status escapes this check`,
+    );
+    const adr = compare(number, after[1], where);
+    assert.ok(
+      !/^[a-z][a-z0-9+.-]*:/i.test(path) && join(dirname(PROFILE), path) === join(DIR, adr.file),
+      `${PROFILE} ${where} does not resolve to ${join(DIR, adr.file)}`,
+    );
+  }
+  assert.ok(found > 0, `${PROFILE} links no ADR this check can read, so it checks nothing`);
+
+  const prose = profile.replace(LINK_RE, ' ');
+  const STATED_RE =
+    /\bADR[-\s]?(\d{4}) — (Superseded by ADR-\d{4}|Proposed|Accepted|Deprecated|Superseded)\b/gi;
+  for (const [whole, number, stated] of prose.matchAll(STATED_RE)) {
+    compare(number, stated, `text "${whole}"`);
   }
 });
 
