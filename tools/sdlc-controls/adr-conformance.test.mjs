@@ -125,7 +125,8 @@ test('an accepted ADR no longer records its approval as outstanding, whatever it
   // date it happened as well as stop saying it has not. That date cannot precede the record's
   // own Date: an approval dated before the decision was written is not an approval of it. A
   // Deciders line whose only date is the day it was proposed still passes when the two days
-  // coincide; this check reads dates, not intent.
+  // coincide; this check reads dates, not intent. One qualifying date is enough, so an earlier
+  // date beside it on the same line also passes.
   for (const { file, body } of adrs) {
     const header = new Map(headerBullets(body));
     if (header.get('Status') !== 'Accepted') continue;
@@ -151,7 +152,8 @@ test('an accepted ADR no longer records its approval as outstanding, whatever it
 test('a proposed ADR says in its Deciders that the approval is outstanding', () => {
   // The other direction. A Proposed record whose Deciders reads like a sign-off ("Approved by the
   // founder") claims an approval its Status denies, and an agent can write that sentence as
-  // easily as a human. Saying so explicitly is the only state a Proposed record may be in.
+  // easily as a human. Saying so explicitly is the only state a Proposed record may be in. The
+  // match is on any outstanding-word, so a negated one ("nothing pending") also passes.
   for (const { file, body } of adrs) {
     const header = new Map(headerBullets(body));
     if (header.get('Status') !== 'Proposed') continue;
@@ -194,7 +196,7 @@ test('the stack profile states each ADR it links at the status the ADR itself re
   const compare = (number, stated, where) => {
     if (grandfathered.has(number)) {
       assert.fail(
-        `${PROFILE} ${where} states a status for ADR-${number}, but ${grandfathered.get(number)} is grandfathered and carries no header Status to compare it with; name it without a status`,
+        `${PROFILE} ${where} states a status for ADR-${number}, but ${grandfathered.get(number)} is grandfathered and carries no header Status to compare it with; mention it without a link or a status`,
       );
     }
     const adr = byNumber.get(number);
