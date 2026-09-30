@@ -126,7 +126,12 @@ The evidence envelope gains a `submitted_by` object, built **only from verified 
 ### Implementers
 
 - **Task 2.1**: `submitted_by` on the in-memory envelope, `evidence_attestation` at the seam and in
-  `indicators`, and the three `openapi.json` schemas.
+  `indicators`, and the three `openapi.json` schemas. It also sweeps the wording surfaces the control
+  plane already owns: `packages/guardrail-policy/src/evaluate.mjs:27` returns "required control not
+  verified", which describes a missing claim as a missing verification. The string is asserted in
+  `packages/control-plane-api/src/main.test.mjs` and `openapi.contract.test.mjs`, quoted in ADR-0002,
+  and visible on the wire in `decision.reasons`, so changing it belongs in the same `info.version`
+  bump.
 - **Task 2.2**: the `submitted_by` column in the PostgreSQL envelope table, nulling the dropped
   fields on redaction, and the trigger extension above. ADR-0002's redacted-envelope list and
   trigger are read together with this amendment: ADR-0002 is not edited.
