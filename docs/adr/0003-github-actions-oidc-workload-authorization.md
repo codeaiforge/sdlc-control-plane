@@ -94,11 +94,24 @@ task 2.1 implements. Nothing under `packages/` or `config/` changes in this ADR'
   **authorizes nothing** (403).
 - Registry load refuses two registrations with the same triple, as `register` already refuses a
   duplicate `workspace_id` (`registry.mjs:17-18`).
-- **Not compared:** `sub`, `repository`, `repository_owner`, `repository_url` and `repo_property_*`.
+- **Not compared:** `sub`, `repository`, `repository_owner`, `repository_url`, `repo_property_*`,
+  `ref`, `workflow_ref` and `ref_protected`.
   - Names are refused because FR-1.2 says the system "does not infer people, teams, or authority
     from a repository name".
-  - `sub` is name-based for any repository created before July 15, 2026 unless it has opted in to
-    the immutable format [S3]. `ai-ready-nx-workspace` predates that date (Phase ① measurement).
+  - `sub` is name-based for older repositories: "Repositories created before July 15, 2026 keep the
+    previous format unless you opt in to immutable subject claims", and "Repository renames and
+    transfers after July 15, 2026 also move to the immutable subject format" [S3].
+    `ai-ready-nx-workspace` predates that date (Phase ① measurement).
+  - `ref` and `ref_protected` are not compared because evidence is per change, and a change is
+    gated on whatever branch it lives on before it merges: a `push` from **any** branch is admitted
+    when the registration admits `push`, and so is a pull request whatever its base. Requiring
+    `ref_protected` would admit only runs on protected branches, which is not where a gate runs,
+    and it is not required in the MVP. For a pull request `ref` is a merge ref (see "Workload
+    contexts"), which names no branch a registration could pin.
+  - `workflow_ref` is not compared: it names the caller workflow at the ref that ran, and anyone
+    who can push a branch chooses both. **The workflow is bound only through the optional
+    `required_job_workflow_ref` and `required_job_workflow_sha`** ("Registration contract"); a
+    registration that sets neither admits a token from any workflow in the repository.
   - Custom properties appear in the token "prefixed with `repo_property_`" [S3]. Binding on one
     would make the forge organisation's administrators, rather than TB-4's reviewed registry, the
     authority that decides which workspace a token speaks for.
@@ -107,13 +120,13 @@ task 2.1 implements. Nothing under `packages/` or `config/` changes in this ADR'
 
 What happens to the resolved `workspace_id` when the world changes:
 
-| Event                                                   | Outcome                                                                                                                                                                                                                                                                                    |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Token rotation                                          | **Survives.** A token carries no workspace identifier; the registry assigns it.                                                                                                                                                                                                            |
-| Repository rename                                       | **Survives if `repository_id` is stable across a rename.** That is _unverified_; it is _inferred_ from GitHub offering an immutable, ID-based `sub` format [S3]. If it is not stable, the token matches nothing and is refused (403) until a reviewed registry commit records the new ID.  |
-| Transfer to another owner                               | `repository_owner_id` changes, so the triple no longer matches: **403** until a reviewed commit updates the binding. That commit keeps the same `workspace_id` only if a human decides it is still the same workspace. Whether `repository_id` itself survives a transfer is _unverified_. |
-| Issuer re-registration (a second issuer, or enterprise) | The registration's `issuer` changes by reviewed commit; `workspace_id` is unchanged. ADR-0002's key is unaffected because `workspace_id` is not derived from the issuer.                                                                                                                   |
-| Repository deleted and its name re-used                 | The new repository has a new ID, so it is refused. GCP's guidance for the same problem: use "the numeric `*_id` fields instead, which are unique and can't be reused" [S11].                                                                                                               |
+| Event                                                   | Outcome                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Token rotation                                          | **Survives.** A token carries no workspace identifier; the registry assigns it.                                                                                                                                                                                                                                                                                           |
+| Repository rename                                       | **Survives if `repository_id` is stable across a rename.** That is _unverified_; it is _inferred_ from GitHub's immutable `sub` format, which "includes both the owner ID and repository ID" and which renames after July 15, 2026 move to [S3]. If it is not stable, the token matches nothing and is refused (403) until a reviewed registry commit records the new ID. |
+| Transfer to another owner                               | `repository_owner_id` changes, so the triple no longer matches: **403** until a reviewed commit updates the binding. That commit keeps the same `workspace_id` only if a human decides it is still the same workspace. Whether `repository_id` itself survives a transfer is _unverified_.                                                                                |
+| Issuer re-registration (a second issuer, or enterprise) | The registration's `issuer` changes by reviewed commit; `workspace_id` is unchanged. ADR-0002's key is unaffected because `workspace_id` is not derived from the issuer.                                                                                                                                                                                                  |
+| Repository deleted and its name re-used                 | The new repository has a new ID, so it is refused. GCP's guidance for the same problem: use "the numeric `*_id` fields instead, which are unique and can't be reused" [S11].                                                                                                                                                                                              |
 
 ### Registration contract: `workspace-registry/1`
 
@@ -126,14 +139,38 @@ Every registration gains a **required** object `workload_identity`:
 | `repository_id`             | same as `repository_owner_id`                                                                      | same                                                                                                   |
 | `admitted_events`           | non-empty array of unique strings, each a member of `{push, pull_request, pull_request_review}`    | `event_name` is a member                                                                               |
 | `required_job_workflow_ref` | optional string of the form `<owner>/<repo>/.github/workflows/<file>@refs/(heads\|tags)/<name>`    | when present, the `job_workflow_ref` claim is present and equals it exactly                            |
+| `required_job_workflow_sha` | optional string of 40 lowercase hexadecimal digits; allowed only with `required_job_workflow_ref`  | when present, the `job_workflow_sha` claim is present and equals it exactly                            |
 
 - The ID fields are strings because the claims are strings [S4], and because a numeric parse loses
   precision above 2^53 and accepts `"074"` as `74`. Equality on a canonical string form has neither
   failure.
-- `job_workflow_ref` is "For jobs using a reusable workflow, the ref path to the reusable workflow"
-  [S3]. Pinning it is the optional hardening the founder chose for the same-repository risk under
-  "Workload contexts" (Q-6): an edited caller workflow no longer mints an admitted token unless it
-  calls the pinned reusable workflow at the pinned ref.
+- `job_workflow_ref` is "For jobs using a reusable workflow, the ref path to the reusable workflow",
+  and `job_workflow_sha` is "For jobs using a reusable workflow, the commit SHA for the reusable
+  workflow file" [S3]; both are in `claims_supported` [S1]. Pinning them is the optional hardening
+  the founder chose for the same-repository risk under "Workload contexts" (Q-6).
+- **What a pin does.** A token minted by a job outside the pinned reusable workflow does not carry
+  the pinned value, so an edited caller workflow that mints its own token is refused (but see
+  "Unverified issuer behaviour" below for a workflow pushed to the pinned ref itself).
+- **What a pin does not do.** A job with `id-token: write` can request a token through
+  "environment variables on the runner", `ACTIONS_ID_TOKEN_REQUEST_URL` and
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN` [S3], so every step of that job can mint one (_inferred_: the
+  page does not say which steps see them). A gate job runs code the pull request controls —
+  install scripts, `project.json` targets, tests. If the job that holds the token executes that
+  code, the code can call `getIDToken` itself and mint a token carrying the pinned
+  `job_workflow_ref`, which passes. **A pin narrows the same-repository risk only when minting and
+  submitting happen in a separate job of the pinned workflow that checks out and runs no
+  pull-request-controlled code**, consuming the gate's output as data. Task 3.1 builds its adapter
+  in that shape (Consequences).
+- **A ref pin is only as strong as the ref.** A branch or tag can be moved by anyone allowed to
+  push it. `required_job_workflow_sha` pins the file's commit instead, which cannot move; the cost
+  is a reviewed registry commit for every change to the pinned workflow. A registration that pins
+  only the ref accepts whatever the ref points at (a Gate 2 residual).
+- **Unverified issuer behaviour.** Both pages describe `job_workflow_ref` only for reusable
+  workflows [S3], [S12]; whether GitHub omits it for other jobs is _unverified_. If it is present
+  for a job that is not in a reusable workflow, it presumably equals `workflow_ref`, and a
+  top-level workflow pushed directly to the pinned ref would then satisfy a ref pin (_unverified_).
+  Either way the rule is fail-safe in one direction: a token without the claim fails a pin. Task
+  2.1 records a measured token from a job outside any reusable workflow.
 - `status` becomes enumerated, `active | suspended`, and only `active` authorizes. Today it is only
   checked for being a non-empty string (`packages/contracts/src/schema.mjs:38-46`). Suspension is
   the revocation path: a reviewed commit and a restart.
@@ -171,22 +208,29 @@ privileges cannot be admitted at all.
 - `pull_request_target` "runs in the context of the default branch of the base repository" [S5].
 - `workflow_run` "is able to access secrets and write tokens, even if the previous workflow was
   not" [S5].
-- Dependabot jobs carry `event_name` `dynamic` [S3], which is outside the allowlist.
+- For `event_name`, "OIDC tokens requested for Dependabot update jobs use `dynamic` as the value"
+  [S3], which is outside the allowlist. A run triggered by a Dependabot _pull request_ is a different case; it is
+  in the fork row below.
 - `issue_comment` is outside the allowlist.
+- `merge_group`, `workflow_dispatch` and `schedule` are outside the allowlist, so a gate that runs
+  in a merge queue, by hand or on a schedule cannot submit evidence. That fails closed; admitting
+  any of them is a new decision.
 
-| Context                                                                                                               | Outcome                                                            | Claim that distinguishes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Pull request from a fork                                                                                              | **Refused**                                                        | **No claim distinguishes it.** Nothing in `claims_supported` names the head repository [S1]. What follows: for a workflow from a forked repository "you can't grant `write` access" through `permissions`, except where an administrator selected "Send write tokens to workflows from pull requests" [S6]; so `id-token: write` is unavailable (_inferred_ — the permission's value is literally `write`, and no page says so verbatim). That setting applies "to private repositories only" [S7]. On a private or internal repository with it on, a fork token would be indistinguishable from a same-repository one. Registration therefore carries a **precondition**, confirmed by the registering human in the reviewed commit, that the setting is off. The control plane cannot verify it; it is a Gate 2 residual. Whether a fork token would carry the base repository's `repository_id` is _unverified_, and the refusal does not depend on it. |
-| Pull request from outside the organisation, and any trigger that runs untrusted code in the base repository's context | **Refused**                                                        | An outsider cannot push a branch to the base repository (_inferred_ from the permission model), so an external pull request is a fork pull request, above. `event_name` of `pull_request_target`, `workflow_run` or `issue_comment` is refused by the allowlist.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| Re-run of an old pipeline                                                                                             | **Admitted if its event is admitted**                              | `run_attempt` other than `"1"` [S1], [S4]. A re-run is possible "up to 30 days after its initial run", uses "the same `GITHUB_SHA` … and `GITHUB_REF`", and uses "the privileges of the actor who initially triggered the workflow" [S8]. It is evaluated against the **current** registration, so a suspended workspace cannot be re-run into acceptance. Its evidence resolves through ADR-0002: an identical body is `duplicate`, a differing body is `conflict`, and the first record stands.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Pull request from a branch of the same repository                                                                     | **Admitted if `pull_request` / `pull_request_review` is admitted** | `event_name`, plus, for `pull_request`, a `ref` of `refs/pull/N/merge`, the documented ref for that event [S5]. The `ref` a `pull_request_review` run carries is _unverified_ and is not relied on. The risk this admits is recorded as a residual: anyone with write access can edit the workflow on a branch and mint a valid token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Context                                                                                                               | Outcome                                                            | Claim that distinguishes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pull request from a fork, including a run triggered by a Dependabot pull request                                      | **Refused**                                                        | **No claim distinguishes it.** Nothing in `claims_supported` names the head repository [S1]. The refusal therefore rests on GitHub not issuing an ID token to the run, and that is _inferred_; no cited page says it. For it: "You can use the permissions key to add and remove read permissions for forked repositories, but typically you can't grant write access. The exception to this behavior is where an admin user has selected the Send write tokens to workflows from pull requests option" [S6], and the permission's value is literally `write`. Against it: of `id-token: write`, "This setting only enables fetching and setting the OIDC token; it does not grant write access to other resources" [S3], so a fork run's inability to obtain a token is not the documented write restriction. "Workflows triggered by Dependabot pull requests are treated as though they are from a forked repository" [S5], so they rest on the same inference. Task 3.1 measures it before any registration admits `pull_request` or `pull_request_review` on a public repository (Consequences), and it is a Gate 2 residual. The exception setting applies "to private repositories only" [S7]. On a private or internal repository with it on, a fork token would be indistinguishable from a same-repository one. Registration therefore carries a **precondition**, confirmed by the registering human in the reviewed commit, that the setting is off. The control plane cannot verify it; it is a Gate 2 residual. Whether a fork token would carry the base repository's `repository_id` is _unverified_, and the refusal does not depend on it. |
+| Pull request from outside the organisation, and any trigger that runs untrusted code in the base repository's context | **Refused**                                                        | An outsider cannot push a branch to the base repository (_inferred_ from the permission model), so an external pull request is a fork pull request, above. `event_name` of `pull_request_target`, `workflow_run` or `issue_comment` is refused by the allowlist.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Re-run of an old pipeline                                                                                             | **Admitted if its event is admitted**                              | `run_attempt` other than `"1"` [S1], [S4]. A re-run is possible "up to 30 days after its initial run", uses "the same `GITHUB_SHA` … and `GITHUB_REF`", and uses "the privileges of the actor who initially triggered the workflow" [S8]. It is evaluated against the **current** registration, so a suspended workspace cannot be re-run into acceptance. Its evidence resolves through ADR-0002: an identical body is `duplicate`, a differing body is `conflict`, and the first record stands.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Pull request from a branch of the same repository                                                                     | **Admitted if `pull_request` / `pull_request_review` is admitted** | **No claim distinguishes it from a fork pull request**; it is admitted by `event_name`, relying on the fork-token precondition in the fork row above. For both events GITHUB_REF is the "PR merge branch `refs/pull/PULL_REQUEST_NUMBER/merge`" [S5], the same for a fork. That the OIDC `ref` claim, "The git ref that triggered the workflow run" [S3], equals GITHUB_REF is _inferred_ for both events, and `ref` is not compared ("Not compared"). The risk this admits is recorded as a residual: anyone with write access can edit the workflow on a branch and mint a valid token.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **The limit of authentication, stated once.** A verified token proves which repository and which run
 submitted the evidence. It does not prove that the gate which produced the evidence ran
 unmodified. Anyone who can push to a registered repository can edit a workflow and mint a token
 whose binding claims match — on a same-repository pull request, a push, or a feature branch.
-`required_job_workflow_ref` narrows that to the pinned reusable workflow, which still reads
-inputs the pull request controls. ADR-0004 is the answer to what a disposition may therefore claim.
+A pin (`required_job_workflow_ref`, optionally with `required_job_workflow_sha`) narrows that only
+for runs whose token-holding job executes no pull-request-controlled code. A pinned gate job that
+runs the pull request's code while holding `id-token: write` lets that code mint an admitted token
+directly. ADR-0004 is the answer to what a disposition may therefore claim.
 
 ### Route authorization
 
@@ -194,14 +238,21 @@ Routing is unchanged and comes first: a request that matches no entry in `routes
 and path (`packages/control-plane-api/src/main.mjs:105-109`) is answered 404 before any credential
 is read. Every route in `routes` (`main.mjs:48-98`):
 
-| Route                                  | Principal                                                   | May read or write                                                                                                                                                                                                                          |
-| -------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /health`                          | **Unauthenticated.** No credential is read, even if sent.   | Liveness only. It carries no data and checks no dependency, and deployment tooling probes it without a credential.                                                                                                                         |
-| `GET /v1/workspaces`                   | A workload principal bound to workspace W                   | Reads `{ "data": [registration W] }` — a list of exactly one. No other registration is disclosed.                                                                                                                                          |
-| `GET /v1/indicators`                   | A workload principal bound to workspace W                   | Reads `summarizeEvidence` over the records of envelopes whose `workspace_id` is W. Today the route summarises `evidenceStore.listRecords()` (`main.mjs:63`); the seam filters `evidenceStore.list()` instead, so the port does not change. |
-| `POST /v1/evidence`                    | A workload principal bound to W whose `event_name` W admits | Writes one envelope with `workspace_id` = W, taken from the principal and never from the body.                                                                                                                                             |
-| Policy and registration administration | **No principal this model authenticates**                   | Stays the TB-6 path: a reviewed commit to `config/control-plane/**`, read at process start. No route administers either.                                                                                                                   |
+| Route                                  | Principal                                                   | May read or write                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                          | **Unauthenticated.** No credential is read, even if sent.   | Liveness only. It carries no data and checks no dependency, and deployment tooling probes it without a credential.                                                                                                                                                                                                                                                                                    |
+| `GET /v1/workspaces`                   | A workload principal **authorized for** workspace W (below) | Reads `{ "data": [registration W] }` — a list of exactly one. No other registration is disclosed.                                                                                                                                                                                                                                                                                                     |
+| `GET /v1/indicators`                   | A workload principal authorized for W                       | Reads `summarizeEvidence` over the records of envelopes whose `workspace_id` is W. Today the route summarises `evidenceStore.listRecords()` (`main.mjs:63`); the seam instead takes `evidenceStore.list()`, keeps the envelopes whose `workspace_id` is W, and drops redacted envelopes (`evidence` null), as `listRecords()` does today (`evidence-store.mjs:124-127`), so the port does not change. |
+| `POST /v1/evidence`                    | A workload principal authorized for W                       | Writes one envelope with `workspace_id` = W, taken from the principal and never from the body.                                                                                                                                                                                                                                                                                                        |
+| Policy and registration administration | **No principal this model authenticates**                   | Stays the TB-6 path: a reviewed commit to `config/control-plane/**`, read at process start. No route administers either.                                                                                                                                                                                                                                                                              |
 
+- **Authorized for W** means one predicate, applied identically on every route except
+  `GET /health`: the verified token binds to W, W is `active`, W admits the token's `event_name`,
+  and any `required_job_workflow_ref` / `required_job_workflow_sha` pin matches. Reads get the full
+  predicate rather than an active binding alone, because a looser read rule would let a context the
+  registration refuses — `pull_request_target`, `workflow_dispatch`, `schedule` — read W's
+  registration and indicator, no caller needs that, and one predicate is one code path and one
+  set of 403 cases for task 2.1 to test.
 - This is MIT-3's shape ("Scope every read route to the authorized principal"), which task 2.1
   owns.
 - The organisation-wide and human view of the indicator is **lost** in the MVP, by the founder's
@@ -211,12 +262,12 @@ is read. Every route in `routes` (`main.mjs:48-98`):
 
 ### Wire statuses
 
-| Status | Meaning                       | When                                                                                                                                                                                                                                                    |
-| ------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 401    | Unauthenticated               | Missing, malformed or repeated `Authorization`; bad signature; wrong `iss`, `aud` or `alg`; unknown `kid` after the permitted refetch; expired or not yet valid; lifetime over the maximum. Sent with `WWW-Authenticate: Bearer error="invalid_token"`. |
-| 403    | Authenticated, not authorized | A valid token matching no `active` registration; an `event_name` the registration does not admit; a `job_workflow_ref` mismatch. **One identical body for every case.**                                                                                 |
-| 422    | Refused by policy             | Existing and unchanged.                                                                                                                                                                                                                                 |
-| 503    | Key set unavailable           | The key set cannot be fetched or parsed (an addition beyond requirement 6; see "Keys and rotation"). The fault is the control plane's, not the caller's credential.                                                                                     |
+| Status | Meaning                       | When                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------ | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 401    | Unauthenticated               | Missing, malformed or repeated `Authorization` (a repeat is detected from `request.rawHeaders`: Node's `request.headers` silently keeps only the first); a token header with no `kid` or with `crit`; bad signature; wrong `iss`, `aud` or `alg`; unknown `kid` after the permitted refetch; expired or not yet valid; lifetime over the maximum; a claim of the wrong type. Sent with `WWW-Authenticate: Bearer error="invalid_token"`. |
+| 403    | Authenticated, not authorized | A valid token matching no `active` registration; an `event_name` the registration does not admit; a `job_workflow_ref` or `job_workflow_sha` pin mismatch. **One identical body for every case.**                                                                                                                                                                                                                                        |
+| 422    | Refused by policy             | Existing and unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 503    | Key set unavailable           | No unexpired key set is cached and a fetch fails or yields an unusable set (an addition beyond requirement 6; see "Keys and rotation"). The fault is the control plane's, not the caller's credential.                                                                                                                                                                                                                                   |
 
 - **403, not 404, for a valid token with no registration.** 404 already means "no such route" here,
   and a status that differed between "registered but not admitted" and "not registered" would let
@@ -248,7 +299,9 @@ is read. Every route in `routes` (`main.mjs:48-98`):
   - A byte-identical replay of a submission is `duplicate`: nothing is appended.
   - A different body with the same `change_id` is `conflict`, and the first record stands.
   - A different body with a new `change_id`, under a stolen token, is appended. Only the token's
-    lifetime bounds this — at most 900 s accepted — and it is a Gate 2 residual.
+    lifetime bounds this, and it is a Gate 2 residual. The bound is 900 s of lifetime plus the 60 s
+    skew allowance: `exp ≤ iat + 900` and `exp > now − 60` together accept a token until about
+    **960 s after its `iat`**.
   - Tracking `jti` needs state shared across processes, which is task 2.2's store; 2.2 depends on
     2.1, so tracking in 2.1 would invert the roadmap's dependency. A per-process cache would
     protect one process and read as protection for all of them.
@@ -260,12 +313,32 @@ is read. Every route in `routes` (`main.mjs:48-98`):
 - **Cache:** for the response's `Cache-Control` `max-age`, clamped to **[60 s, 3600 s]**. The JWKS
   was measured answering `cache-control: public, max-age=3600, must-revalidate` [S2]. No key is used
   past that bound: there is no stale-while-error.
-- **Unknown `kid`:** one single-flight refetch, at most once per 60 s across the process. If the
-  `kid` is still unknown, 401. This bounds how hard a stream of forged `kid` values can drive the
-  control plane against GitHub.
-- **Fail closed:** a fetch failure, a parse failure or an empty key set answers **503** on every
-  authenticated route. The control plane never verifies against nothing and never admits an
-  unverified token.
+- **Every fetch is single-flight and rate-limited**: the first fetch, a refetch on expiry and a
+  refetch on an unknown `kid` share one in-flight request and at most one attempt per 60 s across
+  the process. Requests that arrive while a fetch is barred are answered from the cache, or 503 if
+  there is no unexpired cache; they never start a fetch of their own.
+- **Unknown `kid`:** triggers a refetch under that limit. If the `kid` is still unknown, 401. This
+  bounds how hard a stream of forged `kid` values can drive the control plane against GitHub.
+- **A failed refetch keeps the unexpired cache.** If an unknown-`kid` refetch fails, the cached key
+  set stays in use until its own expiry and that token gets 401. A stream of forged `kid` values
+  during a GitHub outage therefore cannot turn a working cache into a global 503.
+- **Fail closed:** when no unexpired key set is cached and a fetch fails, cannot be parsed or yields
+  an empty set, every authenticated route answers **503**. The control plane never verifies against
+  nothing and never admits an unverified token.
+- **Token header.** A token with no `kid` is refused (401), never tried against every key. `jku`,
+  `jwk`, `x5u`, `x5c` and `x5t` are ignored: a key comes only from the pinned key set (GitHub's
+  example header carries `x5t` [S12], so it must not be refused). A `crit` header is refused (401),
+  because this verifier understands no extension.
+- **Validation order**, so that the status a malformed or forged token gets is the same in every
+  implementation and can be tested:
+  1. header syntax — one `Authorization`, `Bearer`, a compact JWS within 8 KiB, a decodable header
+     with `alg` and `kid` and no `crit` (401);
+  2. key set available (503);
+  3. `alg`, `kid` and signature (401);
+  4. `iss`, `aud`, `exp`, `nbf`, `iat` and the lifetime cap (401);
+  5. claim types — the ID claims in canonical string form, `event_name` and any pinned claim as
+     strings (401);
+  6. binding, `status`, `event_name` and pin (403).
 - **Algorithms:** the token header's `alg` must be exactly `RS256`, the only value in the discovery
   document's `id_token_signing_alg_values_supported` [S1]. A key must have `kty` `RSA` and a modulus
   of at least 2048 bits, `use` `sig` where present, and `alg` `RS256` where present. The measured key
@@ -320,8 +393,10 @@ re-examined against the same facts.
 ### Binding keys
 
 - **Repository name, `repository`, or `sub` — rejected.** FR-1.2 forbids inferring authority from a
-  repository name, and `sub` is name-based for repositories created before July 15, 2026 [S3]. A
-  deleted-and-recreated repository of the same name would inherit the binding.
+  repository name, and `sub` is name-based for repositories created before July 15, 2026 unless
+  they opt in, while "Repository renames and transfers after July 15, 2026 also move to the
+  immutable subject format" [S3]. A `sub` binding would therefore change form under a rename. A
+  deleted-and-recreated repository of the same name would inherit a name binding.
 - **`repo_property_workspace_id` — rejected.** It would work mechanically [S3], but it moves the
   authority that binds a token to a workspace from the reviewed registry to whoever administers the
   forge organisation's custom properties.
@@ -348,13 +423,22 @@ re-examined against the same facts.
   over capacity; task 2.3 remains Sprint 2's release valve.
 - **Task 2.1** also carries the constraint that `control-plane-api` must not import `contracts`.
 - **Task 2.1** owns the doc consequence of the read-route change: `docs/contracts.md`'s lifecycle
-  diagram shows the control plane returning an indicator view to human governance, which no route
+  diagram and `docs/architecture/overview.md:35` (with its rendered `overview.html`) both show the
+  control plane returning an indicator view to human or organisational governance, which no route
   serves under this model.
-- **Task 2.2** persists the `submitted_by` envelope field that ADR-0004 defines.
+- **Task 2.1** records a measured token from a real run: its `exp − iat`, and whether a job outside
+  any reusable workflow carries `job_workflow_ref` and `job_workflow_sha`.
+- **Task 2.2** persists the `submitted_by` envelope field that ADR-0004 defines, under the
+  retention and version rules ADR-0004 states.
 - **Task 3.1** requests the custom audience with `id-token: write`, and the registering human
   confirms the fork-token precondition in the registration commit.
-- **Revocation** takes effect only on restart, because policy and registrations are read at process
-  start (TB-6).
+- **Task 3.1 measures the fork-token inference** before any registration admits `pull_request` or
+  `pull_request_review` on a public repository: a pull request from a fork, whose workflow declares
+  `id-token: write`, calls `getIDToken`, and the call is shown to fail. If it succeeds, those
+  events are not admitted on a public repository and this ADR is revisited.
+- **Task 3.1 builds its adapter so that a pin means something**: the job that holds
+  `id-token: write`, mints the token and submits is a separate job of the pinned reusable workflow
+  that checks out and runs no pull-request-controlled code, and takes the gate's output as data.
 
 ### Residuals for Gate 2
 
@@ -362,10 +446,24 @@ The threat model is not edited by this task (founder's decision, Q-10), so these
 here:
 
 - **Same-repository writers can mint valid tokens** from an edited workflow (Q-6, accepted as a
-  residual). `required_job_workflow_ref` narrows it; nothing closes it.
+  residual). A pin narrows it only for runs whose token-holding job executes no
+  pull-request-controlled code; nothing closes it.
+- **A ref pin is bounded by the pinned ref's mutability.** Anyone who can move the pinned branch or
+  tag changes what the pin admits; only `required_job_workflow_sha` removes that, at the cost of a
+  registry commit per workflow change.
+- **Fork pull requests on public repositories are refused only because GitHub is inferred not to
+  issue an ID token to them**; no cited page says so, and Dependabot pull-request runs rest on the
+  same inference. Task 3.1's measurement settles it before either pull-request event is admitted
+  on a public repository.
 - **The private-repository fork-token setting cannot be verified** by the control plane. The
   registration precondition is a human's word.
-- **`jti` replay within the token lifetime**, bounded at 900 s accepted (Q-7).
+- **`jti` replay within the token lifetime**: 900 s of lifetime plus 60 s of skew, about 960 s
+  after `iat` (Q-7).
+- **Availability depends on GitHub's key set.** With no stale use of keys, a key-set outage that
+  outlasts the cached set's remaining lifetime (at most 3600 s) answers 503 on every authenticated
+  route.
+- **Revocation takes effect only on restart**, because policy and registrations are read at process
+  start (TB-6): a suspended workspace keeps submitting until the process restarts.
 - **The organisation-wide and human view is lost** in the MVP (Q-4).
 - **Rename and transfer survival is unverified**; both fail closed and need a reviewed commit to
   recover.
@@ -374,21 +472,21 @@ here:
 
 ### Requirements trace
 
-| Threat-model requirement for 1.4        | Answered in                                                |
-| --------------------------------------- | ---------------------------------------------------------- |
-| 1 — bind to a registered `workspace_id` | Decision › Principal to workspace binding                  |
-| 2 — usable as ADR-0002's `workspace_id` | Decision › Principal to workspace binding (survival table) |
-| 3 — workload credential; forks, re-runs | Decision › Workload contexts                               |
-| 4 — read routes                         | Decision › Route authorization                             |
-| 5 — `GET /health` unauthenticated       | Decision › Route authorization                             |
-| 6 — distinguishable failure             | Decision › Wire statuses                                   |
-| 7 — audience                            | Decision › Audience                                        |
-| 8 — binding claims in the registry      | Decision › Registration contract: `workspace-registry/1`   |
-| 9 — lifetime and replay                 | Decision › Token lifetime and replay                       |
-| 10 — key rotation                       | Decision › Keys and rotation                               |
-| 11 — `Authorization` header only        | Decision › Credential transport                            |
-| 12 — TLS on every hop                   | Decision › Credential transport                            |
-| 13 — evidence attestation               | ADR-0004                                                   |
+| Threat-model requirement for 1.4        | Answered in                                                                                                        |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1 — bind to a registered `workspace_id` | Decision › Principal to workspace binding                                                                          |
+| 2 — usable as ADR-0002's `workspace_id` | Decision › Principal to workspace binding (survival table)                                                         |
+| 3 — workload credential; forks, re-runs | Decision › Workload contexts                                                                                       |
+| 4 — read routes                         | Decision › Route authorization                                                                                     |
+| 5 — `GET /health` unauthenticated       | Decision › Route authorization                                                                                     |
+| 6 — distinguishable failure             | Decision › Wire statuses                                                                                           |
+| 7 — audience                            | Decision › Audience                                                                                                |
+| 8 — binding claims in the registry      | Decision › Principal to workspace binding (and its "Not compared" list); Registration contract (the workflow pins) |
+| 9 — lifetime and replay                 | Decision › Token lifetime and replay                                                                               |
+| 10 — key rotation                       | Decision › Keys and rotation                                                                                       |
+| 11 — `Authorization` header only        | Decision › Credential transport                                                                                    |
+| 12 — TLS on every hop                   | Decision › Credential transport                                                                                    |
+| 13 — evidence attestation               | ADR-0004                                                                                                           |
 
 Every task this ADR hands work to — 2.1, 2.2 and 3.1 — is a row in
 `docs/specs/implementation-roadmap.md`.
@@ -405,7 +503,8 @@ Every task this ADR hands work to — 2.1, 2.2 and 3.1 — is a row in
 
 ### Sources
 
-Fetched 2026-09-29.
+Fetched 2026-09-29. [S12] was fetched, and [S3], [S5] and [S6] were re-fetched for the quotations
+added in review, on 2026-09-30.
 
 - [S1] <https://token.actions.githubusercontent.com/.well-known/openid-configuration>
 - [S2] <https://token.actions.githubusercontent.com/.well-known/jwks> (response header and body measured)
@@ -418,4 +517,5 @@ Fetched 2026-09-29.
 - [S9] <https://docs.gitlab.com/ci/secrets/id_token_authentication/>
 - [S10] <https://docs.gitea.com/usage/actions/token-permissions/>
 - [S11] <https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines>
+- [S12] <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows>
 - Secondary, not relied on: <https://github.com/actions/toolkit/issues/2048>
