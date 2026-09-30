@@ -344,7 +344,7 @@ is read. Every route in `routes` (`main.mjs:48-98`):
   3. `alg`, `kid` and signature (401);
   4. `iss`, `aud`, `exp`, `nbf`, `iat` and the lifetime cap (401);
   5. claim types — `repository_owner_id`, `repository_id` and `actor_id` present in canonical
-     string form, `event_name` present as a string, and `job_workflow_ref` / `job_workflow_sha`,
+     string form (GitHub's example payload carries `"actor_id": "12"` as a string [S4]), `event_name` present as a string, and `job_workflow_ref` / `job_workflow_sha`,
      where present, strings (401). No registration is consulted yet, so a pin cannot decide
      anything here;
   6. binding, `status`, `event_name`, a pinned claim absent or unequal, and an `actor_id` in the
