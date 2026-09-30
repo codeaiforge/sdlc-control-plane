@@ -57,7 +57,7 @@ The evidence envelope gains a `submitted_by` object, built **only from verified 
 | `ref`                 | `ref`                 | for a `pull_request` run, the merge ref                     |
 | `event_name`          | `event_name`          | the admitted event                                          |
 | `workflow_ref`        | `workflow_ref`        | the workflow file and ref that ran                          |
-| `job_workflow_ref`    | `job_workflow_ref`    | `null` when the token carries none (no reusable workflow)   |
+| `job_workflow_ref`    | `job_workflow_ref`    | `null` when the token carries none; see below               |
 
 - Every source claim is in the GitHub issuer's `claims_supported`
   (<https://token.actions.githubusercontent.com/.well-known/openid-configuration>, fetched
@@ -66,11 +66,29 @@ The evidence envelope gains a `submitted_by` object, built **only from verified 
   `evidence/0` record, as ADR-0002 requires.
 - On `duplicate` or `conflict` the first envelope's `submitted_by` stands, as the first record does.
   A replay is not a second submitter.
+- **`job_workflow_ref` may be absent.** GitHub documents the claim only "For jobs using a reusable
+  workflow" (<https://docs.github.com/en/actions/reference/security/oidc>, fetched 2026-09-30).
+  That it is absent for other jobs is _unverified_; `null` is the fail-safe representation either
+  way. If it is present for jobs outside a reusable workflow it presumably equals `workflow_ref`,
+  which a direct push to the pinned ref also satisfies (_unverified_; task 2.1 records a measured
+  token). ADR-0003's "Registration contract" states what that means for a pin.
+- **Retention.** `submitted_by` is identity, not payload: it is built from the token and never from
+  the record. Under ADR-0002's rule for an expired envelope — "payload removed, identity retained"
+  — it is therefore kept with `workspace_id` and `change_id` when the payload is redacted, and it
+  is not on ADR-0002's list of what a redacted envelope keeps only because that list predates it.
+  It holds repository IDs, `ref`, `sha` and `run_id`, identifiers the threat model classifies
+  INTERNAL, so it falls under the threat model's Gate 2 finding 1: whether the tombstone gets its
+  own retention window is Gate 2's to decide, for `submitted_by` with the rest of the tombstone,
+  and task 2.2 implements what Gate 2 decides.
+- **Envelope version.** Adding `submitted_by` does not bump `evidence-envelope/0`
+  (`packages/control-plane-api/src/evidence-store.mjs:6`). Every envelope accepted once task 2.1
+  ships carries it, and no envelope is durable until task 2.2, which depends on 2.1 in the roadmap,
+  so no stored `/0` envelope ever lacks it.
 
 ### What a disposition and the indicator may claim
 
-- **`accepted`** means: "the claims submitted by a verified run of registered workspace W satisfied
-  policy P". It never means "the controls were verified", and no surface this control plane owns
+- **`accepted`** means: "the claims submitted by a run whose identity was verified as registered
+  workspace W satisfied policy P". It never means "the controls were verified", and no surface this control plane owns
   may word it that way.
 - **`needs-remediation`** means the same claims, so evaluated, did not satisfy P.
 - **The indicator** is a count of claims made by the caller's own workspace (ADR-0003, "Route
