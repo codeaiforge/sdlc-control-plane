@@ -68,13 +68,13 @@ Sprint 1, which is the first sprint executed through the pipeline.
 
 ### Sprint Velocity Summary
 
-| Sprint    | SP total | Risk level | Largest task                           | Notes                                                                                                                                                                                          |
-| --------- | -------- | ---------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0         | 13       | Low        | 0.1 Nx boundaries + control map (5)    | Complete. All four tasks landed and the exit gate is verified green.                                                                                                                           |
-| 1         | 12       | Medium     | Four tasks at 3 SP each                | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner.                                                               |
-| 2         | 21       | **High**   | 2.1 OIDC (8) and 2.2 durable store (8) | **Over capacity** — 21 SP against a ~20 SP solo sprint, and the only sprint with two 8-SP tasks. Deferring 2.3 brings it to 16 SP. Both Musts are gated on human approval of the threat model. |
-| 3         | 13       | Medium     | 3.2 portfolio/ALM integration (8)      | Depends on an external integration owner who is not yet named. Absorbs 2.3 if it defers, taking the sprint to 18 SP.                                                                           |
-| **Total** | **59**   |            |                                        | Average 14.75 SP per sprint against ~20 SP solo capacity.                                                                                                                                      |
+| Sprint    | SP total | Risk level | Largest task                                | Notes                                                                                                                                                                                          |
+| --------- | -------- | ---------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0         | 13       | Low        | 0.1 Nx boundaries + control map (5)         | Complete. All four tasks landed and the exit gate is verified green.                                                                                                                           |
+| 1         | 14       | Medium     | 1.4 OIDC issuer and authorization model (5) | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner, and re-estimated from 3 to 5 SP on 2026-09-29.                |
+| 2         | 21       | **High**   | 2.1 OIDC (8) and 2.2 durable store (8)      | **Over capacity** — 21 SP against a ~20 SP solo sprint, and the only sprint with two 8-SP tasks. Deferring 2.3 brings it to 16 SP. Both Musts are gated on human approval of the threat model. |
+| 3         | 13       | Medium     | 3.2 portfolio/ALM integration (8)           | Depends on an external integration owner who is not yet named. Absorbs 2.3 if it defers, taking the sprint to 18 SP.                                                                           |
+| **Total** | **61**   |            |                                             | Average 15.25 SP per sprint against ~20 SP solo capacity.                                                                                                                                      |
 
 ### Task Priority (MoSCoW)
 
@@ -145,9 +145,9 @@ A governed workspace can read a published contract, post an evidence record agai
 | 1.1 | Define OpenAPI and error-response contract              | 3   | Must     | api      | 0.4        | FR-2.1, FR-2.2   | Contract tests exercise accepted, invalid, and incompatible evidence responses.                                    |
 | 1.2 | Add append-only persistence port and idempotency design | 3   | Must     | database | 0.2        | NFR-3.1, NFR-6.1 | ADR identifies the store, idempotency key, retention, and audit-event boundary.                                    |
 | 1.3 | Threat-model evidence ingress and policy administration | 3   | Must     | api+auth | 1.1        | NFR-2.1, NFR-6.1 | Threat model identifies trust boundaries, abuse cases, mitigations, and residual risks.                            |
-| 1.4 | Select OIDC issuer and authorization model              | 3   | Must     | auth     | 1.3        | NFR-2.1          | A named OIDC issuer and an authorization model binding a principal to a registered workspace, approved by a human. |
+| 1.4 | Select OIDC issuer and authorization model              | 5   | Must     | auth     | 1.3        | NFR-2.1          | A named OIDC issuer and an authorization model binding a principal to a registered workspace, approved by a human. |
 
-**Sprint total: 12 SP** — Medium risk. Three of four tasks produce documents whose quality is not verifiable by a test run; 1.3 carries an NFR-6.1 trace and therefore a tier override. **1.4 was added on 2026-09-23**, during 1.3's Phase ①: Gate 2 requires "a named OIDC issuer and authorization model approved" before Sprint 2 implementation, and the only task that would have produced it was 2.1 — inside the sprint the gate guards. Sprint 1 had the capacity; the gate signal had no owner.
+**Sprint total: 14 SP** — Medium risk. Three of four tasks produce documents whose quality is not verifiable by a test run; 1.3 carries an NFR-6.1 trace and therefore a tier override. **1.4 was added on 2026-09-23**, during 1.3's Phase ①: Gate 2 requires "a named OIDC issuer and authorization model approved" before Sprint 2 implementation, and the only task that would have produced it was 2.1 — inside the sprint the gate guards. Sprint 1 had the capacity; the gate signal had no owner. **1.4 was re-estimated from 3 to 5 SP on 2026-09-29**, at its own Phase ① gate: its thirteen threat-model requirements include an evidence-attestation decision its Done-when does not name, so it produces two ADRs rather than one.
 
 **Execution waves:**
 
