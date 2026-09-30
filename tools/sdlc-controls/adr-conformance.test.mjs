@@ -223,6 +223,10 @@ test('the stack profile states each ADR it links at the status the ADR itself re
       `${PROFILE} ${where}: the text names ADR-${byText} but the target is ADR-${byTarget}'s file`,
     );
     const number = byTarget ?? byText;
+    if (grandfathered.has(number))
+      assert.fail(
+        `${PROFILE} ${where} links ADR-${number}, but ${grandfathered.get(number)} is grandfathered and carries no header Status to compare it with; mention it without a link or a status`,
+      );
     const after = STATUS_AFTER.exec(profile.slice(link.index + whole.length));
     assert.ok(
       after,
