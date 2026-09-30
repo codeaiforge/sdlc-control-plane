@@ -179,11 +179,11 @@ An authenticated workload from a registered workspace can submit evidence that s
 
 **Deliverables:**
 
-| #   | Task                                                               | SP  | Priority | Layer    | Depends on | Trace            | Done when                                                                                   |
-| --- | ------------------------------------------------------------------ | --- | -------- | -------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| 2.1 | Implement OIDC workload authentication and workspace authorization | 8   | Must     | auth     | 1.4        | NFR-2.1          | An identity can submit only to authorized registered workspace boundaries.                  |
-| 2.2 | Implement durable evidence store and idempotent intake             | 8   | Must     | database | 1.2, 2.1   | NFR-3.1          | A replay is safe, durable records survive restart, and audit events are queryable.          |
-| 2.3 | Add telemetry, health, and retention verification                  | 5   | Should   | infra    | 2.2        | NFR-3.1, NFR-6.1 | Operators can detect failed ingestion, delayed processing, and retention-policy violations. |
+| #   | Task                                                               | SP  | Priority | Layer    | Depends on | Trace            | Done when                                                                                                                            |
+| --- | ------------------------------------------------------------------ | --- | -------- | -------- | ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| 2.1 | Implement OIDC workload authentication and workspace authorization | 8   | Must     | auth     | 1.4        | NFR-2.1          | An identity can submit only to authorized registered workspace boundaries, per ADR-0003 and ADR-0004.                                |
+| 2.2 | Implement durable evidence store and idempotent intake             | 8   | Must     | database | 1.2, 2.1   | NFR-3.1          | A replay is safe, durable records survive restart, and audit events are queryable; `submitted_by` and its redaction follow ADR-0004. |
+| 2.3 | Add telemetry, health, and retention verification                  | 5   | Should   | infra    | 2.2        | NFR-3.1, NFR-6.1 | Operators can detect failed ingestion, delayed processing, and retention-policy violations.                                          |
 
 **Sprint total: 21 SP** — **High** risk. The only sprint with two 8-SP tasks, both on the critical path, and both blocked until the production ingress decision gate passes.
 
@@ -217,10 +217,10 @@ A real workspace publishes contract-valid evidence from its own gate without han
 
 **Deliverables:**
 
-| #   | Task                                               | SP  | Priority | Layer | Depends on | Trace          | Done when                                                                                     |
-| --- | -------------------------------------------------- | --- | -------- | ----- | ---------- | -------------- | --------------------------------------------------------------------------------------------- |
-| 3.1 | Build the `ai-ready-nx-workspace` evidence adapter | 5   | Must     | ci    | 2.2        | FR-2.1         | A fixture workspace publishes contract-valid evidence after its existing gate completes.      |
-| 3.2 | Integrate one named portfolio/ALM system           | 8   | Should   | api   | 2.1        | FR-1.2, FR-3.2 | External Epic/capability references reconcile without granting automated portfolio authority. |
+| #   | Task                                               | SP  | Priority | Layer | Depends on | Trace          | Done when                                                                                                                        |
+| --- | -------------------------------------------------- | --- | -------- | ----- | ---------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 3.1 | Build the `ai-ready-nx-workspace` evidence adapter | 5   | Must     | ci    | 2.2        | FR-2.1         | A fixture workspace publishes contract-valid evidence after its existing gate completes, minting its token as ADR-0003 requires. |
+| 3.2 | Integrate one named portfolio/ALM system           | 8   | Should   | api   | 2.1        | FR-1.2, FR-3.2 | External Epic/capability references reconcile without granting automated portfolio authority.                                    |
 
 **Sprint total: 13 SP** — Medium risk. 3.2 depends on an external integration owner who is not yet named, which is an availability risk rather than a technical one.
 
