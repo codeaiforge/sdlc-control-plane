@@ -204,7 +204,7 @@ If 2.1 and 2.2 together exceed the sprint, 2.3 defers to Sprint 3 rather than be
 - [ ] An unauthenticated or unauthorized submission is refused
 - [ ] A replayed submission is idempotent and creates no duplicate record
 - [ ] Accepted evidence survives a process restart
-- [ ] Audit events for policy changes are queryable
+- [ ] Policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides (reworded at Gate 2, 2026-10-01: no API surface is built)
 - [ ] Failed ingestion, delayed processing and retention violations are detectable by an operator
 
 ---
