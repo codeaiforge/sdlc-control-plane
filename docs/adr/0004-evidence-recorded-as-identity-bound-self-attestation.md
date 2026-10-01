@@ -1,8 +1,8 @@
 # ADR-0004: Record submitted evidence as the workload's own claim, bound to its verified run identity, and label every disposition self-attested
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-29
-- **Deciders**: Proposed by the Architect role, with the Security Engineer role co-designing. Approval is pending: the founder approves or rejects it at task 1.4's close in a founder-authored commit, and — because this decision traces NFR-6.1 — the approval must name the Architect and Security roles. No human has approved it yet; this record states a proposal, not an approval.
+- **Deciders**: Approved by dsofianos (founder) for the Architect and Security Engineer roles, 2026-10-01.
 - **Trace**: NFR-2.1, NFR-6.1
 
 ## Context

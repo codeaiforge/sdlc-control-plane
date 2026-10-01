@@ -1,8 +1,8 @@
 # ADR-0003: Authenticate GitHub Actions OIDC workload tokens and bind each to one registered workspace by repository ID
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-29
-- **Deciders**: Proposed by the Architect role, with the Security Engineer role co-designing. Approval is pending: the founder approves or rejects it at task 1.4's close in a founder-authored commit. No human has approved it yet; this record states a proposal, not an approval.
+- **Deciders**: Approved by dsofianos (founder) for the Architect and Security Engineer roles, 2026-10-01.
 - **Trace**: NFR-2.1
 
 ## Context
