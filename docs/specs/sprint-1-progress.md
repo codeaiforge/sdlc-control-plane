@@ -39,7 +39,7 @@
 - [x] Contract tests cover accepted, invalid and incompatible evidence — named tests in `openapi.contract.test.mjs`
 - [x] An ADR names the store, idempotency key, retention window and audit-event boundary — `docs/adr/0002-append-only-evidence-envelope-log.md`, Status **Proposed** pending Gate 2
 - [x] A threat model documents trust boundaries, abuse cases, mitigations and residual risks — `docs/architecture/threat-model.md`; residual-risk acceptances pending Gate 2
-- [ ] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved (1.4)
+- [x] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved (1.4) — `docs/adr/0003-github-actions-oidc-workload-authorization.md` and `docs/adr/0004-evidence-recorded-as-identity-bound-self-attestation.md`, Status **Accepted** by the founder on 2026-10-01 (`90ecd33`)
 
 ## Blockers / Decisions Needed
 
