@@ -1,8 +1,8 @@
 # ADR-0002: Persist accepted evidence as an append-only PostgreSQL envelope log keyed by (workspace_id, change_id)
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-09-22
-- **Deciders**: Proposed by the Database Engineer role. Approval is pending Architect-role review, and — because this decision traces NFR-6.1 — pending Security-role sign-off at Gate 2 (Production ingress). No human has approved it yet; this record states a proposal, not an approval.
+- **Deciders**: Approved by dsofianos (founder) for the Architect and Security Engineer roles, 2026-10-01.
 - **Trace**: NFR-3.1, NFR-6.1
 
 ## Context
