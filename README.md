@@ -15,15 +15,22 @@ The architecture and delivery sequence are in [docs/architecture/overview.md](do
 
 ## Quick start
 
+Requires Node.js 20 or later.
+
 ```sh
 corepack enable
 pnpm install
+git config core.hooksPath .githooks   # enables the commit-msg provenance check
 pnpm test
 pnpm nx graph
 pnpm start:api
 ```
 
-The sample API is intentionally in-memory and unauthenticated. It proves the boundary and contract flow only; production adapters are a planned deployment concern.
+CI also runs `pnpm format:check`, `pnpm test:controls` and `pnpm build`; run them before pushing.
+
+The HTTP surface — routes, statuses and bodies — is [packages/control-plane-api/openapi.json](packages/control-plane-api/openapi.json), and a contract test fails when it and the seam disagree.
+
+The API is intentionally in-memory and unauthenticated: anyone who can reach the port can submit evidence and read every registration and indicator (threat model ABU-1, ABU-4). Do not expose it beyond localhost. Identity and durable storage are decided in [docs/adr/](docs/adr/) and scheduled in Sprint 2; current status is in the latest `docs/specs/sprint-*-progress.md`.
 
 ## Repository authority
 
@@ -33,3 +40,7 @@ The sample API is intentionally in-memory and unauthenticated. It proves the bou
 4. `AGENTS.md` — contributor adapter; it cannot redefine the preceding sources
 
 The workspace adapter and CI approach are informed by [ai-ready-nx-workspace](https://github.com/codeaiforge/ai-ready-nx-workspace). Evidence shape and tier-control semantics align to [git-native-sdlc-controls](https://github.com/codeaiforge/git-native-sdlc-controls), whose `evidence/0` contract remains experimental before v1.0.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
