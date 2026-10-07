@@ -16,7 +16,9 @@ The contract is rejected when its schema version is not `evidence/0`; accepting 
 
 ## Inbound: workspace registration
 
-Registration binds a repository to the ownership and value-stream context the control plane records against it; the fields are the `Workspace` schema in `openapi.json`. It is configuration, reviewed like any other control input. A registration is not an assertion that the control plane can query that repository.
+Registration binds a repository to the ownership and value-stream context the control plane records against it; the fields are the `Workspace` schema in `openapi.json`, at `workspace-registry/1` since task 2.1. It is configuration, reviewed like any other control input. A registration is not an assertion that the control plane can query that repository.
+
+A registration now also carries the workload binding, `workload_identity`: the issuer and the numeric `repository_owner_id` and `repository_id` a GitHub Actions OIDC token must carry, the events it may be minted for, and optional workflow pins ([ADR-0003](adr/0003-github-actions-oidc-workload-authorization.md)). That binding is the only thing a token is matched against; nothing in a request body, and no repository name, decides which workspace a submission speaks for. Unlike the rest of the registration, the `workload_identity` block is closed: an unrecognised field in it is refused at load. That is an exception to NFR-1.1's tolerance of additive fields, accepted at task 2.1's Phase ② gate (founder, 2026-10-07), because a misspelled pin field would otherwise load silently and pin nothing.
 
 ## Outbound: guardrail binding
 
@@ -24,7 +26,7 @@ Registration binds a repository to the ownership and value-stream context the co
 
 That paragraph is the one field list on this page that nothing checks. `guardrails/0` is configuration the control plane consumes, not a contract it serves, so it has no place in `openapi.json` and no contract test compares it to [`config/control-plane/guardrails.json`](../config/control-plane/guardrails.json). The two can drift apart silently today. What fixes it is policy administration: once policy has a served surface, it belongs in `openapi.json` and under the same test as everything else.
 
-An earlier version of this page said that surface was coming in Sprint 2. It is not. Policy administration is threat-modelled in roadmap task 1.3, which produces a threat model rather than a route, and **no scheduled task builds the surface** — 2.1 is identity, 2.2 is evidence intake, 2.3 is operator telemetry. Gate 2 (2026-10-01) resolved the overstatement by rewording Sprint 2's definition of done: policy changes are queryable from the git history of `config/control-plane/**`. Today the audit trail for a policy change is the reviewed commit to [`config/control-plane/`](../config/control-plane/): attributed but unverified, gated and evidence-producing, but readable only with the repository and `git log`, and exposed by no route. [ADR-0002](adr/0002-append-only-evidence-envelope-log.md) records that gap; Gate 2 chose to rewrite the bullet rather than add a task.
+An earlier version of this page said that surface was coming in Sprint 2. It is not. Policy administration is threat-modelled in roadmap task 1.3, which produces a threat model rather than a route, and **no scheduled task builds the surface** — 2.1 is identity, 2.2 is evidence intake, 2.3 is operator telemetry, and 2.4 hardens the policy's approval and provenance rules without serving the policy. Gate 2 (2026-10-01) resolved the overstatement by rewording Sprint 2's definition of done: policy changes are queryable from the git history of `config/control-plane/**`. Today the audit trail for a policy change is the reviewed commit to [`config/control-plane/`](../config/control-plane/): attributed but unverified, gated and evidence-producing, but readable only with the repository and `git log`, and exposed by no route. [ADR-0002](adr/0002-append-only-evidence-envelope-log.md) records that gap; Gate 2 chose to rewrite the bullet rather than add a task.
 
 ## Evidence lifecycle
 
@@ -36,7 +38,11 @@ sequenceDiagram
   H->>CP: approves policy + decision reference
   CP->>WS: distributes versioned guardrail binding
   WS->>WS: CI computes tier and evidence
-  WS->>CP: POST evidence record
-  CP->>CP: validate contract and evaluate policy
-  CP-->>H: descriptive indicator / traceability view
+  WS->>CP: POST evidence record + OIDC token
+  CP->>CP: authenticate, authorize for W, validate, evaluate
+  CP-->>WS: disposition (self-attested)
+  WS->>CP: GET own indicator
+  CP-->>WS: own-workspace indicator, self-attested
 ```
+
+Since task 2.1 no route returns an indicator, a registration list or a traceability view to human or organisational governance: every read is scoped to the calling workload's own workspace, and the organisation-wide view is lost in the MVP by the founder's decision ([ADR-0003](adr/0003-github-actions-oidc-workload-authorization.md) › Route authorization). Every disposition and indicator is labelled `self-attested`: it rests on the workload's own claims, bound to its verified run identity ([ADR-0004](adr/0004-evidence-recorded-as-identity-bound-self-attestation.md)).
