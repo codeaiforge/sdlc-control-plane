@@ -203,7 +203,8 @@ breaks; the provenance rule (`evaluate.mjs:22-24`) and the `blocked_tiers` rule 
 be deleted with every test green, and task 2.4 adds those tests. No boundary reads `none` since
 task 2.1: TB-1 and TB-4, the two NFR-2.1 is about, read `none` until it shipped. TB-1's check
 holds admission order, scoping, the respond-then-destroy refusals and the byte cap at the seam,
-but against a fake socket; TB-4's holds the binding index and the registration rules, not the seam
+mostly against a fake socket (only the connection close and `Expect: 100-continue` are held on a
+real one, on 127.0.0.1); TB-4's holds the binding index and the registration rules, not the seam
 that calls them. TB-6 reads `convention` although
 the PR gate runs on every change to it: the gate computes the T3 tier, but the workflow passes it
 no approver set, so the review that tier calls for is recorded and never verified. TB-7 reads
@@ -560,6 +561,9 @@ code constants in `packages/control-plane-api/src/admission.mjs`:
 - `headersTimeout` 10000 ms and `requestTimeout` 30000 ms. 1 MiB in 30 s needs about 35 KiB/s
   sustained, with room for a 5 s key-set fetch. **Derived by arithmetic from the cap, not
   measured** on a real link, which the threat model asked for; Node's defaults are 60 s and 300 s.
+  Node checks both on one timer, every `connectionsCheckingInterval`, 30 s by default, which let
+  a slow request outlive its timeout by up to 30 s. The seam sets 1000 ms, so headers are cut by
+  11 s and the whole request by 31 s at the latest.
 - 60 submissions per principal per fixed 60 s window, the figure of the founder's gate decision
   Q-5, answered 429 with `Retry-After` before the body is read. **Per process**: N processes admit
   60·N, a restart resets the window, and at the cap that is up to 60 MiB a minute per principal
