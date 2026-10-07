@@ -54,8 +54,9 @@ import { routes } from '../../packages/control-plane-api/src/main.mjs';
 //
 // `routes` is imported from the seam rather than transcribed, so a route added there without a
 // boundary fails here. Importing main.mjs is safe and adds no graph edge: its listen is guarded
-// on process.argv[1] (main.mjs:117), and tools/ is not an Nx project, so graph-fidelity's import
-// scan (which reads only packages/*/src/) never sees it.
+// on process.argv[1] (the module's last statement), building its default key set fetches nothing
+// until a request needs it, and tools/ is not an Nx project, so graph-fidelity's import scan
+// (which reads only packages/*/src/) never sees it.
 //
 // Everything else is an inline literal, but NOT for a fan-in reason: since tools/ contributes no
 // edge, importing packages/contracts from here could not change its fan-in either, and an earlier
