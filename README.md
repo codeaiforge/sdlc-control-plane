@@ -4,12 +4,12 @@ The SDLC Control Plane is a federation layer for engineering governance. It aggr
 
 ## Scope
 
-| Concern              | This control plane does                                        | It does not do                                 |
-| -------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
-| Team / ART execution | Receives Nx graph, SDLC gate, provenance, and delivery signals | Replace the workspace CI/CD pipeline           |
-| ART coordination     | Registers workspaces and presents cross-workspace indicators   | Plan work or resolve dependencies for teams    |
-| Large Solution       | Supplies traceable evidence to solution-intent/MBSE tools      | Own solution intent or supplier management     |
-| Portfolio            | Exposes indicators and distributes approved guardrails         | Make investment, staffing, or budget decisions |
+| Concern              | This control plane does                                                               | It does not do                                 |
+| -------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Team / ART execution | Receives Nx graph, SDLC gate, provenance, and delivery signals                        | Replace the workspace CI/CD pipeline           |
+| ART coordination     | Registers workspaces; cross-workspace indicators are not served in the MVP (ADR-0003) | Plan work or resolve dependencies for teams    |
+| Large Solution       | Supplies traceable evidence to solution-intent/MBSE tools                             | Own solution intent or supplier management     |
+| Portfolio            | Distributes approved guardrails; no indicator view in the MVP (ADR-0003)              | Make investment, staffing, or budget decisions |
 
 The architecture and delivery sequence are in [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/specs/implementation-roadmap.md](docs/specs/implementation-roadmap.md), and the trust boundaries, abuse cases and residual risks the ingress path is being designed against are in [docs/architecture/threat-model.md](docs/architecture/threat-model.md). Every deployable and library is an Nx project under `packages/`, defined by its `project.json`. The API is the sole initial deployable artifact; the other projects are internal libraries it composes.
 
@@ -30,7 +30,7 @@ CI also runs `pnpm format:check`, `pnpm test:controls` and `pnpm build`; run the
 
 The HTTP surface — routes, statuses and bodies — is [packages/control-plane-api/openapi.json](packages/control-plane-api/openapi.json), and a contract test fails when it and the seam disagree.
 
-The API is intentionally in-memory and unauthenticated: anyone who can reach the port can submit evidence and read every registration and indicator (threat model ABU-1, ABU-4). Do not expose it beyond localhost. Identity and durable storage are decided in [docs/adr/](docs/adr/) and scheduled in Sprint 2; current status is in the latest `docs/specs/sprint-*-progress.md`.
+The API is authenticated by GitHub Actions OIDC ([ADR-0003](docs/adr/0003-github-actions-oidc-workload-authorization.md)): every route but `GET /health` needs a workload token bound to a registered workspace, and each caller sees only its own workspace. It is still in-memory: accepted evidence and the submission quota live in one process and a restart loses them. Every hop that carries the token needs TLS, and the API should not be exposed until task 2.2 makes intake durable. The shipped `config/control-plane/workspaces.json` registers one example workspace, suspended, so out of the box no token is authorized. Current status is in the latest `docs/specs/sprint-*-progress.md`.
 
 ## Repository authority
 
