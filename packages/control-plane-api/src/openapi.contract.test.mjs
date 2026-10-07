@@ -432,6 +432,57 @@ for (const scenario of scenarios) {
   });
 }
 
+// The POST description's connection claim, held to the seam: a status decided before the body is
+// read, x-unmatched-request included, is written with connection: close and then the request is
+// destroyed; so is any other response sent while a declared body is unread; a request with no
+// body keeps its connection.
+const disposition = async (handler, request) => {
+  const events = [];
+  let headers = {};
+  request.destroy = () => events.push('destroy');
+  await handler(request, {
+    writeHead: (value, written = {}) => {
+      headers = written;
+      events.push('writeHead');
+    },
+    end: (value, done) => {
+      events.push('end');
+      done?.();
+    },
+  });
+  return { connection: headers.connection, events };
+};
+const CLOSED = { connection: 'close', events: ['writeHead', 'end', 'destroy'] };
+const KEPT = { connection: undefined, events: ['writeHead', 'end'] };
+
+test('x-unmatched-request and the refusals close the connection after the response is written', async () => {
+  // The POSTs declare a two-byte body the seam never reads.
+  const declared = (request) => ({
+    ...request,
+    headers: { 'content-length': '2' },
+    complete: false,
+  });
+  const cases = [
+    ['404', seam(), anonymous('/v1/nope')],
+    ['404', seam(), { method: 'POST', url: '/health', rawHeaders: [] }],
+    ['401', seam(), declared(post('{}', undefined, []))],
+    ['403', seam(), declared(post('{}', undefined, credential({ repository_id: '99' })))],
+    ['503', seam(undefined, { fetchKeySet: outage }), declared(post('{}'))],
+    ['429', seam(undefined, { quota: exhausted }), declared(post('{}'))],
+  ];
+  for (const [status, handler, request] of cases)
+    assert.deepEqual(await disposition(handler, request), CLOSED, `${status} ${request.url}`);
+});
+
+test('a response sent while a declared body is unread closes the connection; one with no body does not', async () => {
+  const unread = { headers: { 'transfer-encoding': 'chunked' }, complete: false };
+  assert.deepEqual(await disposition(seam(), { ...anonymous('/health'), ...unread }), CLOSED);
+  assert.deepEqual(
+    await disposition(seam(), { ...anonymous('/health'), headers: {}, complete: false }),
+    KEPT,
+  );
+});
+
 test('declared response headers match the headers the seam sends', () => {
   // Guard on the loop above: the two headers 2.1 introduced are both declared and both exercised.
   const declared = operations.flatMap(({ path, method, operation }) =>
