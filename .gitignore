@@ -7,3 +7,6 @@ graph.json
 evidence.json
 tier.txt
 .vendor-patches
+
+# run-task phase inputs (brief, design spec, reviews): kept for a task's life, never committed.
+.ai/sprints/*/work/
