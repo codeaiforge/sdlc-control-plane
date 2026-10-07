@@ -64,8 +64,13 @@ test('the envelope version is the one the port exports', () => {
     'received_at',
     'idempotency_key',
     'policy_id',
+    'submitted_by',
     'evidence',
   ]);
+  // submitted_by joined the envelope in task 2.1 without a version bump (ADR-0004): no envelope
+  // is durable before 2.2, so no stored evidence-envelope/0 ever lacks it.
+  assert.equal(ENVELOPE_VERSION, 'evidence-envelope/0');
+  assert.equal(envelope.submitted_by, null);
 });
 
 // The portable suite can only compare a replay against what the store holds, because it has no

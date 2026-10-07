@@ -58,16 +58,22 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
   // The port does not re-validate `evidence/0` — that is the contracts package's job and the
   // seam does it before calling here. These three preconditions are the store's own: it cannot
   // key a record it cannot read, and it must not half-store one it then refuses.
-  function append(record, { workspace_id = null, received_at, policy_id = null } = {}) {
+  function append(
+    record,
+    { workspace_id = null, received_at, policy_id = null, submitted_by = null } = {},
+  ) {
     if (!isObject(record)) throw new TypeError('evidence record must be an object');
+    if (submitted_by !== null && !isObject(submitted_by))
+      throw new TypeError('submitted_by must be an object or null');
     const { text, value } = project(record);
     if (!hasString(value, 'change_id'))
       throw new TypeError('evidence record must carry a non-empty string change_id');
 
     // A null workspace_id claims no uniqueness at all: there is no identity to be unique
-    // against until 2.1 authenticates one, and a key of [null, change_id] would make two
-    // unrelated workspaces collide on a shared change_id. ADR-0002 requires 2.2 to refuse a
-    // null workspace_id in production configuration rather than let this branch reach it.
+    // against, and a key of [null, change_id] would make two unrelated workspaces collide on a
+    // shared change_id. Since task 2.1 the seam always passes the authenticated principal's
+    // workspace, so only a direct caller of the port reaches this branch; ADR-0002 requires 2.2
+    // to refuse a null workspace_id in production configuration rather than let it.
     const key = workspace_id === null ? null : idempotencyKey(workspace_id, value.change_id);
     const existing = key === null ? undefined : byKey.get(key);
     if (existing) {
@@ -106,6 +112,13 @@ export function createInMemoryEvidenceStore({ now = () => new Date().toISOString
       // slot the durable record could only answer *when* it was accepted, leaving *under which
       // policy* to be inferred from the git history of config/control-plane/guardrails.json.
       policy_id,
+      // The verified run identity that submitted the record (ADR-0004), built by the seam from
+      // token claims and never from the body, or null when no principal is passed. A projected
+      // copy, deep-frozen with the rest of the envelope, so the caller's object cannot reach the
+      // log afterwards. On a duplicate or a conflict the branch above has already returned the
+      // first envelope, so the first submitter stands: a replay is not a second submitter.
+      // Adding it does not bump evidence-envelope/0: no envelope is durable until 2.2.
+      submitted_by: submitted_by === null ? null : JSON.parse(JSON.stringify(submitted_by)),
       evidence: value,
     });
     envelopes.push(envelope);
