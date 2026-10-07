@@ -12,6 +12,7 @@ import {
   createRegistry,
 } from '../../workspace-registry/src/registry.mjs';
 import {
+  CONNECTIONS_CHECKING_INTERVAL_MS,
   HEADERS_TIMEOUT_MS,
   REQUEST_TIMEOUT_MS,
   createSubmissionQuota,
@@ -74,19 +75,36 @@ const defaultEvidenceStore = createInMemoryEvidenceStore();
 const defaultAuthenticate = createAuthenticator({ keySet: createKeySet() });
 const defaultQuota = createSubmissionQuota();
 
+// The statuses that refuse a request without reading its body: 404, 401, 503, 403 and 429 are
+// decided on the request line and headers, 413 on content-length or part-way through the read.
+// Each one closes the connection whatever the body's state (ADR-0003 › Wire statuses).
+const REFUSED_UNREAD = new Set([404, 401, 503, 403, 429, 413]);
+
+// True while the request declares a body the parser has not yet seen the end of. `complete`
+// alone will not do: it turns true only after the handler has run, even for a request with no
+// body, so it would close every keep-alive connection. A request with neither header has no body.
+function bodyUnread(request) {
+  if (request.complete === true) return false;
+  const headers = request.headers ?? {};
+  return headers['transfer-encoding'] !== undefined || Number(headers['content-length']) > 0;
+}
+
 // Every response goes through here, and every call site passes its status as a literal, so
 // openapi.contract.test.mjs can read the complete set of statuses this seam sends out of this
-// file's source. `closeAfter` is respond-then-destroy: the response is written and flushed with
-// `connection: close`, and only then is the request destroyed, so the caller reads the status
-// and the unread body is never drained (threat model › Ingress body limit, Disposition).
-function send(response, status, body, { headers = {}, closeAfter } = {}) {
+// file's source. It is also the one place a connection is closed: a refusal, or any response sent
+// while the body is still unread, is respond-then-destroy - written and flushed with
+// `connection: close`, and only then is the request destroyed - so the caller reads the status and
+// the unread body is never drained, which would hand the peer the transfer it was refused (threat
+// model › Ingress body limit, Disposition). A request read to its end keeps its connection.
+function send(response, status, body, request, { headers = {} } = {}) {
   const payload = JSON.stringify(body);
+  const close = REFUSED_UNREAD.has(status) || bodyUnread(request);
   response.writeHead(status, {
     'content-type': 'application/json',
     ...headers,
-    ...(closeAfter ? { connection: 'close' } : {}),
+    ...(close ? { connection: 'close' } : {}),
   });
-  if (closeAfter) response.end(payload, () => closeAfter.destroy());
+  if (close) response.end(payload, () => request.destroy());
   else response.end(payload);
 }
 
@@ -137,8 +155,8 @@ async function authorizeRequest(context, route, request, response) {
   const result = await context.authenticate(request);
   if (!result.ok) {
     logRefusal(context, route, result.status, result.reason);
-    if (result.status === 503) send(response, 503, KEY_SET_UNAVAILABLE, { closeAfter: request });
-    else send(response, 401, INVALID_TOKEN, { headers: WWW_AUTHENTICATE, closeAfter: request });
+    if (result.status === 503) send(response, 503, KEY_SET_UNAVAILABLE, request);
+    else send(response, 401, INVALID_TOKEN, request, { headers: WWW_AUTHENTICATE });
     return null;
   }
   const decision = authorizeFor(context, result.principal);
@@ -147,7 +165,7 @@ async function authorizeRequest(context, route, request, response) {
       principal: result.principal,
       workspaceId: decision.workspaceId,
     });
-    send(response, 403, FORBIDDEN, { closeAfter: request });
+    send(response, 403, FORBIDDEN, request);
     return null;
   }
   const { issuer, repository_owner_id, repository_id } = result.principal;
@@ -169,7 +187,7 @@ export const routes = [
     method: 'GET',
     path: '/health',
     auth: 'none',
-    handle: (context, request, response) => send(response, 200, { status: 'ok' }),
+    handle: (context, request, response) => send(response, 200, { status: 'ok' }, request),
   },
   {
     method: 'GET',
@@ -177,7 +195,7 @@ export const routes = [
     auth: 'workload',
     // Exactly the caller's own registration; no other is disclosed (MIT-3).
     handle: ({ registry }, request, response, caller) =>
-      send(response, 200, { data: [registry.get(caller.workspaceId)] }),
+      send(response, 200, { data: [registry.get(caller.workspaceId)] }, request),
   },
   {
     method: 'GET',
@@ -191,7 +209,7 @@ export const routes = [
         .filter((envelope) => envelope.workspace_id === caller.workspaceId)
         .filter((envelope) => envelope.evidence !== null)
         .map((envelope) => envelope.evidence);
-      return send(response, 200, { data: summarizeEvidence(records) });
+      return send(response, 200, { data: summarizeEvidence(records) }, request);
     },
   },
   {
@@ -206,12 +224,9 @@ export const routes = [
       const allowance = quota.take(caller.bindingKey);
       if (!allowance.ok) {
         logRefusal(context, route, 429, 'quota-exceeded', caller);
-        return send(
-          response,
-          429,
-          { error: 'submission quota exceeded' },
-          { headers: { 'retry-after': String(allowance.retryAfterS) }, closeAfter: request },
-        );
+        return send(response, 429, { error: 'submission quota exceeded' }, request, {
+          headers: { 'retry-after': String(allowance.retryAfterS) },
+        });
       }
       // The try spans the body read, the parse and the evaluation. Narrowing it would change
       // what a fault puts on the wire: a throw inside this span is answered with the
@@ -223,10 +238,15 @@ export const routes = [
       try {
         // The cap is a returned value, never a throw: this catch would answer a thrown 413 as
         // 400. Enforced before JSON.parse and before project(), from inside the read loop.
-        const read = await readBodyCapped(request);
+        // `Expect: 100-continue` is answered here and nowhere else: after authentication,
+        // authorization, the quota and the content-length fast path, so a request refused by any
+        // of them is never invited to send its body (createSeamServer stops Node's automatic 100).
+        const read = await readBodyCapped(request, {
+          beforeRead: caller.awaitsContinue ? () => response.writeContinue() : undefined,
+        });
         if (!read.ok) {
           logRefusal(context, route, 413, 'body-too-large', caller);
-          return send(response, 413, { error: 'request body too large' }, { closeAfter: request });
+          return send(response, 413, { error: 'request body too large' }, request);
         }
         // Decoded once, after the concat: a multi-byte character straddling a chunk boundary
         // would otherwise become U+FFFD - silent corruption of the change_id that ties evidence
@@ -242,7 +262,7 @@ export const routes = [
         const decision = { ...evaluated, evidence_attestation: EVIDENCE_ATTESTATION };
         if (!decision.accepted) {
           logRefusal(context, route, 422, decision.disposition, caller);
-          return send(response, 422, { decision });
+          return send(response, 422, { decision }, request);
         }
         // workspace_id and submitted_by come from the verified principal, never from the body.
         await evidenceStore.append(record, {
@@ -250,10 +270,10 @@ export const routes = [
           policy_id: decision.policy_id ?? null,
           submitted_by: submittedBy(caller.principal),
         });
-        return send(response, 202, { decision });
+        return send(response, 202, { decision }, request);
       } catch {
         logRefusal(context, route, 400, 'body-not-json', caller);
-        return send(response, 400, { error: 'request body must be valid JSON' });
+        return send(response, 400, { error: 'request body must be valid JSON' }, request);
       }
     },
   },
@@ -281,7 +301,9 @@ export function createRequestHandler({
     log,
     now,
   };
-  return async (request, response) => {
+  // `awaitsContinue` is set only by createSeamServer's 'checkContinue' route: the client sent
+  // `Expect: 100-continue` and Node has not answered it.
+  return async (request, response, { awaitsContinue = false } = {}) => {
     // .find() over the table performs the same two === comparisons, in the same order, as the
     // if-chain it replaced. Routing comes first: a request that matches no entry is answered
     // 404 before any credential is read, and a query string - access_token included - makes a
@@ -291,14 +313,33 @@ export function createRequestHandler({
     );
     if (!route) {
       logRefusal(context, null, 404, 'unmatched-route');
-      return send(response, 404, { error: 'not found' });
+      return send(response, 404, { error: 'not found' }, request);
     }
     // GET /health reads no credential, even when one is sent.
     if (route.auth === 'none') return route.handle(context, request, response);
     const caller = await authorizeRequest(context, route, request, response);
     if (caller === null) return;
-    return route.handle(context, request, response, caller);
+    return route.handle(context, request, response, { ...caller, awaitsContinue });
   };
+}
+
+// The one place a server is built around a handler, so a test's server is wired exactly as the
+// service's: the admission timing constants, and a 'checkContinue' listener. With that listener
+// Node sends no automatic `100 Continue`; the handler is told the client is waiting, and only the
+// POST handler, once the request is admitted, sends it.
+export function createSeamServer(handler) {
+  const server = createServer(
+    {
+      headersTimeout: HEADERS_TIMEOUT_MS,
+      requestTimeout: REQUEST_TIMEOUT_MS,
+      connectionsCheckingInterval: CONNECTIONS_CHECKING_INTERVAL_MS,
+    },
+    handler,
+  );
+  server.on('checkContinue', (request, response) =>
+    handler(request, response, { awaitsContinue: true }),
+  );
+  return server;
 }
 
 export function createApp({
@@ -306,8 +347,7 @@ export function createApp({
   authenticate = defaultAuthenticate,
   log = stderrLog,
 } = {}) {
-  return createServer(
-    { headersTimeout: HEADERS_TIMEOUT_MS, requestTimeout: REQUEST_TIMEOUT_MS },
+  return createSeamServer(
     createRequestHandler({
       registry,
       policy,

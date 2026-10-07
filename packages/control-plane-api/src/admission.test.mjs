@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { constants, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createAuthenticator } from '../../workload-identity/src/authenticate.mjs';
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 import {
+  CONNECTIONS_CHECKING_INTERVAL_MS,
   HEADERS_TIMEOUT_MS,
   MAX_BODY_BYTES,
   REQUEST_TIMEOUT_MS,
@@ -14,7 +18,7 @@ import {
   createSubmissionQuota,
 } from './admission.mjs';
 import { createInMemoryEvidenceStore } from './evidence-store.mjs';
-import { createApp, createRequestHandler, routes } from './main.mjs';
+import { createApp, createRequestHandler, createSeamServer, routes } from './main.mjs';
 
 // Claim shapes from AC-20's measured token. PROVISIONAL until the measurement in
 // .ai/sprints/sprint-2/tasks/2.1.md is recorded; swap the values here and nowhere else.
@@ -155,6 +159,7 @@ function seam({
   clock = { ms: START_MS },
   keySetFetch,
   authenticate,
+  quota,
   log = () => {},
 } = {}) {
   const keySet = createKeySet({
@@ -168,7 +173,7 @@ function seam({
     policy,
     evidenceStore: store,
     authenticate: authenticate ?? createAuthenticator({ keySet, now: () => clock.ms }),
-    quota: createSubmissionQuota({ now: () => clock.ms }),
+    quota: quota ?? createSubmissionQuota({ now: () => clock.ms }),
     log,
     now: () => clock.ms,
   });
@@ -243,16 +248,28 @@ test('a route with no auth field fails closed', async () => {
   assert.doesNotMatch(source, /route\.auth === 'workload'/);
 });
 
+// Records every credential-bearing read: rawHeaders, any named header, and the body. send()
+// reads the two framing headers to learn whether a body is still unread; those name no credential.
+const FRAMING_READS = ['headers.transfer-encoding', 'headers.content-length'];
 function spyingRequest(base) {
   const reads = [];
   const req = { method: base.method, url: base.url };
-  for (const name of ['rawHeaders', 'headers'])
-    Object.defineProperty(req, name, {
-      get() {
-        reads.push(name);
-        return name === 'rawHeaders' ? ['Authorization', bearer()] : {};
+  Object.defineProperty(req, 'rawHeaders', {
+    get() {
+      reads.push('rawHeaders');
+      return ['Authorization', bearer()];
+    },
+  });
+  const headers = new Proxy(
+    {},
+    {
+      get(target, name) {
+        reads.push(`headers.${String(name)}`);
+        return undefined;
       },
-    });
+    },
+  );
+  Object.defineProperty(req, 'headers', { get: () => headers });
   req[Symbol.asyncIterator] = () => {
     reads.push('body');
     return { next: async () => ({ done: true }) };
@@ -269,7 +286,10 @@ test('GET /health reads no credential even when one is sent', async () => {
   const { status, body } = await call(seam({ authenticate: throwingAuthenticate }), req);
   assert.equal(status, 200);
   assert.deepEqual(body, { status: 'ok' });
-  assert.deepEqual(reads, []);
+  assert.deepEqual(
+    reads.filter((read) => !FRAMING_READS.includes(read)),
+    [],
+  );
 });
 
 test('an unmatched request is 404 before any credential read', async () => {
@@ -628,10 +648,21 @@ test('createApp sets headersTimeout 10000 and requestTimeout 30000', () => {
   assert.equal(server.listening, false, 'createApp must not listen');
 });
 
+// Node checks both timeouts on one timer, every connectionsCheckingInterval (30 s by default), so
+// the value read back above is not the bound a slow peer meets. Pinning the interval is what makes
+// 10 s and 30 s the bound to within a second. A behavioural test would take 10 s: the check runs
+// on Node's own monotonic clock, which mock.timers cannot advance.
+test('createApp checks the read timeouts every 1000 ms, not every 30 s', () => {
+  const server = createApp({ log: () => {} });
+  assert.equal(server.connectionsCheckingInterval, 1000);
+  assert.equal(createSeamServer(seam()).connectionsCheckingInterval, 1000);
+});
+
 test('the cap, timeouts and quota are literal constants', () => {
   assert.equal(MAX_BODY_BYTES, 1048576);
   assert.equal(HEADERS_TIMEOUT_MS, 10000);
   assert.equal(REQUEST_TIMEOUT_MS, 30000);
+  assert.equal(CONNECTIONS_CHECKING_INTERVAL_MS, 1000);
   assert.equal(SUBMISSION_QUOTA, 60);
   assert.equal(SUBMISSION_QUOTA_WINDOW_MS, 60000);
   const source = readFileSync(new URL('./admission.mjs', import.meta.url), 'utf8');
@@ -641,6 +672,144 @@ test('the cap, timeouts and quota are literal constants', () => {
     .join('\n');
   for (const spelling of [/\bprocess\b/, /['"]node:process['"]/, /import\.meta\.env/])
     assert.doesNotMatch(code, spelling);
+});
+
+// ----------------------------------------------------------- connection disposition, socket
+
+// A real socket on 127.0.0.1 around the seam, built by createSeamServer exactly as createApp
+// builds the service, with the in-test key set and registry. The client is raw TCP so a test sees
+// every byte the server writes, an interim 100 Continue included, and the client never closes
+// first, so a close is the server's.
+async function listening(handler) {
+  const server = createSeamServer(handler);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return server;
+}
+
+async function rawClient(server) {
+  const socket = connect(server.address().port, '127.0.0.1');
+  await once(socket, 'connect');
+  const client = { socket, text: '', closed: false };
+  socket.setEncoding('latin1');
+  socket.on('data', (chunk) => (client.text += chunk));
+  socket.on('error', () => {});
+  socket.on('close', () => (client.closed = true));
+  return client;
+}
+
+async function until(predicate, what) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    await delay(5);
+  }
+}
+
+const statusLines = (text) => text.match(/^HTTP\/1\.1 \d{3}/gm) ?? [];
+const closes = (text) => /\r\nconnection: close\r\n/i.test(text);
+
+async function withServer(handler, body) {
+  const server = await listening(handler);
+  try {
+    await body(server);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+}
+
+test('a 404 and a GET /health sent a streaming body get their status, then the server closes the connection', async () => {
+  await withServer(seam(), async (server) => {
+    for (const [line, expected] of [
+      ['POST /v1/nope', 'HTTP/1.1 404'],
+      ['GET /health', 'HTTP/1.1 200'],
+    ]) {
+      const client = await rawClient(server);
+      // One 64 KiB chunk of a chunked body that never ends: the peer would keep streaming.
+      client.socket.write(
+        `${line} HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n10000\r\n${'x'.repeat(0x10000)}\r\n`,
+      );
+      await until(() => client.closed, `${line}: the server to close the connection`);
+      assert.deepEqual(statusLines(client.text), [expected], line);
+      assert.ok(closes(client.text), `${line}: no connection: close`);
+    }
+  });
+});
+
+test('a request read to its end keeps its connection', async () => {
+  await withServer(seam(), async (server) => {
+    const client = await rawClient(server);
+    const body = JSON.stringify(validEvidence);
+    const exchanges = [
+      ['GET /health HTTP/1.1\r\nHost: x\r\n\r\n', 'HTTP/1.1 200'],
+      [
+        `POST /v1/evidence HTTP/1.1\r\nHost: x\r\nAuthorization: ${bearer()}\r\n` +
+          `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+        'HTTP/1.1 202',
+      ],
+      ['GET /health HTTP/1.1\r\nHost: x\r\n\r\n', 'HTTP/1.1 200'],
+    ];
+    for (const [index, [raw]] of exchanges.entries()) {
+      client.socket.write(raw);
+      await until(() => statusLines(client.text).length === index + 1, `response ${index + 1}`);
+    }
+    assert.deepEqual(
+      statusLines(client.text),
+      exchanges.map(([, expected]) => expected),
+    );
+    assert.equal(closes(client.text), false, 'a fully read request was answered connection: close');
+    await delay(50);
+    assert.equal(client.closed, false, 'the server closed a connection whose request it had read');
+  });
+});
+
+// S-3. Without a 'checkContinue' listener Node answers 100 Continue before the handler runs, so
+// an unauthenticated client would be invited to send its body and then refused.
+test('Expect: 100-continue is answered only once a POST is admitted; every refusal gets no 100 and a close', async () => {
+  const exhausted = { take: () => ({ ok: false, retryAfterS: 42 }) };
+  const expecting = (line, extra = '', length = 2) =>
+    `${line} HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n${extra}Content-Length: ${length}\r\n\r\n`;
+  const refused = [
+    [seam(), expecting('POST /v1/evidence'), 'HTTP/1.1 401'],
+    [
+      seam(),
+      expecting('POST /v1/evidence', `Authorization: ${bearer({ repository_id: '99' })}\r\n`),
+      'HTTP/1.1 403',
+    ],
+    [
+      seam({ quota: exhausted }),
+      expecting('POST /v1/evidence', `Authorization: ${bearer()}\r\n`),
+      'HTTP/1.1 429',
+    ],
+    [
+      seam(),
+      expecting('POST /v1/evidence', `Authorization: ${bearer()}\r\n`, MAX_BODY_BYTES + 1),
+      'HTTP/1.1 413',
+    ],
+    [seam(), expecting('GET /health'), 'HTTP/1.1 200'],
+    [seam(), expecting('POST /v1/nope', `Authorization: ${bearer()}\r\n`), 'HTTP/1.1 404'],
+  ];
+  for (const [handler, raw, expected] of refused)
+    await withServer(handler, async (server) => {
+      const client = await rawClient(server);
+      client.socket.write(raw);
+      await until(() => client.closed, `${expected}: the server to close the connection`);
+      assert.deepEqual(statusLines(client.text), [expected], `${expected}: a 100 was sent`);
+    });
+
+  await withServer(seam(), async (server) => {
+    const client = await rawClient(server);
+    const body = JSON.stringify(validEvidence);
+    client.socket.write(
+      expecting('POST /v1/evidence', `Authorization: ${bearer()}\r\n`, Buffer.byteLength(body)),
+    );
+    await until(() => statusLines(client.text).length === 1, 'the 100 Continue');
+    assert.deepEqual(statusLines(client.text), ['HTTP/1.1 100']);
+    client.socket.write(body);
+    await until(() => statusLines(client.text).length === 2, 'the 202');
+    assert.deepEqual(statusLines(client.text), ['HTTP/1.1 100', 'HTTP/1.1 202']);
+  });
 });
 
 // ------------------------------------------------------------------------- AC-11 envelope side
