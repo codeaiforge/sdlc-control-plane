@@ -32,14 +32,14 @@ flowchart TB
   Organizational -->|approved guardrails, Epic / capability references| Core
   Core -->|reviewed policy bindings| Engineering
   Engineering -->|graph, gate, provenance and delivery evidence| Core
-  Core -->|indicators; never automated strategic decisions| Organizational
+  Core -->|no indicator view in the MVP; never automated strategic decisions| Organizational
 ```
 
 ## Runtime boundaries
 
-`contracts` owns validation and version recognition. `workspace-registry` owns the static identity and ownership metadata of a workspace. `guardrail-policy` evaluates a received record against an approved policy and returns a deterministic recommendation. `indicators` derives descriptive metrics only. `control-plane-api` composes them behind a small HTTP seam. All are Nx projects under `packages/` and own a `project.json`; the API is the sole initial deployable artifact, while the others are libraries.
+`contracts` owns validation and version recognition. `workspace-registry` owns the static identity and ownership metadata of a workspace. `guardrail-policy` evaluates a received record against an approved policy and returns a deterministic recommendation. `indicators` derives descriptive metrics only. `workload-identity` verifies a workload's OIDC token. `control-plane-api` composes them behind a small HTTP seam. All are Nx projects under `packages/` and own a `project.json`; the API is the sole initial deployable artifact, while the others are libraries.
 
-No package has a direct dependency on an external portfolio, finance, or identity provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.
+`workload-identity` is the one package that reaches an external system: it fetches GitHub's published key set from a pinned URL. No package depends on a portfolio or finance provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.
 
 ## Non-goals
 
