@@ -204,8 +204,9 @@ export function describeEvidenceStore(name, createStore) {
   });
 
   test(`${name}: without a workspace_id no uniqueness is claimed`, async (t) => {
-    // There is no identity to be unique against until 2.1 authenticates one, and keying on
-    // [null, change_id] would make two unrelated workspaces collide on a shared change_id.
+    // Without a workspace there is no identity to be unique against, and keying on
+    // [null, change_id] would make two unrelated workspaces collide on a shared change_id. The
+    // seam always passes one since task 2.1; a direct caller of the port need not.
     const store = await openStore(t, createStore);
     const first = await store.append(evidenceRecord());
     const second = await store.append(evidenceRecord());
@@ -256,10 +257,11 @@ export function describeEvidenceStore(name, createStore) {
   });
 
   test(`${name}: reads are synchronous`, async (t) => {
-    // The one call in this suite that is deliberately not awaited. GET /v1/indicators summarises
-    // store.listRecords() inside a synchronous send(), so a read that returned a promise today
-    // would serialise a pending promise into the response body. This is the test task 2.2
-    // deletes in the same change that makes reads async and awaits them at the seam.
+    // The one call in this suite that is deliberately not awaited. Until task 2.1, GET
+    // /v1/indicators summarised store.listRecords() inside a synchronous send(), so a read that
+    // returned a promise would have serialised a pending promise into the response body. Since
+    // 2.1 the seam awaits every store call, so nothing there depends on this any more; it stays
+    // until task 2.2 deletes it in the same change that makes this adapter's reads async.
     const store = await openStore(t, createStore);
     await store.append(evidenceRecord());
     const envelopes = store.list();
@@ -295,6 +297,73 @@ export function describeEvidenceStore(name, createStore) {
   test(`${name}: the port exposes no method that could remove or rewrite a record`, async (t) => {
     const store = await openStore(t, createStore);
     assert.deepEqual(Object.keys(store).sort(), ['append', 'list', 'listRecords']);
+  });
+
+  // ADR-0004: the envelope records which verified run submitted the record, built from token
+  // claims by the seam. A store that dropped it, or let it be edited, would lose the one thing
+  // that makes a self-attested claim traceable to a run a human can reopen. The fixture is an
+  // inline literal in ADR-0004's field order, like every other fixture here.
+  const submitter = (overrides = {}) => ({
+    issuer: 'https://token.actions.githubusercontent.com',
+    repository_owner_id: '65',
+    repository_id: '74',
+    run_id: '18203345671',
+    run_attempt: '1',
+    sha: 'a'.repeat(40),
+    ref: 'refs/heads/main',
+    event_name: 'push',
+    workflow_ref: 'owner/repo/.github/workflows/gate.yml@refs/heads/main',
+    job_workflow_ref: null,
+    job_workflow_sha: null,
+    ...overrides,
+  });
+
+  test(`${name}: the submitting identity is retained and cannot be mutated`, async (t) => {
+    const store = await openStore(t, createStore);
+    const submitted = submitter();
+    const { envelope } = await store.append(evidenceRecord(), {
+      workspace_id: WORKSPACE,
+      submitted_by: submitted,
+    });
+    submitted.repository_id = '999';
+    submitted.run_id = 'rewritten';
+    const [stored] = await store.list();
+    assert.deepEqual(stored.submitted_by, submitter());
+    assert.throws(() => {
+      envelope.submitted_by.run_id = '1';
+    }, TypeError);
+    assert.throws(() => {
+      stored.submitted_by.sha = 'b'.repeat(40);
+    }, TypeError);
+    await store.append(evidenceRecord({ change_id: 'PR-2' }), { workspace_id: WORKSPACE });
+    assert.equal(
+      (await store.list())[1].submitted_by,
+      null,
+      'absent rather than guessed when no principal is named',
+    );
+  });
+
+  test(`${name}: a duplicate and a conflict keep the first envelope's submitted_by`, async (t) => {
+    const store = await openStore(t, createStore);
+    await store.append(evidenceRecord(), {
+      workspace_id: WORKSPACE,
+      submitted_by: submitter(),
+    });
+    const replay = await store.append(evidenceRecord(), {
+      workspace_id: WORKSPACE,
+      submitted_by: submitter({ run_id: '2', run_attempt: '2' }),
+    });
+    const conflict = await store.append(evidenceRecord({ result: { pass: false } }), {
+      workspace_id: WORKSPACE,
+      submitted_by: submitter({ run_id: '3', sha: 'c'.repeat(40) }),
+    });
+    assert.equal(replay.outcome, 'duplicate');
+    assert.equal(conflict.outcome, 'conflict');
+    for (const answered of [replay, conflict])
+      assert.deepEqual(answered.envelope.submitted_by, submitter());
+    const stored = await store.list();
+    assert.equal(stored.length, 1);
+    assert.deepEqual(stored[0].submitted_by, submitter());
   });
 
   test(`${name}: every envelope declares the envelope version`, async (t) => {
