@@ -6,12 +6,17 @@
 export const MAX_BODY_BYTES = 1048576;
 
 // Headers stay under 16 KiB (Node's maxHeaderSize) even with an 8 KiB token, so 10 s is generous
-// and six times tighter than Node's 60 s default.
+// and a sixth of Node's 60 s default, enforced to within a second (the interval below).
 export const HEADERS_TIMEOUT_MS = 10000;
 // The whole request, first byte to last. 1 MiB in 30 s needs about 35 KiB/s sustained, and the
 // window leaves room for a 5 s key-set fetch. Derived by arithmetic from the cap, not measured on
 // a real link; Node's default is 300 s.
 export const REQUEST_TIMEOUT_MS = 30000;
+// Node does not time each socket: it checks every connection against the two timeouts above on
+// one timer, every connectionsCheckingInterval, 30 s by default. A slow request is cut at the
+// first check after its timeout, so at the default the headers could last 10-40 s and the request
+// 30-60 s. At 1000 ms the residual is one second: cut by 11 s and 31 s at the latest.
+export const CONNECTIONS_CHECKING_INTERVAL_MS = 1000;
 
 // Per principal, per fixed window, PER PROCESS. The count lives in this process's memory: N
 // processes admit 60·N submissions per principal per window, and a restart resets the window.
@@ -54,10 +59,14 @@ export function createSubmissionQuota({ now = Date.now } = {}) {
 // stream's return(), which destroys an IncomingMessage - and with it the socket - before the
 // seam has written its 413, so the producer would see ECONNRESET and never learn why. Stopping
 // here pulls no further chunk; the seam writes the 413 and then destroys the request.
-export async function readBodyCapped(request) {
+//
+// `beforeRead` runs after the fast path and before the first pull: the seam sends `100 Continue`
+// from it, so an honest oversized length is refused without the body ever being invited.
+export async function readBodyCapped(request, { beforeRead } = {}) {
   const declared = request.headers?.['content-length'];
   if (typeof declared === 'string' && /^\d+$/.test(declared) && Number(declared) > MAX_BODY_BYTES)
     return { ok: false, reason: 'body-too-large' };
+  beforeRead?.();
   const iterator = request[Symbol.asyncIterator]();
   const chunks = [];
   let received = 0;
