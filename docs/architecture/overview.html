@@ -3700,10 +3700,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
   Organizational --&gt;|approved guardrails, Epic / capability references| Core
   Core --&gt;|reviewed policy bindings| Engineering
   Engineering --&gt;|graph, gate, provenance and delivery evidence| Core
-  Core --&gt;|indicators; never automated strategic decisions| Organizational
+  Core --&gt;|no indicator view in the MVP; never automated strategic decisions| Organizational
 </div><h2 id="runtime-boundaries">Runtime boundaries </h2>
-<p><code>contracts</code> owns validation and version recognition. <code>workspace-registry</code> owns the static identity and ownership metadata of a workspace. <code>guardrail-policy</code> evaluates a received record against an approved policy and returns a deterministic recommendation. <code>indicators</code> derives descriptive metrics only. <code>control-plane-api</code> composes them behind a small HTTP seam. All are Nx projects under <code>packages/</code> and own a <code>project.json</code>; the API is the sole initial deployable artifact, while the others are libraries.</p>
-<p>No package has a direct dependency on an external portfolio, finance, or identity provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.</p>
+<p><code>contracts</code> owns validation and version recognition. <code>workspace-registry</code> owns the static identity and ownership metadata of a workspace. <code>guardrail-policy</code> evaluates a received record against an approved policy and returns a deterministic recommendation. <code>indicators</code> derives descriptive metrics only. <code>workload-identity</code> verifies a workload's OIDC token. <code>control-plane-api</code> composes them behind a small HTTP seam. All are Nx projects under <code>packages/</code> and own a <code>project.json</code>; the API is the sole initial deployable artifact, while the others are libraries.</p>
+<p><code>workload-identity</code> is the one package that reaches an external system: it fetches GitHub's published key set from a pinned URL. No package depends on a portfolio or finance provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.</p>
 <h2 id="non-goals">Non-goals </h2>
 <ul>
 <li>Autonomous approval, prioritisation, budgeting, staffing, or release authority</li>
