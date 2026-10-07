@@ -132,7 +132,7 @@ The sprint succeeds if the component map derives from the live graph rather than
 
 ---
 
-## Sprint 1: MVP service boundary (Sep 21 – Oct 2, 2026)
+## Sprint 1: MVP service boundary (Sep 21 – Oct 2, 2026 — complete)
 
 **Goal:**
 
@@ -163,11 +163,11 @@ The signal is whether 1.2's ADR can name a concrete store and idempotency key wi
 
 **Definition of done:**
 
-- [ ] An OpenAPI document describes all four routes and their error responses
-- [ ] Contract tests cover accepted, invalid and incompatible evidence
-- [ ] An ADR names the store, idempotency key, retention window and audit-event boundary
-- [ ] A threat model documents trust boundaries, abuse cases, mitigations and residual risks
-- [ ] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved
+- [x] An OpenAPI document describes all four routes and their error responses
+- [x] Contract tests cover accepted, invalid and incompatible evidence
+- [x] An ADR names the store, idempotency key, retention window and audit-event boundary
+- [x] A threat model documents trust boundaries, abuse cases, mitigations and residual risks
+- [x] A named OIDC issuer and an authorization model binding a principal to a registered workspace are approved
 
 ---
 
