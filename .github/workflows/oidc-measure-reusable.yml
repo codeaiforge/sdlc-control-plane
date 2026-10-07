@@ -1,0 +1,85 @@
+# AC-20 (task 2.1): the reusable half of the OIDC claim measurement. Called by oidc-measure.yml so
+# that the claims of a token minted inside a reusable workflow - job_workflow_ref and
+# job_workflow_sha among them - are measured as well as those of an ordinary job.
+#
+# Prints only the decoded JWS header and payload and shapes derived from them. The signature
+# segment and the compact token are never printed, logged, written to a file or uploaded.
+# GitHub-only: Gitea also reads .github/workflows/, sets server_url to its own host and cannot
+# mint an ID token, so the job is skipped there.
+name: oidc-measure-reusable
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  measure:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Print the decoded OIDC header and payload (never the token)
+        env:
+          MEASURE_JOB: inside-reusable
+        run: |
+          node --input-type=module <<'SCRIPT'
+          // Prints the decoded JWS header and payload of this job's OIDC token, and shapes derived
+          // from them. Never the token: only segments 0 and 1 are decoded, the variable holding the
+          // compact token is dropped as soon as they are split off, and no error text is printed,
+          // because an error raised while decoding can quote the bytes it was decoding.
+          const AUDIENCE = 'urn:codeaiforge:sdlc-control-plane:production';
+          const fail = (message) => {
+            console.error(`oidc-measure: ${message}`);
+            process.exit(1);
+          };
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          if (!requestUrl || !requestToken) fail('no ID-token request variables; is id-token: write granted?');
+          let headerSegment;
+          let payloadSegment;
+          try {
+            const response = await fetch(`${requestUrl}&audience=${encodeURIComponent(AUDIENCE)}`, {
+              headers: { authorization: `bearer ${requestToken}`, accept: 'application/json' },
+            });
+            if (!response.ok) fail(`token request answered ${response.status}`);
+            let compact = (await response.json()).value;
+            [headerSegment, payloadSegment] = String(compact).split('.');
+            compact = undefined;
+          } catch {
+            fail('token request failed');
+          }
+          let header;
+          let payload;
+          try {
+            header = JSON.parse(Buffer.from(headerSegment, 'base64url').toString('utf8'));
+            payload = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8'));
+          } catch {
+            fail('token segments did not decode');
+          }
+          const STEP5 = {
+            run_id: /^[1-9][0-9]*$/,
+            run_attempt: /^[1-9][0-9]*$/,
+            sha: /^[0-9a-f]{40}$/,
+            job_workflow_sha: /^[0-9a-f]{40}$/,
+            repository_id: /^[1-9][0-9]{0,19}$/,
+            repository_owner_id: /^[1-9][0-9]{0,19}$/,
+            actor_id: /^[1-9][0-9]{0,19}$/,
+          };
+          const shape = (name) => {
+            const value = payload[name];
+            if (!Object.hasOwn(payload, name)) return { type: 'absent', length: null, matches_step5: false };
+            return {
+              type: typeof value,
+              length: typeof value === 'string' ? value.length : null,
+              matches_step5: typeof value === 'string' && STEP5[name].test(value),
+            };
+          };
+          const derived = {
+            exp_minus_iat: payload.exp - payload.iat,
+            iat_minus_nbf: payload.iat - payload.nbf,
+            has_job_workflow_ref: Object.hasOwn(payload, 'job_workflow_ref'),
+            has_job_workflow_sha: Object.hasOwn(payload, 'job_workflow_sha'),
+            ...Object.fromEntries(Object.keys(STEP5).map((name) => [name, shape(name)])),
+          };
+          console.log(JSON.stringify({ job: process.env.MEASURE_JOB, header, payload, derived }, null, 2));
+          SCRIPT
