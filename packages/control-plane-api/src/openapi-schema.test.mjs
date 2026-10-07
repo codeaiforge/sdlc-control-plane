@@ -164,10 +164,53 @@ test('every schema in the published document stays inside the supported subset',
   }
 });
 
+// A response header's schema is a schema like any other, and the contract test validates the
+// headers the seam sends against it. Walking only components.schemas would let a header schema
+// carry a keyword this checker ignores - a `pattern` on Retry-After, say - and the document would
+// claim a constraint nothing enforces.
+const headerSchemas = (doc) =>
+  Object.entries(doc.paths).flatMap(([path, item]) =>
+    Object.entries(item)
+      .filter(([, operation]) => operation !== null && typeof operation === 'object')
+      .flatMap(([method, operation]) =>
+        Object.entries(operation.responses ?? {}).flatMap(([status, response]) =>
+          Object.entries(response.headers ?? {}).map(([name, header]) => ({
+            at: `${method.toUpperCase()} ${path} ${status} ${name}`,
+            header,
+          })),
+        ),
+      ),
+  );
+
+test('every header schema stays inside the supported subset', () => {
+  const headers = headerSchemas(document);
+  assert.ok(headers.length >= 4, 'the walk found fewer header declarations than the document has');
+  for (const { at, header } of headers) {
+    assert.ok(header.schema, `${at} declares no schema`);
+    assert.doesNotThrow(
+      () => assertSchemaSupported(header.schema, document),
+      `${at} uses a keyword this checker does not enforce`,
+    );
+  }
+});
+
+test('the header walk refuses an unsupported keyword, so it is not a walk over nothing', () => {
+  const probe = JSON.parse(JSON.stringify(document));
+  probe.paths['/v1/evidence'].post.responses['429'].headers['Retry-After'].schema.pattern =
+    '^[0-9]+$';
+  const walked = headerSchemas(probe).find(({ at }) => at.endsWith('429 Retry-After'));
+  assert.throws(
+    () => assertSchemaSupported(walked.header.schema, probe),
+    /unsupported schema keyword "pattern"/,
+  );
+});
+
 test('the documented 422 rejects a decision carrying no reasons', () => {
   const schema = responseSchema('/v1/evidence', 'post', 422);
   const { ok, errors } = validateAgainstSchema(
-    { decision: { accepted: false, disposition: 'rejected' } },
+    {
+      decision: { accepted: false, disposition: 'rejected', evidence_attestation: 'self-attested' },
+    },
     schema,
     document,
   );
@@ -178,7 +221,14 @@ test('the documented 422 rejects a decision carrying no reasons', () => {
 test('the documented 422 rejects a disposition the seam cannot produce', () => {
   const schema = responseSchema('/v1/evidence', 'post', 422);
   const { ok, errors } = validateAgainstSchema(
-    { decision: { accepted: false, disposition: 'maybe', reasons: ['x'] } },
+    {
+      decision: {
+        accepted: false,
+        disposition: 'maybe',
+        reasons: ['x'],
+        evidence_attestation: 'self-attested',
+      },
+    },
     schema,
     document,
   );
@@ -191,7 +241,15 @@ test('the documented 422 rejects a disposition the seam cannot produce', () => {
 test('the documented 422 rejects an undeclared property on the decision', () => {
   const schema = responseSchema('/v1/evidence', 'post', 422);
   const { ok, errors } = validateAgainstSchema(
-    { decision: { accepted: false, disposition: 'rejected', reasons: ['x'], retry_at: 'later' } },
+    {
+      decision: {
+        accepted: false,
+        disposition: 'rejected',
+        reasons: ['x'],
+        evidence_attestation: 'self-attested',
+        retry_at: 'later',
+      },
+    },
     schema,
     document,
   );
@@ -202,7 +260,15 @@ test('the documented 422 rejects an undeclared property on the decision', () => 
 test('the documented 202 rejects a decision that is not an acceptance', () => {
   const schema = responseSchema('/v1/evidence', 'post', 202);
   const { ok, errors } = validateAgainstSchema(
-    { decision: { accepted: false, disposition: 'accepted', policy_id: 'p@1', reasons: [] } },
+    {
+      decision: {
+        accepted: false,
+        disposition: 'accepted',
+        policy_id: 'p@1',
+        reasons: [],
+        evidence_attestation: 'self-attested',
+      },
+    },
     schema,
     document,
   );

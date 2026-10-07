@@ -1,9 +1,35 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { constants, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
+import { createAuthenticator } from '../../workload-identity/src/authenticate.mjs';
+import { createKeySet } from '../../workload-identity/src/key-set.mjs';
+import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 import { createRequestHandler, routes } from './main.mjs';
 import { createInMemoryEvidenceStore } from './evidence-store.mjs';
 import { validateAgainstSchema } from './openapi-schema.mjs';
+
+// Claim shapes from AC-20's measured token. PROVISIONAL until the measurement in
+// .ai/sprints/sprint-2/tasks/2.1.md is recorded; swap the values here and nowhere else.
+const MEASURED = {
+  provisional: true,
+  lifetime_s: 300, // exp - iat
+  nbf_before_iat_s: 600,
+  job_workflow_claims_outside_reusable: false,
+  run_id: '18203345671', // digits only; length provisional
+  run_attempt: '1',
+  sha: 'a'.repeat(40),
+  job_workflow_sha: 'b'.repeat(40),
+  actor_id: '1000001',
+};
+
+test(
+  "fixtures take their claim shapes from AC-20's measured token",
+  { todo: MEASURED.provisional },
+  () => {
+    assert.equal(MEASURED.provisional, false, 'MEASURED is provisional until AC-20 is recorded');
+  },
+);
 
 // openapi.json is read by URL rather than imported, so the workspace's Nx-edge control - which
 // derives the project graph from import statements - sees exactly the dependencies this package
@@ -44,7 +70,52 @@ const conforms = (value, schema) => validateAgainstSchema(value, schema, documen
 //    true, which permanently raises the blast-radius tier of every future change under the
 //    contracts package. A test fixture is not a reason to retier a package.
 //
-// main.test.mjs already hardcodes the same literals, for the same reasons.
+// main.test.mjs already hardcodes the same literals, for the same reasons. Every request is
+// authenticated by a real token signed here with a key generated here, verified by the real
+// authenticator over a key set fed an in-test JWKS; nothing reaches the network.
+const ISSUER = 'https://token.actions.githubusercontent.com';
+const AUDIENCE = 'urn:codeaiforge:sdlc-control-plane:production';
+const NOW_MS = Date.UTC(2026, 9, 7, 12, 0, 0);
+const NOW_S = NOW_MS / 1000;
+
+const signing = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const JWKS = {
+  keys: [{ ...signing.publicKey.export({ format: 'jwk' }), kid: 'k1', use: 'sig', alg: 'RS256' }],
+};
+const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
+function sign(claims) {
+  const input = `${b64({ alg: 'RS256', kid: 'k1', typ: 'JWT' })}.${b64(claims)}`;
+  const signature = rsaSign('sha256', Buffer.from(input), {
+    key: signing.privateKey,
+    padding: constants.RSA_PKCS1_PADDING,
+  });
+  return `${input}.${signature.toString('base64url')}`;
+}
+const token = (overrides = {}) =>
+  sign({
+    iss: ISSUER,
+    aud: AUDIENCE,
+    iat: NOW_S,
+    nbf: NOW_S - MEASURED.nbf_before_iat_s,
+    exp: NOW_S + MEASURED.lifetime_s,
+    repository_owner_id: '65',
+    repository_id: '74',
+    actor_id: MEASURED.actor_id,
+    run_id: MEASURED.run_id,
+    run_attempt: MEASURED.run_attempt,
+    sha: MEASURED.sha,
+    ref: 'refs/heads/main',
+    event_name: 'push',
+    workflow_ref: 'owner/payments/.github/workflows/gate.yml@refs/heads/main',
+    ...(MEASURED.job_workflow_claims_outside_reusable
+      ? {
+          job_workflow_ref: 'owner/payments/.github/workflows/gate.yml@refs/heads/main',
+          job_workflow_sha: MEASURED.job_workflow_sha,
+        }
+      : {}),
+    ...overrides,
+  });
+
 const policy = {
   policy_version: 'guardrails/0',
   policy_id: 'test-policy@1',
@@ -75,68 +146,142 @@ const workspace = {
   evidence_endpoint: 'https://example.invalid/e',
   owners: ['platform'],
   status: 'active',
+  workload_identity: {
+    issuer: ISSUER,
+    repository_owner_id: '65',
+    repository_id: '74',
+    admitted_events: ['push', 'pull_request'],
+  },
 };
 
-const seam = (evidenceStore = createInMemoryEvidenceStore()) =>
-  createRequestHandler({ registry: { list: () => [workspace] }, policy, evidenceStore });
+const okKeySet = async () => ({
+  body: Buffer.from(JSON.stringify(JWKS)),
+  cacheControl: 'max-age=3600',
+});
+const outage = async () => {
+  throw new Error('outage');
+};
 
+const seam = (evidenceStore = createInMemoryEvidenceStore(), overrides = {}) => {
+  const { fetchKeySet = okKeySet, ...rest } = overrides;
+  const keySet = createKeySet({ now: () => NOW_MS, fetchKeySet });
+  return createRequestHandler({
+    registry: createRegistry({ registry_version: 'workspace-registry/1', workspaces: [workspace] }),
+    policy,
+    evidenceStore,
+    authenticate: createAuthenticator({ keySet, now: () => NOW_MS }),
+    log: () => {},
+    now: () => NOW_MS,
+    ...rest,
+  });
+};
+
+// The harness records the status, the headers writeHead was given and the body, so the headers a
+// response declares can be held to the ones the seam sends.
 const call = async (handler, request) => {
   let status;
+  let headers = {};
   let body = '';
+  request.destroy ??= () => {};
   await handler(request, {
-    writeHead: (value) => {
+    writeHead: (value, written = {}) => {
       status = value;
+      headers = written;
     },
-    end: (value) => {
+    end: (value, done) => {
       body = value;
+      done?.();
     },
   });
-  return { status, body: JSON.parse(body) };
+  return { status, headers, body: JSON.parse(body) };
 };
 
-const get = (url) => ({ method: 'GET', url });
+const credential = (overrides) => ['Authorization', `Bearer ${token(overrides)}`];
+const get = (url, rawHeaders = credential()) => ({ method: 'GET', url, rawHeaders });
+const anonymous = (url) => ({ method: 'GET', url, rawHeaders: [] });
 
-const post = (raw, headers = { 'content-type': 'application/json' }) => ({
+const post = (
+  raw,
+  headers = { 'content-type': 'application/json' },
+  rawHeaders = credential(),
+) => ({
   method: 'POST',
   url: '/v1/evidence',
   headers,
+  rawHeaders,
   async *[Symbol.asyncIterator]() {
     yield raw;
   },
 });
 
+const exhausted = { take: () => ({ ok: false, retryAfterS: 42 }) };
+
 // One entry per documented (route, status) pair. The table is the bridge: the document is
 // compared against it, and the seam is driven through it, so neither side can claim a status the
 // other does not produce. Names follow the roadmap's wording - accepted, invalid and
 // incompatible evidence - so the acceptance phase can cite a test name as evidence.
+const authenticatedRefusals = (method, path, request) => [
+  {
+    name: `${method} ${path} -> 401 a request with no usable credential`,
+    method,
+    path,
+    status: 401,
+    request: () => request([]),
+    claim: (body) => assert.deepEqual(body, { error: 'invalid token' }),
+  },
+  {
+    name: `${method} ${path} -> 403 a verified token bound to no registered workspace`,
+    method,
+    path,
+    status: 403,
+    request: () => request(credential({ repository_id: '99' })),
+    claim: (body) => assert.deepEqual(body, { error: 'forbidden' }),
+  },
+  {
+    name: `${method} ${path} -> 503 no key set available to verify against`,
+    method,
+    path,
+    status: 503,
+    seam: () => seam(undefined, { fetchKeySet: outage }),
+    request: () => request(credential()),
+    claim: (body) => assert.deepEqual(body, { error: 'key set unavailable' }),
+  },
+];
+
 const scenarios = [
   {
     name: 'GET /health -> 200 liveness',
     method: 'GET',
     path: '/health',
     status: 200,
-    request: () => get('/health'),
+    request: () => anonymous('/health'),
     claim: (body) => assert.deepEqual(body, { status: 'ok' }),
   },
   {
-    name: 'GET /v1/workspaces -> 200 registered workspace listing',
+    name: "GET /v1/workspaces -> 200 the caller's own registration",
     method: 'GET',
     path: '/v1/workspaces',
     status: 200,
     request: () => get('/v1/workspaces'),
     claim: (body) => {
+      assert.equal(body.data.length, 1);
       assert.deepEqual(body.data[0].owners, ['platform']);
       assert.equal(body.data[0].value_stream, 'payments');
     },
   },
+  ...authenticatedRefusals('GET', '/v1/workspaces', (raw) => get('/v1/workspaces', raw)),
   {
     name: 'GET /v1/indicators -> 200 descriptive indicator summary',
     method: 'GET',
     path: '/v1/indicators',
     status: 200,
     request: () => get('/v1/indicators'),
-    claim: (body) => assert.match(body.data.note, /not a portfolio decision/),
+    claim: (body) => {
+      assert.match(body.data.note, /not a portfolio decision/);
+      assert.equal(body.data.evidence_attestation, 'self-attested');
+    },
   },
+  ...authenticatedRefusals('GET', '/v1/indicators', (raw) => get('/v1/indicators', raw)),
   {
     name: 'POST /v1/evidence -> 202 accepted evidence',
     method: 'POST',
@@ -146,6 +291,7 @@ const scenarios = [
     claim: (body) => {
       assert.equal(body.decision.disposition, 'accepted');
       assert.equal(body.decision.reasons.length, 0);
+      assert.equal(body.decision.evidence_attestation, 'self-attested');
     },
   },
   {
@@ -156,6 +302,17 @@ const scenarios = [
     request: () => post('{ not json'),
     claim: (body) => assert.deepEqual(body, { error: 'request body must be valid JSON' }),
   },
+  ...authenticatedRefusals('POST', '/v1/evidence', (raw) =>
+    post(JSON.stringify(validEvidence), undefined, raw),
+  ),
+  {
+    name: 'POST /v1/evidence -> 413 a body over the byte cap',
+    method: 'POST',
+    path: '/v1/evidence',
+    status: 413,
+    request: () => post(`"${'x'.repeat(1048576)}"`),
+    claim: (body) => assert.deepEqual(body, { error: 'request body too large' }),
+  },
   {
     name: 'POST /v1/evidence -> 422 evidence the contract or the policy did not accept',
     method: 'POST',
@@ -164,10 +321,22 @@ const scenarios = [
     request: () => post(JSON.stringify({ ...validEvidence, verification: { verified: [] } })),
     claim: (body) => {
       assert.equal(body.decision.accepted, false);
-      assert.deepEqual(body.decision.reasons, ['required control not verified: CAF-SDLC-002:tier']);
+      assert.deepEqual(body.decision.reasons, ['required control not claimed: CAF-SDLC-002:tier']);
+      assert.equal(body.decision.evidence_attestation, 'self-attested');
     },
   },
+  {
+    name: 'POST /v1/evidence -> 429 a principal over its submission quota',
+    method: 'POST',
+    path: '/v1/evidence',
+    status: 429,
+    seam: () => seam(undefined, { quota: exhausted }),
+    request: () => post(JSON.stringify(validEvidence)),
+    claim: (body) => assert.deepEqual(body, { error: 'submission quota exceeded' }),
+  },
 ];
+
+const handlerFor = (scenario) => (scenario.seam ? scenario.seam() : seam());
 
 test('the document declares an OpenAPI version, a title and a contract version', () => {
   assert.equal(typeof document.openapi, 'string');
@@ -217,7 +386,7 @@ test('the documented (route, status) pairs are exactly the pairs exercised here'
 
 for (const scenario of scenarios) {
   test(`${scenario.name} answers with the status the document declares`, async () => {
-    const { status } = await call(seam(), scenario.request());
+    const { status } = await call(handlerFor(scenario), scenario.request());
     assert.equal(status, scenario.status);
     assert.ok(
       document.paths[scenario.path][scenario.method.toLowerCase()].responses[String(status)],
@@ -226,7 +395,7 @@ for (const scenario of scenarios) {
   });
 
   test(`${scenario.name} answers with a body the documented schema accepts`, async () => {
-    const { body } = await call(seam(), scenario.request());
+    const { body } = await call(handlerFor(scenario), scenario.request());
     const schema = responseSchema(scenario.path, scenario.method.toLowerCase(), scenario.status);
     const { ok, errors } = conforms(body, schema);
     assert.deepEqual(errors, []);
@@ -234,6 +403,149 @@ for (const scenario of scenarios) {
     scenario.claim(body);
   });
 }
+
+// AC-14. A response that declares a header is held to the header the seam sends, by name and by
+// schema; and the seam sends no header a response does not declare, beyond the two transport
+// headers every response carries.
+const TRANSPORT_HEADERS = ['content-type', 'connection'];
+
+for (const scenario of scenarios) {
+  test(`${scenario.name} sends exactly the headers the document declares`, async () => {
+    const { headers } = await call(handlerFor(scenario), scenario.request());
+    const declared =
+      document.paths[scenario.path][scenario.method.toLowerCase()].responses[
+        String(scenario.status)
+      ].headers ?? {};
+    const sent = Object.fromEntries(
+      Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+    );
+    for (const [name, header] of Object.entries(declared)) {
+      const value = sent[name.toLowerCase()];
+      assert.notEqual(value, undefined, `${scenario.name}: ${name} is declared and not sent`);
+      assert.deepEqual(conforms(value, header.schema).errors, [], `${scenario.name}: ${name}`);
+    }
+    const declaredNames = Object.keys(declared).map((name) => name.toLowerCase());
+    for (const name of Object.keys(sent)) {
+      if (TRANSPORT_HEADERS.includes(name)) continue;
+      assert.ok(declaredNames.includes(name), `${scenario.name}: sends undeclared ${name}`);
+    }
+  });
+}
+
+test('declared response headers match the headers the seam sends', () => {
+  // Guard on the loop above: the two headers 2.1 introduced are both declared and both exercised.
+  const declared = operations.flatMap(({ path, method, operation }) =>
+    Object.entries(operation.responses).flatMap(([status, response]) =>
+      Object.keys(response.headers ?? {}).map(
+        (name) => `${method.toUpperCase()} ${path} ${status} ${name}`,
+      ),
+    ),
+  );
+  assert.deepEqual(sorted(declared), [
+    'GET /v1/indicators 401 WWW-Authenticate',
+    'GET /v1/workspaces 401 WWW-Authenticate',
+    'POST /v1/evidence 401 WWW-Authenticate',
+    'POST /v1/evidence 429 Retry-After',
+  ]);
+});
+
+test('security is declared on exactly the routes that require a workload', () => {
+  const schemes = document.components.securitySchemes;
+  assert.deepEqual(Object.keys(schemes), ['githubActionsOidc']);
+  assert.equal(schemes.githubActionsOidc.type, 'http');
+  assert.equal(schemes.githubActionsOidc.scheme, 'bearer');
+  for (const { path, method, operation } of operations) {
+    assert.ok(
+      Array.isArray(operation.security),
+      `${method.toUpperCase()} ${path} states no security requirement, so its default is implicit`,
+    );
+    for (const requirement of operation.security)
+      for (const name of Object.keys(requirement))
+        assert.ok(Object.hasOwn(schemes, name), `${path} names an undeclared scheme ${name}`);
+  }
+  const secured = operations
+    .filter(({ operation }) => operation.security.length > 0)
+    .map(({ method, path }) => `${method.toUpperCase()} ${path}`);
+  const workload = routes
+    .filter((route) => route.auth !== 'none')
+    .map((route) => `${route.method} ${route.path}`);
+  assert.deepEqual(sorted(secured), sorted(workload));
+});
+
+test('every operation but GET /health declares 401, 403 and 503, and the POST 413 and 429', () => {
+  for (const { path, method, operation } of operations) {
+    const statuses = Object.keys(operation.responses);
+    if (path === '/health') {
+      assert.deepEqual(statuses, ['200']);
+      continue;
+    }
+    for (const status of ['401', '403', '503'])
+      assert.ok(statuses.includes(status), `${method} ${path} does not declare ${status}`);
+  }
+  const post = Object.keys(document.paths['/v1/evidence'].post.responses);
+  for (const status of ['413', '429']) assert.ok(post.includes(status));
+});
+
+test('info.version is 0.2.0', () => {
+  // Bumped once, by task 2.1, for the authentication statuses, the 413, the 429, Workspace /1 and
+  // evidence_attestation together.
+  assert.equal(document.info.version, '0.2.0');
+});
+
+test('evidence_attestation is required and single-valued on the three schemas ADR-0004 names', () => {
+  for (const name of ['AcceptedDecision', 'UnacceptedDecision', 'IndicatorSummary']) {
+    const schema = document.components.schemas[name];
+    assert.ok(schema.required.includes('evidence_attestation'), name);
+    assert.deepEqual(schema.properties.evidence_attestation.enum, ['self-attested'], name);
+    assert.equal(schema.additionalProperties, false, name);
+  }
+});
+
+test('the Workspace schema is workspace-registry/1: the binding is required and closed', () => {
+  const ws = document.components.schemas.Workspace;
+  assert.ok(ws.required.includes('workload_identity'));
+  assert.deepEqual(ws.properties.status.enum, ['active', 'suspended']);
+  const wi = document.components.schemas.WorkloadIdentity;
+  assert.equal(wi.additionalProperties, false);
+  assert.deepEqual(wi.properties.issuer.enum, [ISSUER]);
+  assert.deepEqual(wi.properties.admitted_events.items.enum, [
+    'push',
+    'pull_request',
+    'pull_request_review',
+  ]);
+  const registration = (overrides) => ({ ...workspace, ...overrides });
+  assert.deepEqual(conforms(registration(), { $ref: '#/components/schemas/Workspace' }).errors, []);
+  for (const bad of [
+    { status: 'retired' },
+    { workload_identity: { ...workspace.workload_identity, required_workflow_ref: 'x' } },
+    { workload_identity: undefined },
+  ]) {
+    const value = JSON.parse(JSON.stringify(registration(bad)));
+    assert.equal(conforms(value, { $ref: '#/components/schemas/Workspace' }).ok, false);
+  }
+});
+
+// No status can be written outside the sweep below: the verifier package writes no response at
+// all. Its one `.end(` is the client side of the key-set fetch, ending the outgoing request.
+test('no module in workload-identity can write an HTTP response', () => {
+  const dir = new URL('../../workload-identity/src/', import.meta.url);
+  for (const file of readdirSync(dir).filter(
+    (name) => name.endsWith('.mjs') && !name.endsWith('.test.mjs'),
+  )) {
+    const text = readFileSync(new URL(file, dir), 'utf8');
+    assert.doesNotMatch(text, /\bwriteHead\b/, file);
+    assert.doesNotMatch(text, /\bstatusCode\s*=(?!=)/, file);
+    assert.doesNotMatch(text, /\bcreateServer\b/, file);
+    const ends = [...text.matchAll(/\.end\(/g)].length;
+    const allowed =
+      file === 'https-transport.mjs' ? [...text.matchAll(/\boutgoing\.end\(\);/g)].length : 0;
+    assert.equal(
+      ends,
+      allowed,
+      `${file} calls .end( on something other than its own outgoing request`,
+    );
+  }
+});
 
 // Reading the module as text is the technique tools/sdlc-controls/graph-fidelity.test.mjs already
 // uses: a claim about source is checked against that source rather than against a second
@@ -309,17 +621,17 @@ test('an unrecognised additive field satisfies the document and is still accepte
   assert.equal(store.list().length, 1);
 });
 
-// Four divergence freezes. Each one is behaviour info.description admits to; freezing it here
+// Divergence freezes. Each one is behaviour info.description admits to; freezing it here
 // means a later change to any of them has to change the document in the same commit.
 test('divergence: a query string on a documented path is unmatched, not a match', async () => {
-  const { status, body } = await call(seam(), get('/health?x=1'));
+  const { status, body } = await call(seam(), anonymous('/health?x=1'));
   assert.equal(status, unmatched.status);
   assert.deepEqual(body, { error: 'not found' });
   assert.deepEqual(conforms(body, unmatched.content['application/json'].schema).errors, []);
 });
 
 test('divergence: an undeclared method on a documented path is a 404, never a 405', async () => {
-  for (const request of [get('/v1/evidence'), { method: 'POST', url: '/health' }]) {
+  for (const request of [get('/v1/evidence'), { method: 'POST', url: '/health', rawHeaders: [] }]) {
     const { status, body } = await call(seam(), request);
     assert.equal(status, unmatched.status);
     assert.deepEqual(body, { error: 'not found' });
@@ -345,6 +657,19 @@ test('divergence: the 202 is synchronous, so it promises nothing about later wor
     1,
     'the record is already stored when the response is written; nothing is queued',
   );
+});
+
+test('divergence 6: a conflicting replay is answered 202 and the first record stands', async () => {
+  const store = createInMemoryEvidenceStore();
+  const handler = seam(store);
+  assert.equal((await call(handler, post(JSON.stringify(validEvidence)))).status, 202);
+  const changed = { ...validEvidence, result: { pass: false } };
+  const { status, body } = await call(handler, post(JSON.stringify(changed)));
+  assert.equal(status, 202, 'until 2.2 assigns a conflict its own status (ADR-0002)');
+  assert.equal(body.decision.disposition, 'accepted');
+  assert.equal(store.list().length, 1);
+  assert.equal(store.list()[0].evidence.result.pass, true, 'the first record stands');
+  assert.match(document.info.description, /6\. A conflicting replay is answered 202\./);
 });
 
 // Phase 4 cycle 3 found the drift protection above to be one-directional. Every request-schema
@@ -467,11 +792,7 @@ test('a record well past the serialiser limit is refused before policy is evalua
     },
   });
   const store = createInMemoryEvidenceStore();
-  const handler = createRequestHandler({
-    registry: { list: () => [workspace] },
-    policy: watched,
-    evidenceStore: store,
-  });
+  const handler = seam(store, { policy: watched });
   const { status } = await call(handler, post(body));
   assert.equal(status, 400);
   assert.equal(policyRead, false, 'the policy was evaluated for a record that cannot be stored');
