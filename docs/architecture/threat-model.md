@@ -17,8 +17,8 @@ measured_ was established by running the seam — `createApp()` bound to an ephe
 over a real socket — and the observed status, the observed store contents and the observed
 process RSS are quoted. Three are reachable today without being measured on the socket, and are
 labelled so: ABU-6 rests on repository evidence (`git log --format='%G?'`, the absence of
-`CODEOWNERS`), ABU-7 on the roadmap's own Definition of Done, and ABU-14 on the absence of any log
-call in `packages/*/src/` beyond the startup message. None of them is a request whose answer
+`CODEOWNERS`), ABU-7 on the roadmap's own Definition of Done, and ABU-14 on the absence, before
+task 2.1, of any log call in `packages/*/src/` beyond the startup message. None of them is a request whose answer
 proves the case, so there was no socket to measure. A claim that something is unreachable is a
 claim about code that exists,
 and it names the line that makes it so. Nothing here is inferred from reading a handler and
@@ -86,39 +86,52 @@ one. Nothing under `packages/` changes in this task.
 **No retained field is personal data today.** Classification answers how sensitive the record is,
 not whether erasure is an obligation, and RR-4 and RR-7 both turn on the second question. An
 `evidence/0` record carries no name, address or account identifier; the field that would change
-that is `owners` on a workspace registration, a non-empty array
-(`packages/contracts/src/schema.mjs:48-49`) that holds a team name today and is constrained to
+that is `owners` on a workspace registration, a non-empty array (checked by
+`validateWorkspaceRegistration` in `packages/contracts/src/schema.mjs`) that holds a team name today and is constrained to
 nothing — the validator checks only that it is an array with at least one element, not even that
 the elements are strings. If a personal name is ever written there, retention stops being an operational choice and
-RR-4 and RR-7 need re-deciding rather than re-accepting.
+RR-4 and RR-7 need re-deciding rather than re-accepting. Since task 2.1 the envelope also carries
+`submitted_by` (ADR-0004), whose `ref`, `workflow_ref` and `job_workflow_ref` are branch, tag and
+file names a person chooses and can carry a person's name; ADR-0004 nulls those three on
+redaction, and task 2.2 implements it.
 
 ## System under analysis
 
-The control plane is one deployable — `control-plane-api` — composing four libraries behind an
-HTTP seam in `packages/control-plane-api/src/main.mjs`. The seam exports its routes as data:
+The control plane is one deployable — `control-plane-api` — composing five libraries behind an
+HTTP seam in `packages/control-plane-api/src/main.mjs`; the fifth, `workload-identity`, verifies a
+workload's OIDC token and was added by task 2.1. The seam exports its routes as data:
 
-| Route                | What it answers                                              | Identity required |
-| -------------------- | ------------------------------------------------------------ | ----------------- |
-| `GET /health`        | process liveness, no dependency checked                      | none              |
-| `GET /v1/workspaces` | every registration loaded at startup, in full                | none              |
-| `GET /v1/indicators` | a descriptive aggregate over every record in the store       | none              |
-| `POST /v1/evidence`  | a technical disposition, and an append on an accepted record | none              |
+| Route                | What it answers                                               | Identity required                   |
+| -------------------- | ------------------------------------------------------------- | ----------------------------------- |
+| `GET /health`        | process liveness, no dependency checked                       | none                                |
+| `GET /v1/workspaces` | the caller's own registration, and no other                   | workload principal authorized for W |
+| `GET /v1/indicators` | a descriptive aggregate over the caller's workspace's records | workload principal authorized for W |
+| `POST /v1/evidence`  | a technical disposition, and an append on an accepted record  | workload principal authorized for W |
 
-The "Identity required" column is the whole of NFR-2.1's current status. **There is no identity
-anywhere in the request path.** The seam matches a request on `request.method` and `request.url`
-and nothing else; a repository-wide search for a header read across every non-test module under
-`packages/*/src/` returns nothing. `createRegistry` exports a `get(workspaceId)` lookup at
-`packages/workspace-registry/src/registry.mjs:8` — the natural consumer of an authenticated
-principal — and **no caller anywhere in the workspace invokes it**. The authorization boundary
-NFR-2.1 requires is present in the code as an unused function.
+"Authorized for W" is ADR-0003's one predicate: a verified GitHub Actions OIDC token whose
+`(issuer, repository_owner_id, repository_id)` binds to registration W, W `active`, its event
+admitted, any workflow pin matched, and its actor not refused. The seam answers 404 before it reads
+any credential, and decides 401, 403 and 503 from the headers before it reads a body byte.
+
+**Measured before task 2.1, at `4f2724f`: there was no identity anywhere in the request path.**
+The seam matched a request on `request.method` and `request.url` and nothing else; a
+repository-wide search for a header read across every non-test module under `packages/*/src/`
+returned nothing. `createRegistry` exported a `get(workspaceId)` lookup
+(`packages/workspace-registry/src/registry.mjs:8` at that commit) — the natural consumer of an
+authenticated principal — and no caller anywhere in the workspace invoked it. Task 2.1's
+predicate is now its caller.
 
 Three things load once, at module scope, and never reload: the workspace registry and the
-guardrail policy (the registry at `main.mjs:8-10` and `:34`, the policy at `main.mjs:27-32`), and
-the in-process evidence store (`main.mjs:38`). A policy
+guardrail policy, both read from `config/control-plane/` near the top of `main.mjs`, and the
+in-process evidence store, created beside them. A policy
 change therefore takes effect on restart and not before, and the store is a process-local array
-that a restart destroys — ADR-0002 is the decision that replaces it, and is still `Proposed`.
+that a restart destroys — ADR-0002 (Accepted at Gate 2) is the decision that replaces it, and
+task 2.2 builds it.
 
-Measured behaviour of the running seam, quoted because the rest of this document depends on it:
+Measured behaviour of the running seam at `4f2724f`, before task 2.1, quoted because the abuse
+cases below were established from it. The first three are closed at the seam since 2.1 (see
+ABU-1, ABU-5), and the body-size cases by the ingress cap (ABU-2); none of the four has been
+re-measured on a socket since:
 
 - A `POST /v1/evidence` carrying a valid `evidence/0` record and **no credential of any kind** is
   answered `202 Accepted` with `policy_id: baseline-engineering-controls@1`.
@@ -138,26 +151,39 @@ Measured behaviour of the running seam, quoted because the rest of this document
 
 ## Trust boundaries
 
-| ID   | Boundary                            | Untrusted side                                             | Trusted side                                                                                 | Surfaces                                                                              | Assets crossing                                                               | STRIDE coverage                                         | Control                                                                   | Status  |
-| ---- | ----------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------- | ------- |
-| TB-1 | Network peer to HTTP seam           | any peer that can open a socket, authenticated by nothing  | the request handler in `main.mjs`                                                            | `GET /health`, `GET /v1/workspaces`, `GET /v1/indicators`, `POST /v1/evidence`        | evidence records, technical dispositions, registrations, indicator aggregates | S:ABU-1 T:ABU-3 R:ABU-5,ABU-14 I:ABU-4 D:ABU-2 E:n/a    | none                                                                      | current |
-| TB-2 | HTTP seam to contract validator     | a parsed but unvalidated request body                      | the `evidence/0` subset `validateEvidence` enforces                                          | `POST /v1/evidence`, `process:packages/contracts/src/schema.mjs`                      | the candidate record, its tier, its affected set, its verification list       | S:n/a T:ABU-3,ABU-9 R:n/a I:n/a D:ABU-2 E:n/a           | executable check `packages/contracts/src/schema.test.mjs`                 | current |
-| TB-3 | HTTP seam to guardrail evaluator    | the caller's record, and a policy file changed out of band | `evaluateGuardrails` and the `policy_id` it stamps on                                        | `POST /v1/evidence`, `process:packages/guardrail-policy/src/evaluate.mjs`             | policy rules, the approving decision reference, the disposition returned      | S:n/a T:ABU-6,ABU-11 R:ABU-7,ABU-10 I:n/a D:n/a E:ABU-6 | executable check `packages/control-plane-api/src/main.test.mjs`           | current |
-| TB-4 | HTTP seam to workspace registry     | a submission's implicit and unverified workspace claim     | registrations validated at load by `createRegistry`                                          | `GET /v1/workspaces`, `process:packages/workspace-registry/src/registry.mjs`          | `repository_url`, `evidence_endpoint`, `owners`, `workspace_id`               | S:ABU-1 T:n/a R:n/a I:ABU-4 D:n/a E:n/a                 | none                                                                      | current |
-| TB-5 | HTTP seam to evidence store         | an accepted but unattributed record                        | the process-local array in `evidence-store.mjs`, which task 2.2 replaces with ADR-0002's log | `POST /v1/evidence`, `store:packages/control-plane-api/src/evidence-store.mjs`        | payload, `(workspace_id, change_id)`, `policy_id`, `received_at`              | S:n/a T:ABU-12 R:ABU-5 I:ABU-13 D:ABU-2,ABU-8 E:ABU-12  | executable check `packages/control-plane-api/src/evidence-store.test.mjs` | current |
-| TB-6 | Repository to policy administration | any author who can land a commit on the policy path        | the policy and registry loaded at process start                                              | `git:config/control-plane/**`, `forge:pull-request-review`, `process:main.mjs`        | guardrail rules, `policy_id`, the approval reference, workspace registrations | S:ABU-6 T:ABU-6 R:ABU-7 I:n/a D:n/a E:ABU-6             | convention                                                                | current |
-| TB-7 | Control plane to human reader       | the control plane's own published claims about itself      | a human's understanding of what was actually verified                                        | `GET /v1/indicators`, `POST /v1/evidence`, `git:docs/specs/implementation-roadmap.md` | the meaning of a disposition, the indicator disclaimer, every Done-when claim | S:n/a T:ABU-3 R:ABU-7 I:n/a D:n/a E:n/a                 | convention                                                                | current |
+| ID   | Boundary                            | Untrusted side                                                                                               | Trusted side                                                                                 | Surfaces                                                                                                           | Assets crossing                                                                | STRIDE coverage                                         | Control                                                                   | Status  |
+| ---- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------- | ------- |
+| TB-1 | Network peer to HTTP seam           | any peer that can open a socket; every route but `GET /health` requires a verified GitHub Actions OIDC token | the request handler in `main.mjs`                                                            | `GET /health`, `GET /v1/workspaces`, `GET /v1/indicators`, `POST /v1/evidence`                                     | evidence records, technical dispositions, registrations, indicator aggregates  | S:ABU-1 T:ABU-3 R:ABU-5,ABU-14 I:ABU-4 D:ABU-2 E:n/a    | executable check `packages/control-plane-api/src/admission.test.mjs`      | current |
+| TB-2 | HTTP seam to contract validator     | a parsed but unvalidated request body                                                                        | the `evidence/0` subset `validateEvidence` enforces                                          | `POST /v1/evidence`, `process:packages/contracts/src/schema.mjs`                                                   | the candidate record, its tier, its affected set, its verification list        | S:n/a T:ABU-3,ABU-9 R:n/a I:n/a D:ABU-2 E:n/a           | executable check `packages/contracts/src/schema.test.mjs`                 | current |
+| TB-3 | HTTP seam to guardrail evaluator    | the caller's record, and a policy file changed out of band                                                   | `evaluateGuardrails` and the `policy_id` it stamps on                                        | `POST /v1/evidence`, `process:packages/guardrail-policy/src/evaluate.mjs`                                          | policy rules, the approving decision reference, the disposition returned       | S:n/a T:ABU-6,ABU-11 R:ABU-7,ABU-10 I:n/a D:n/a E:ABU-6 | executable check `packages/control-plane-api/src/main.test.mjs`           | current |
+| TB-4 | HTTP seam to workspace registry     | a verified principal's claim to a workspace, bound only by the reviewed triple                               | registrations validated at load by `createRegistry`                                          | `GET /v1/workspaces`, `process:packages/workspace-registry/src/registry.mjs`                                       | `repository_url`, `evidence_endpoint`, `owners`, `workspace_id`                | S:ABU-1 T:n/a R:n/a I:ABU-4 D:n/a E:n/a                 | executable check `packages/workspace-registry/src/registry.test.mjs`      | current |
+| TB-5 | HTTP seam to evidence store         | an accepted but unattributed record                                                                          | the process-local array in `evidence-store.mjs`, which task 2.2 replaces with ADR-0002's log | `POST /v1/evidence`, `store:packages/control-plane-api/src/evidence-store.mjs`                                     | payload, `(workspace_id, change_id)`, `policy_id`, `received_at`               | S:n/a T:ABU-12 R:ABU-5 I:ABU-13 D:ABU-2,ABU-8 E:ABU-12  | executable check `packages/control-plane-api/src/evidence-store.test.mjs` | current |
+| TB-6 | Repository to policy administration | any author who can land a commit on the policy path                                                          | the policy and registry loaded at process start                                              | `git:config/control-plane/**`, `forge:pull-request-review`, `process:main.mjs`                                     | guardrail rules, `policy_id`, the approval reference, workspace registrations  | S:ABU-6 T:ABU-6 R:ABU-7 I:n/a D:n/a E:ABU-6             | convention                                                                | current |
+| TB-7 | Control plane to human reader       | the control plane's own published claims about itself                                                        | a human's understanding of what was actually verified                                        | `GET /v1/indicators`, `POST /v1/evidence`, `git:docs/specs/implementation-roadmap.md`                              | the meaning of a disposition, the indicator disclaimer, every Done-when claim  | S:n/a T:ABU-3 R:ABU-7 I:n/a D:n/a E:n/a                 | convention                                                                | current |
+| TB-8 | HTTP seam to issuer key set         | the network path to and the content at the pinned `jwks_uri`, including any CA the host trusts               | the RSA keys `key-set.mjs` accepts signatures under, for at most the clamped lifetime        | `process:packages/workload-identity/src/key-set.mjs`, `process:packages/workload-identity/src/https-transport.mjs` | issuer public keys, their `kid`s, and the cache lifetime that bounds their use | S:ABU-15 T:ABU-15 R:n/a I:n/a D:ABU-15 E:n/a            | executable check `packages/workload-identity/src/key-set.test.mjs`        | current |
 
-TB-4 is the boundary NFR-2.1 names and the system does not have. Its trusted side exists — the
-registry is loaded, validated and indexed — and its only current surface is the route that reads
-_out_ of it. Nothing reads _into_ it to authorize a submission, which is why `registry.get()` has
-no caller.
+TB-4 is the boundary NFR-2.1 names. Until task 2.1 the system did not have it: the registry was
+loaded, validated and indexed, its only surface was the route that read _out_ of it, and nothing
+read _into_ it to authorize a submission. Since 2.1 a verified principal's triple is looked up in
+the binding index `createRegistry` builds at load, the registration is read back through
+`registry.get`, and a token that binds to nothing authorizes nothing. What the boundary still
+cannot see is whether the gate behind a valid token ran unmodified (ADR-0003's limit of
+authentication; ABU-11).
 
 TB-5 was `conditional on ADR-0002` until Gate 2 accepted that ADR on 2026-10-01, and the check
 below failed on exactly that transition until the row was promoted. It is now `current`: the
 boundary exists today, and its trusted side is still a process-local array. Task 2.2 replaces it
 with the PostgreSQL envelope log ADR-0002 decides; until then nothing crossing it survives a
 restart.
+
+TB-8 is the one outbound crossing, added by task 2.1 with the fetch it guards (Gate 2 finding 9).
+Its untrusted side includes host configuration this code cannot refuse — `NODE_EXTRA_CA_CERTS`,
+and on newer Node `NODE_USE_ENV_PROXY` — so a host that trusts a hostile CA or proxies the fetch
+can still serve a key set the verifier believes; `NODE_TLS_REJECT_UNAUTHORIZED=0` is overridden,
+because the fetch passes `rejectUnauthorized: true` explicitly. The executable check holds the
+cache and key rules; the transport rules are held by
+`packages/workload-identity/src/https-transport.test.mjs`, through an injected request function
+rather than a socket.
 
 TB-7 has no socket, which is the point. Nothing crosses it over a network, so no amount of
 transport hardening touches it, and a STRIDE pass driven by the route table would never generate
@@ -174,15 +200,22 @@ a refusal; that `verification.verified` is an array and `result.pass` a boolean 
 nothing. TB-3's
 `main.test.mjs` fails when the `policy_id` stamp, the required-control rule or the disposition
 breaks; the provenance rule (`evaluate.mjs:22-24`) and the `blocked_tiers` rule (`:20-21`) can each
-be deleted with every test green. Two
-boundaries read `none`, and they are the two NFR-2.1 is about. TB-6 reads `convention` although
+be deleted with every test green, and task 2.4 adds those tests. No boundary reads `none` since
+task 2.1: TB-1 and TB-4, the two NFR-2.1 is about, read `none` until it shipped. TB-1's check
+holds admission order, scoping, the respond-then-destroy refusals and the byte cap at the seam,
+but against a fake socket; TB-4's holds the binding index and the registration rules, not the seam
+that calls them. TB-6 reads `convention` although
 the PR gate runs on every change to it: the gate computes the T3 tier, but the workflow passes it
 no approver set, so the review that tier calls for is recorded and never verified. TB-7 reads
 `convention` for the same kind of reason. The indicator disclaimer MIT-9 cites is emitted in
-full, but every test that reads it (`main.test.mjs:105` among them) matches only "not a portfolio
+full, but every test that reads it (`main.test.mjs`'s "rejected evidence never reaches the
+indicator summary" among them) matches only "not a portfolio
 decision"; the "compliance conclusion" half — the half NFR-6.1's second clause is about — can be
-deleted with the suite green. The disposition's _value_ is pinned — `main.test.mjs:81` and the
-`openapi.json` enum stop `accepted` being relabelled `approved` — but nothing checks how a `202`
+deleted with the suite green. The disposition's _value_ is pinned — `main.test.mjs`'s "accepts
+evidence that satisfies the approved policy" and the
+`openapi.json` enum stop `accepted` being relabelled `approved` — and since task 2.1 every
+disposition and the indicator carry `evidence_attestation: "self-attested"` (ADR-0004), pinned by
+the contract test; but nothing checks how a `202`
 or a Done-when tick is _interpreted_, and interpretation is what this boundary is about.
 
 ## Abuse cases
@@ -192,49 +225,60 @@ row names a representative. `STRIDE` is the **union** of the letters every bound
 not the letters for the boundary the row names. The conformance check holds both: the named
 boundary must be one that indexes the case, and the letters must match the union.
 
-| ID     | Boundary | STRIDE  | Abuse case                                                                                                              | Answered by    |
-| ------ | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------- | -------------- |
-| ABU-1  | TB-1     | S       | Anyone who can reach the port submits evidence as any workspace, and the control plane records it as accepted.          | MIT-1, MIT-2   |
-| ABU-2  | TB-1     | D       | A single unauthenticated socket exhausts process memory by streaming a body the seam buffers whole.                     | MIT-4          |
-| ABU-3  | TB-1     | T       | Forged or bulk submissions move the published indicator, which is read as a statement about real delivery.              | MIT-2          |
-| ABU-4  | TB-4     | I       | An unauthenticated reader harvests every workspace's repository, endpoint and owner, and the whole indicator.           | MIT-3          |
-| ABU-5  | TB-5     | R       | With `workspace_id` null nothing claims uniqueness, so a replay is indistinguishable from a distinct submission.        | MIT-5          |
-| ABU-6  | TB-6     | S, T, E | A commit rewrites the guardrail rules or forges its own author, and the next restart enforces the new policy.           | MIT-6, MIT-7   |
-| ABU-7  | TB-7     | R       | The control plane states an assurance it does not deliver, and a human reads a green check as an approval.              | MIT-9, MIT-10  |
-| ABU-8  | TB-5     | D       | A refused body becomes an unbounded, unclassified, attacker-supplied write primitive aimed at the durable store.        | MIT-8          |
-| ABU-9  | TB-2     | T       | A submitter omits `ai_assisted` or sets it false, so the provenance rule never applies and the record is counted clean. | MIT-11         |
-| ABU-10 | TB-3     | R       | A guardrail policy with its `approval` block deleted starts the process and stamps its `policy_id` on every acceptance. | MIT-12         |
-| ABU-11 | TB-3     | T       | A submitter declares its own tier, verified controls and result, and the guardrail evaluates the claims as facts.       | MIT-13         |
-| ABU-12 | TB-5     | T, E    | The application role or the retention job rewrites or deletes evidence that was already accepted.                       | MIT-14, MIT-15 |
-| ABU-13 | TB-5     | I       | INTERNAL evidence at rest — the durable store and its backups — is read by a role or a copy with no need for it.        | MIT-16         |
-| ABU-14 | TB-1     | R       | Refused, unauthenticated and abusive requests leave no log line, so ABU-1, ABU-2 and ABU-3 go undetected.               | MIT-17, MIT-18 |
+| ID     | Boundary | STRIDE  | Abuse case                                                                                                                                                                                    | Answered by    |
+| ------ | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| ABU-1  | TB-1     | S       | Anyone who can reach the port submits evidence as any workspace, and the control plane records it as accepted.                                                                                | MIT-1, MIT-2   |
+| ABU-2  | TB-1     | D       | A single unauthenticated socket exhausts process memory by streaming a body the seam buffers whole.                                                                                           | MIT-4          |
+| ABU-3  | TB-1     | T       | Forged or bulk submissions move the published indicator, which is read as a statement about real delivery.                                                                                    | MIT-2          |
+| ABU-4  | TB-4     | I       | An unauthenticated reader harvests every workspace's repository, endpoint and owner, and the whole indicator.                                                                                 | MIT-3          |
+| ABU-5  | TB-5     | R       | With `workspace_id` null nothing claims uniqueness, so a replay is indistinguishable from a distinct submission.                                                                              | MIT-5          |
+| ABU-6  | TB-6     | S, T, E | A commit rewrites the guardrail rules or forges its own author, and the next restart enforces the new policy.                                                                                 | MIT-6, MIT-7   |
+| ABU-7  | TB-7     | R       | The control plane states an assurance it does not deliver, and a human reads a green check as an approval.                                                                                    | MIT-9, MIT-10  |
+| ABU-8  | TB-5     | D       | A refused body becomes an unbounded, unclassified, attacker-supplied write primitive aimed at the durable store.                                                                              | MIT-8          |
+| ABU-9  | TB-2     | T       | A submitter omits `ai_assisted` or sets it false, so the provenance rule never applies and the record is counted clean.                                                                       | MIT-11         |
+| ABU-10 | TB-3     | R       | A guardrail policy with its `approval` block deleted starts the process and stamps its `policy_id` on every acceptance.                                                                       | MIT-12         |
+| ABU-11 | TB-3     | T       | A submitter declares its own tier, verified controls and result, and the guardrail evaluates the claims as facts.                                                                             | MIT-13         |
+| ABU-12 | TB-5     | T, E    | The application role or the retention job rewrites or deletes evidence that was already accepted.                                                                                             | MIT-14, MIT-15 |
+| ABU-13 | TB-5     | I       | INTERNAL evidence at rest — the durable store and its backups — is read by a role or a copy with no need for it.                                                                              | MIT-16         |
+| ABU-14 | TB-1     | R       | Refused, unauthenticated and abusive requests leave no log line, so ABU-1, ABU-2 and ABU-3 go undetected.                                                                                     | MIT-17, MIT-18 |
+| ABU-15 | TB-8     | S, T, D | A redirected, spoofed or oversized key-set response, or a stream of forged `kid`s during an outage, makes the verifier trust a key it should not or turns every authenticated route into 503. | MIT-19         |
 
-**ABU-1 — unauthenticated submission and evidence forgery. Reachable today; measured.** A
-`POST /v1/evidence` with no credential is answered `202 Accepted` with a real `policy_id`; the
-same request carrying a deliberately invalid bearer token is answered identically, because no
-module under `packages/*/src/` reads a request header. There is no identity to forge, which is
+**ABU-1 — unauthenticated submission and evidence forgery. Reachable before task 2.1 (measured 2026-09-23, at `4f2724f`); closed at the seam by
+MIT-2 — see `packages/workload-identity/src/authenticate.test.mjs` and
+`packages/control-plane-api/src/admission.test.mjs`; not re-measured on a socket.** At that commit a
+`POST /v1/evidence` with no credential was answered `202 Accepted` with a real `policy_id`; the
+same request carrying a deliberately invalid bearer token was answered identically, because no
+module under `packages/*/src/` read a request header. The rest of this paragraph is the case as
+measured then. There is no identity to forge, which is
 worse than a forgeable one: forgery implies something was claimed. The record entered the store
 attributed to nobody, and `GET /v1/indicators` then counted it. This is the case NFR-2.1 exists to
 close — "authenticate the calling workload and authorize it for the registered workspace" — and
 TB-1 and TB-4, the two boundaries whose `Control` reads `none`, are its two halves.
 
-**ABU-2 — ingress resource exhaustion. Reachable today; measured.** `main.mjs:81-83` accumulates
-every chunk into an array and concatenates once, so peak memory is a multiple of the body the
-caller chooses to send, and the caller chooses without limit. A 96 MiB unparseable body took the
+**ABU-2 — ingress resource exhaustion. Reachable before task 2.1 (measured 2026-09-23, at `4f2724f`); closed at the seam by MIT-4 — see
+`packages/control-plane-api/src/admission.test.mjs`; not re-measured on a socket.** At that commit
+the POST handler (`main.mjs:81-83`) accumulated
+every chunk into an array and concatenated once, so peak memory was a multiple of the body the
+caller chose to send, and the caller chose without limit. Since 2.1 only an authorized workload
+reaches the read at all, the read stops at 1 MiB, and RR-10 records what the cap does not bound. A 96 MiB unparseable body took the
 server from 56.1 MiB RSS to 260.7 MiB and `/health` to 9x its median before being answered `400`.
 The refusal is the _cheap_ case. A 96 MiB body that is a **valid** `evidence/0` record is answered
 `202 Accepted`, drives RSS to 816.0 MiB, and leaves it there permanently, because an append-only
 store does not release what it accepted. Refusal costs transient memory; acceptance costs
 resident memory for the life of the process.
 
-**ABU-3 — indicator poisoning. Reachable today; measured.** `summarizeEvidence` counts every
-record in the store with no notion of who submitted it. Three submissions from one anonymous
+**ABU-3 — indicator poisoning. Reachable by an anonymous client before task 2.1 (measured
+2026-09-23, at `4f2724f`); since 2.1 only an authorized workload can move an indicator, and only
+its own workspace's — not re-measured on a socket.** At that commit `summarizeEvidence` counted every
+record in the store with no notion of who submitted it, and three submissions from one anonymous
 client moved `total_records` from 0 to 3 and `by_tier.T1` with it. The indicator's own disclaimer
 field says it is descriptive rather than a compliance conclusion, which is true and is not a
 defence against the number being wrong. Authentication (MIT-2) removes the anonymous submitter,
 not the false claim: ABU-11 is what an authenticated workload can still do.
 
-**ABU-4 — cross-workspace disclosure. Reachable today; measured.** `GET /v1/workspaces` returns,
+**ABU-4 — cross-workspace disclosure. Reachable before task 2.1 (measured 2026-09-23, at `4f2724f`); closed at the seam by MIT-3 — see
+`packages/control-plane-api/src/admission.test.mjs`; not re-measured on a socket.** Since 2.1 each
+read route answers only the caller's own workspace. At that commit `GET /v1/workspaces` returned,
 unauthenticated, every registration in full: `repository_url`, `evidence_endpoint`, `owners`,
 `value_stream` and `solution` for every governed workspace. That is a map of an organisation's
 internal delivery topology and the addresses that accept its evidence. `GET /v1/indicators`
@@ -242,12 +286,17 @@ aggregates across every workspace at once with no scoping parameter to leave out
 INTERNAL classification settled above, both routes publish classified data to anyone who can
 reach the port.
 
-**ABU-5 — replay and idempotency defeat. Reachable today; measured.** Submitting a byte-identical
+**ABU-5 — replay and idempotency defeat. Reachable before task 2.1 (measured 2026-09-23, at `4f2724f`); narrowed at the seam by task 2.1 and
+not closed: a submission now carries the principal's `workspace_id`, so a replay inside one
+process is a `duplicate` (see `packages/control-plane-api/src/admission.test.mjs`), but the index
+lives in process memory and a restart forgets it (RR-2); MIT-5 closes it. Not re-measured on a
+socket.** At that commit submitting a byte-identical
 record twice produced two `202`s and `total_records: 2`. ADR-0002's collision rule has a row for
 this — `workspace_id === null` appends with `idempotency_key: null` and claims no uniqueness —
 and it is the correct answer for a pre-identity scaffold. It is the wrong answer for anything
 holding real evidence, because every replay counts again and nothing can distinguish a retry from
-a distinct change. The fix is not in the store; it is `workspace_id`, and `workspace_id` is 2.1.
+a distinct change. The fix is not in the store; it is `workspace_id`, which 2.1 now supplies,
+together with the durable index 2.2 builds.
 
 **ABU-6 — policy tampering through the git path. Reachable today.** `config/control-plane/**` is
 read at module scope and never re-read, so a change lands on the next restart with no runtime
@@ -266,7 +315,7 @@ and easy to misattribute once landed.
 **ABU-7 — governance misrepresentation. Reachable today.** This is the abuse case with no
 attacker. Sprint 2's Definition of Done said "Audit events for policy changes are queryable" (Gate 2
 reworded it to git history, RR-5) and no scheduled task builds a queryable surface — 2.1 is identity, 2.2 is evidence intake, 2.3 is
-operator telemetry, and 1.3 is this document. `docs/contracts.md` already carries the correction
+operator telemetry, 2.4 is policy and provenance hardening, and 1.3 is this document. `docs/contracts.md` already carries the correction
 for its own earlier version of the same overstatement. The harm is not technical: a human reading
 a ticked box concludes an audit capability exists, which is exactly the representation NFR-6.1
 forbids the system to make.
@@ -280,29 +329,34 @@ does `ai_assisted: false`. Where the rule does apply it tests only that `ai_tool
 `ai_tool: {}` is answered `202` as well. The submitter therefore decides whether the rule applies to it, and
 the record is then counted clean in `GET /v1/indicators`. This is a control that reports a pass
 it did not establish, which is the same shape as ABU-7 and bears on NFR-6.1's second clause.
-Deriving provenance from an authenticated principal is 2.1's (MIT-11); until then RR-8 records
-that the rule is opt-in.
+A workload principal carries no claim about AI use, so the founder's gate decision on task 2.1
+(Q-3, 2026-10-07) closes the bypass by making `ai_assisted` a required boolean, with a non-empty
+`ai_tool` when it is true; task 2.4 implements it (MIT-11). Until then RR-8 records that the rule
+is opt-in.
 
 **ABU-10 — an approving reference that resolves to nothing. Reachable today; measured.**
 NFR-6.1's first clause is "retain the approving decision reference", and the envelope does retain
 `policy_id`. What nothing checks is that the policy the id names carries an approval at all.
-`assertUsablePolicy` (`main.mjs:16-25`) validates exactly two fields, and measured: a
+`assertUsablePolicy` in `main.mjs` validates exactly two fields, and measured: a
 `guardrails.json` with its entire `approval` block deleted returns `[]` — no errors — the process
 starts, and every acceptance is stamped `policy_id: baseline-engineering-controls@1`. Nothing
-under `packages/` reads `policy.approval`; the only mention in the tree is `openapi.json:325`,
+under `packages/` reads `policy.approval`; the only mention in the tree is the description of
+`AcceptedDecision.policy_id` in `openapi.json`,
 which describes `policy_id` as "traceable to the human approval recorded with that policy" — a
 claim the seam does not enforce. And the approval that _is_ present is an example: the shipped
 `config/control-plane/guardrails.json` records `decision_id: "LPM-EXAMPLE-001"`, so every
 `policy_id` stamped today traces to a placeholder rather than to a decision anyone made. A check
-that the block is present would pass it. MIT-12 gives both halves to 2.1 as a startup refusal.
+that the block is present would pass it. MIT-12 gives both halves to task 2.4 as a startup
+refusal (re-owned from 2.1 at 2.1's Phase ① gate, 2026-10-07).
 
 **ABU-8 — the refused body as a write primitive. Unreachable, by decision.** This is the abuse
 case ADR-0002 hands to 1.3 by name. A 400 body is by definition unparseable: retaining it means
 retaining an arbitrary byte sequence from an unauthenticated caller, of unbounded length and
 undetermined classification, written into the durable evidence log. **Refusals never enter the
-evidence store**, and that is structural rather than conventional — `main.mjs:93-95` answers a
-refusal by writing a response and returning, and `evidenceStore.append` is only reached on
-`main.mjs:91`, after an acceptance. A 422 body is parseable and would genuinely help a producer
+evidence store**, and that is structural rather than conventional — the `POST /v1/evidence`
+handler in `main.mjs` answers every refusal (401, 403, 413, 429, 400, 422) by writing a response
+and returning, and `evidenceStore.append` is reached only by the handler's one `append`, after an
+acceptance. A 422 body is parseable and would genuinely help a producer
 debug, and is still not retained: pre-2.1 it is unattributed, and mixing refused content into the
 log dilutes the single property the log exists to have. If a refusal stream is ever justified, it
 is a separate stream with its own classification, retention and access decisions — it does not
@@ -323,7 +377,8 @@ decision, and MIT-13 gives it to 1.4. RR-11 records the gap until then.
 
 **ABU-12 — accepted evidence rewritten or deleted. Unreachable today at the port; conditional on
 ADR-0002 at the database.** The in-process store exposes `append`, `list` and `listRecords` and no
-method that removes or rewrites a record, and `store-conformance.mjs:297` asserts that those three
+method that removes or rewrites a record, and the conformance suite's "the port exposes no method
+that could remove or rewrite a record" test in `store-conformance.mjs` asserts that those three
 are the store's only keys (MIT-14). The durable store changes the question: a role that owns a table holds `UPDATE`
 and `DELETE` implicitly, and ADR-0002's retention job performs one in-place write by design.
 ADR-0002 answers both — a DDL role owns every object, the application role holds `INSERT` and
@@ -336,44 +391,64 @@ and identifiers classified INTERNAL, so who can read them — which roles, which
 copies — is an access decision 2.2 has to make and record, not a default the database supplies
 (MIT-16).
 
-**ABU-14 — abuse leaves no trace. Reachable today.** The seam's only log line is the startup
-message at `main.mjs:119`. A refused body, a replay, a 96 MiB submission and — after 2.1 — a
-failed authentication leave no log line, so ABU-1, ABU-2 and ABU-3 cannot be detected while
-they happen or investigated afterwards. 1.2's security assessment handed this forward as "no
-ingress security logging". MIT-17 gives 2.1 the events it creates; MIT-18 gives 2.3 the count.
+**ABU-14 — abuse leaves no trace. Reachable before task 2.1 (at `4f2724f`, from the absence of
+any log call); closed at the seam by MIT-17 — see
+`packages/control-plane-api/src/refusal-log.test.mjs`.** At that commit the seam's only log line
+was the startup message (`main.mjs:119` there). A refused body, a replay, a 96 MiB submission and a
+failed authentication left no log line, so ABU-1, ABU-2 and ABU-3 could not be detected while
+they happened or investigated afterwards. Since 2.1 every refusal writes one JSON line to stderr;
+a replay that is accepted as a `duplicate` is not a refusal and still writes none. 1.2's security assessment handed this forward as "no
+ingress security logging". MIT-17 gave 2.1 the events it creates; MIT-18 gives 2.3 the count.
 2.3 is a _Should_ and the roadmap's named deferral candidate, which is what RR-12 records.
+
+**ABU-15 — the key set as an attack surface. Added by task 2.1 with the fetch; not measured
+against GitHub.** The verifier trusts whatever keys it fetched from the pinned `jwks_uri`, so the
+fetch is a crossing of its own (TB-8). A redirect followed to another host, a response that is not
+GitHub's, or one large enough to exhaust memory would each make the verifier trust the wrong key or
+fail; and because every authenticated route needs an unexpired key set, a stream of forged `kid`s
+that each forced a refetch during an outage would turn every route into 503. MIT-19 answers it in
+`packages/workload-identity/src/https-transport.mjs` and `key-set.mjs`; RR-13 records what a GitHub
+outage still costs.
 
 ## Mitigations
 
-| ID     | Mitigation                                                                                                    | Addresses    | Owning task | Evidence                                               |
-| ------ | ------------------------------------------------------------------------------------------------------------- | ------------ | ----------- | ------------------------------------------------------ |
-| MIT-1  | Name an OIDC issuer and an authorization model binding a principal to a registered workspace.                 | ABU-1        | 1.4         | —                                                      |
-| MIT-2  | Authenticate the calling workload and authorize it for the workspace before any append.                       | ABU-1, ABU-3 | 2.1         | —                                                      |
-| MIT-3  | Scope every read route to the authorized principal instead of returning the whole registry or store.          | ABU-4        | 2.1         | —                                                      |
-| MIT-4  | Enforce the admission limits specified below — byte cap, read timeouts, quota; MIT-2 authenticates first.     | ABU-2        | 2.1         | —                                                      |
-| MIT-5  | Persist accepted evidence keyed by `(workspace_id, change_id)` so a replay is answered as one.                | ABU-5        | 2.2         | —                                                      |
-| MIT-6  | Refuse to start on an unusable guardrail policy rather than serving under one.                                | ABU-6        | in place    | `packages/control-plane-api/src/main.mjs`              |
-| MIT-7  | Tier every change under the policy path T3, so the gate's evidence records its two-approver requirement.      | ABU-6        | in place    | `tools/sdlc-controls/generate-component-map.mjs`       |
-| MIT-8  | Keep refused submissions out of the evidence store, as a decision rather than an omission.                    | ABU-8        | in place    | `packages/control-plane-api/src/main.mjs`              |
-| MIT-9  | Carry the not-a-compliance-conclusion disclaimer in every indicator response body.                            | ABU-7        | in place    | `packages/indicators/src/summarize.mjs`                |
-| MIT-10 | State the policy-administration gap in the published contract document instead of a coming surface.           | ABU-7        | in place    | `docs/contracts.md`                                    |
-| MIT-11 | Derive AI provenance from the submitting principal rather than a caller-supplied boolean.                     | ABU-9        | 2.1         | —                                                      |
-| MIT-12 | Require a complete approval block before the process will start, and ship a policy whose approval is real.    | ABU-10       | 2.1         | —                                                      |
-| MIT-13 | Decide whether evidence claims are attested and bound to the workload identity, or recorded as self-attested. | ABU-11       | 1.4         | —                                                      |
-| MIT-14 | Expose no store method that can remove or rewrite an accepted record.                                         | ABU-12       | in place    | `packages/control-plane-api/src/store-conformance.mjs` |
-| MIT-15 | Build ADR-0002's role separation, grants and `BEFORE UPDATE` trigger with the durable store.                  | ABU-12       | 2.2         | —                                                      |
-| MIT-16 | Record which roles, operators and backup copies may read classified evidence at rest, and grant nothing else. | ABU-13       | 2.2         | —                                                      |
-| MIT-17 | Log every authentication failure and every refusal with principal, route, status and reason, never the body.  | ABU-14       | 2.1         | —                                                      |
-| MIT-18 | Count refusals by reason as operator telemetry, so a spike is visible without reading logs.                   | ABU-14       | 2.3         | —                                                      |
+| ID     | Mitigation                                                                                                                                                                               | Addresses    | Owning task | Evidence                                               |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ----------- | ------------------------------------------------------ |
+| MIT-1  | Name an OIDC issuer and an authorization model binding a principal to a registered workspace.                                                                                            | ABU-1        | 1.4         | —                                                      |
+| MIT-2  | Authenticate the calling workload and authorize it for the workspace before any append.                                                                                                  | ABU-1, ABU-3 | in place    | `packages/workload-identity/src/authenticate.test.mjs` |
+| MIT-3  | Scope every read route to the authorized principal instead of returning the whole registry or store.                                                                                     | ABU-4        | in place    | `packages/control-plane-api/src/admission.test.mjs`    |
+| MIT-4  | Enforce the admission limits specified below — byte cap, read timeouts, quota; MIT-2 authenticates first.                                                                                | ABU-2        | in place    | `packages/control-plane-api/src/admission.test.mjs`    |
+| MIT-5  | Persist accepted evidence keyed by `(workspace_id, change_id)` so a replay is answered as one.                                                                                           | ABU-5        | 2.2         | —                                                      |
+| MIT-6  | Refuse to start on an unusable guardrail policy rather than serving under one.                                                                                                           | ABU-6        | in place    | `packages/control-plane-api/src/main.mjs`              |
+| MIT-7  | Tier every change under the policy path T3, so the gate's evidence records its two-approver requirement.                                                                                 | ABU-6        | in place    | `tools/sdlc-controls/generate-component-map.mjs`       |
+| MIT-8  | Keep refused submissions out of the evidence store, as a decision rather than an omission.                                                                                               | ABU-8        | in place    | `packages/control-plane-api/src/main.mjs`              |
+| MIT-9  | Carry the not-a-compliance-conclusion disclaimer in every indicator response body.                                                                                                       | ABU-7        | in place    | `packages/indicators/src/summarize.mjs`                |
+| MIT-10 | State the policy-administration gap in the published contract document instead of a coming surface.                                                                                      | ABU-7        | in place    | `docs/contracts.md`                                    |
+| MIT-11 | Derive AI provenance from the submitting principal rather than a caller-supplied boolean.                                                                                                | ABU-9        | 2.4         | —                                                      |
+| MIT-12 | Require a complete approval block before the process will start, and ship a policy whose approval is real.                                                                               | ABU-10       | 2.4         | —                                                      |
+| MIT-13 | Decide whether evidence claims are attested and bound to the workload identity, or recorded as self-attested.                                                                            | ABU-11       | 1.4         | —                                                      |
+| MIT-14 | Expose no store method that can remove or rewrite an accepted record.                                                                                                                    | ABU-12       | in place    | `packages/control-plane-api/src/store-conformance.mjs` |
+| MIT-15 | Build ADR-0002's role separation, grants and `BEFORE UPDATE` trigger with the durable store.                                                                                             | ABU-12       | 2.2         | —                                                      |
+| MIT-16 | Record which roles, operators and backup copies may read classified evidence at rest, and grant nothing else.                                                                            | ABU-13       | 2.2         | —                                                      |
+| MIT-17 | Log every authentication failure and every refusal with principal, route, status and reason, never the body.                                                                             | ABU-14       | in place    | `packages/control-plane-api/src/refusal-log.test.mjs`  |
+| MIT-18 | Count refusals by reason as operator telemetry, so a spike is visible without reading logs.                                                                                              | ABU-14       | 2.3         | —                                                      |
+| MIT-19 | Fetch keys only from the pinned HTTPS `jwks_uri` with no redirect, 5 s and 64 KiB; cache for `max-age` clamped to [60, 3600] s; one fetch per 60 s shared by every trigger; fail closed. | ABU-15       | in place    | `packages/workload-identity/src/key-set.test.mjs`      |
 
-MIT-8's evidence is the seam, not ADR-0002: `main.mjs:91` is the only `append` and it runs after an
-acceptance, while the ADR is `Proposed` and enforces nothing. MIT-14's evidence is the conformance
+MIT-8's evidence is the seam, not ADR-0002: the `POST /v1/evidence` handler's one `append` is the
+only one and it runs after an acceptance, while the ADR enforces nothing until task 2.2 builds it. MIT-14's evidence is the conformance
 suite rather than the store, because the suite is what fails if a mutating method is added.
 
 `Owning task` is `in place` only where a path in this repository already enforces the mitigation,
 and the check below resolves that path and fails if it does not exist. Everything else names a
 roadmap task, and the check fails if the roadmap has no such task — a mitigation owned by a task
 number nobody scheduled is a mitigation nobody is going to write.
+
+MIT-11 and MIT-12 were re-owned from 2.1 to task 2.4 by the founder's gate decision Q-1 on
+task 2.1 (2026-10-07), which split policy and provenance hardening out of 2.1. MIT-11's shape is
+the gate's decision Q-3: `ai_assisted` becomes a required boolean, because a workload principal
+carries no claim about AI use to derive it from; the row's wording is kept as the threat this
+model handed forward. MIT-2, MIT-3, MIT-4 and MIT-17 are in place since task 2.1; each Evidence
+path is the test that fails when its control breaks, and each runs in-process, not over a socket.
 
 MIT-1 and MIT-2 are deliberately two rows. Selecting an issuer is 1.4 and enforcing a token is
 2.1; collapsing them would let the gate's identity signal be satisfied by the task the gate
@@ -382,20 +457,27 @@ place.
 
 ## Residual risks
 
-| ID    | Residual risk                                                                                                           | From   | Why accepted                                                                                                                                                                                                                                                                                                                       | Accepted by                     | Review point        |
-| ----- | ----------------------------------------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------- |
-| RR-1  | The policy audit trail is attributable but not verifiable: unsigned commits and no `CODEOWNERS`.                        | ABU-6  | Gate 2 (2026-10-01) requires signed commits on this repository from that day; not yet configured at the approval commit `1a0d5f8`, which is unsigned. `CODEOWNERS` and branch protection stay absent while the founder works solo, because no second person can review.                                                            | dsofianos (founder), 2026-10-01 | Gate 3              |
-| RR-2  | `workspace_id` is null until 2.1, so every submission claims no uniqueness and every replay appends.                    | ABU-5  | ADR-0002 makes the null branch explicit and requires 2.2 to refuse it in production configuration.                                                                                                                                                                                                                                 | dsofianos (founder), 2026-10-01 | Gate 2 and task 2.2 |
-| RR-3  | `guardrails/0` has no contract test, so the policy file and its documented field list can drift apart.                  | ABU-6  | Policy is consumed configuration rather than a served contract, so it has no place in `openapi.json` yet.                                                                                                                                                                                                                          | dsofianos (founder), 2026-10-01 | Task 2.1            |
-| RR-4  | The tombstone retains `(workspace_id, change_id)` past expiry, which is now classified metadata.                        | ABU-4  | Gate 2 approved ADR-0002 as written: the tombstone holds numeric identifiers and a change ID, with names nulled by ADR-0004, and it is what keeps a late replay a `duplicate`.                                                                                                                                                     | dsofianos (founder), 2026-10-01 | Gate 3 and task 2.2 |
-| RR-5  | No queryable policy-change audit surface exists, and Sprint 2's Definition of Done says one will.                       | ABU-7  | Gate 2 rewrote Sprint 2's Definition of Done: policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides. No API surface is built.                                                                                                                                           | dsofianos (founder), 2026-10-01 | Gate 3              |
-| RR-6  | The ingress body limit is specified and not shipped, so until 2.1 the seam buffers whatever is sent.                    | ABU-2  | 1.3 writes no production code; shipping the limit here would put an unreviewed control on the live path.                                                                                                                                                                                                                           | dsofianos (founder), 2026-10-01 | Task 2.1            |
-| RR-7  | The 90-day retention window has an operational basis only, now applied to data classified INTERNAL.                     | ABU-4  | The shorter window is the conservative choice under a classification that was undetermined until today.                                                                                                                                                                                                                            | dsofianos (founder), 2026-09-23 | Gate 3              |
-| RR-8  | `ai_assisted` stays submitter-declared until 2.1 authenticates the principal, so the provenance rule is opt-in.         | ABU-9  | The seam has no principal to derive it from; inferring it from the record is the same untrusted input under another name.                                                                                                                                                                                                          | dsofianos (founder), 2026-10-01 | Task 2.1            |
-| RR-9  | A policy with no approval block starts, and the shipped policy's approval is a placeholder, `LPM-EXAMPLE-001`.          | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.1's to enforce at startup, in the same change as MIT-12.                                                                                                                                                          | dsofianos (founder), 2026-10-01 | Task 2.1            |
-| RR-10 | A per-request cap bounds one submission, not the store: N compliant submissions still exhaust memory.                   | ABU-2  | The in-process store is a stand-in with no eviction. 2.2 moves growth off the heap and 2.1's per-principal quota bounds its rate; neither alone bounds a principal submitting at the quota for the whole 90-day window. Measured: 300 accepted records under the 1 MiB cap grew resident memory by 521 MiB and did not release it. | dsofianos (founder), 2026-10-01 | Task 2.2            |
-| RR-11 | Tier, verified controls and result are the submitter's word; authentication will establish who, not whether it is true. | ABU-11 | ADR-0004 (Accepted) records every disposition as the workload's own claim, bound to its verified run and labelled `self-attested`; signing evidence is a future decision.                                                                                                                                                          | dsofianos (founder), 2026-10-01 | Gate 3              |
-| RR-12 | If 2.3 defers to Sprint 3, refusals are logged by 2.1 but not counted until then, so a spike is visible only in logs.   | ABU-14 | The roadmap defers 2.3 rather than compress it, deciding at Sprint 2's mid-point; 2.1's log line alone keeps an investigation trail.                                                                                                                                                                                               | dsofianos (founder), 2026-10-01 | Task 2.3            |
+| ID    | Residual risk                                                                                                                                                                       | From   | Why accepted                                                                                                                                                                                                                                                                                                                                    | Accepted by                     | Review point        |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------- |
+| RR-1  | The policy audit trail is attributable but not verifiable: unsigned commits and no `CODEOWNERS`.                                                                                    | ABU-6  | Gate 2 (2026-10-01) requires signed commits on this repository from that day; not yet configured at the approval commit `1a0d5f8`, which is unsigned. `CODEOWNERS` and branch protection stay absent while the founder works solo, because no second person can review.                                                                         | dsofianos (founder), 2026-10-01 | Gate 3              |
+| RR-2  | `workspace_id` comes from the principal, but the idempotency index lives in process memory, so a replay after a restart appends again.                                              | ABU-5  | The in-memory store is a stand-in: task 2.2's durable store keeps the index across restarts (ADR-0002), and ADR-0002 still requires 2.2 to refuse a null `workspace_id` in production configuration.                                                                                                                                            | dsofianos (founder), 2026-10-07 | Task 2.2            |
+| RR-3  | `guardrails/0` has no contract test, so the policy file and its documented field list can drift apart.                                                                              | ABU-6  | Policy is consumed configuration rather than a served contract, so it has no place in `openapi.json` yet.                                                                                                                                                                                                                                       | dsofianos (founder), 2026-10-01 | Task 2.4            |
+| RR-4  | The tombstone retains `(workspace_id, change_id)` past expiry, which is now classified metadata.                                                                                    | ABU-4  | Gate 2 approved ADR-0002 as written: the tombstone holds numeric identifiers and a change ID, with names nulled by ADR-0004, and it is what keeps a late replay a `duplicate`.                                                                                                                                                                  | dsofianos (founder), 2026-10-01 | Gate 3 and task 2.2 |
+| RR-5  | No queryable policy-change audit surface exists, and Sprint 2's Definition of Done says one will.                                                                                   | ABU-7  | Gate 2 rewrote Sprint 2's Definition of Done: policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides. No API surface is built.                                                                                                                                                        | dsofianos (founder), 2026-10-01 | Gate 3              |
+| RR-6  | The quota and read timeouts are per process: N processes admit 60·N submissions per principal a minute, and a restart resets the window.                                            | ABU-2  | Gate decision Q-5 on task 2.1 (2026-10-07) chose a per-process code constant now; a quota shared across processes needs task 2.2's store, which is where it moves, and RR-10 stays with 2.2 for the same reason.                                                                                                                                | dsofianos (founder), 2026-10-07 | Task 2.2            |
+| RR-7  | The 90-day retention window has an operational basis only, now applied to data classified INTERNAL.                                                                                 | ABU-4  | The shorter window is the conservative choice under a classification that was undetermined until today.                                                                                                                                                                                                                                         | dsofianos (founder), 2026-09-23 | Gate 3              |
+| RR-8  | `ai_assisted` stays submitter-declared until 2.4 makes it a required boolean, so the provenance rule is opt-in.                                                                     | ABU-9  | A workload principal carries no claim about AI use to derive it from (gate decision Q-3); inferring it from the record is the same untrusted input under another name.                                                                                                                                                                          | dsofianos (founder), 2026-10-01 | Task 2.4            |
+| RR-9  | A policy with no approval block starts, and the shipped policy's approval is a placeholder, `LPM-EXAMPLE-001`.                                                                      | ABU-10 | NFR-6.1's first clause is met by retaining the reference; whether the reference resolves to a real approval is 2.4's to enforce at startup, in the same change as MIT-12.                                                                                                                                                                       | dsofianos (founder), 2026-10-01 | Task 2.4            |
+| RR-10 | A per-request cap bounds one submission, not the store: N compliant submissions still exhaust memory.                                                                               | ABU-2  | The in-process store is a stand-in with no eviction. 2.2 moves growth off the heap and 2.1's per-principal, per-process quota bounds its rate; neither alone bounds a principal submitting at the quota for the whole 90-day window. Measured: 300 accepted records under the 1 MiB cap grew resident memory by 521 MiB and did not release it. | dsofianos (founder), 2026-10-01 | Task 2.2            |
+| RR-11 | Tier, verified controls and result are the submitter's word; authentication will establish who, not whether it is true.                                                             | ABU-11 | ADR-0004 (Accepted) records every disposition as the workload's own claim, bound to its verified run and labelled `self-attested`; signing evidence is a future decision.                                                                                                                                                                       | dsofianos (founder), 2026-10-01 | Gate 3              |
+| RR-12 | If 2.3 defers to Sprint 3, refusals are logged by 2.1 but not counted until then, so a spike is visible only in logs.                                                               | ABU-14 | The roadmap defers 2.3 rather than compress it, deciding at Sprint 2's mid-point; 2.1's log line alone keeps an investigation trail.                                                                                                                                                                                                            | dsofianos (founder), 2026-10-01 | Task 2.3            |
+| RR-13 | Availability depends on GitHub's key set: an outage longer than the cached set's remaining life (≤ 3600 s) answers 503 on every authenticated route, for up to 60 s after recovery. | ABU-15 | ADR-0003's "Residuals for Gate 2" lists it and Gate 2 accepted that list (Findings handed to Gate 2 › 9); serving an expired key would trade a visible outage for verifying against a key GitHub may have withdrawn.                                                                                                                            | dsofianos (founder), 2026-10-07 | Gate 3              |
+
+The founder's gate decision Q-1 on task 2.1 (2026-10-07) re-pointed RR-3, RR-8 and RR-9 from
+task 2.1 to task 2.4, which took over the policy and provenance work; their acceptances of
+2026-10-01 stand, and RR-8's reason was restated for gate decision Q-3. RR-2 and RR-6 were
+rewritten to the risks that remain once task 2.1 shipped what they described as missing, and the
+founder accepted the successors, with the new RR-13, at 2.1's Phase ② gate (2026-10-07).
 
 ## Ingress body limit — specification for task 2.1
 
@@ -454,9 +536,9 @@ place.
   exact shape of ungoverned policy this control plane exists to object to. It is a constant, in
   the code, changed by a reviewed commit.
 
-**The limit must not be signalled by throwing.** `main.mjs:93-95` is a blanket `catch` that
-answers any throw inside the handler with `400 {"error": "request body must be valid JSON"}`,
-unconditionally. Verified: a body nested past `JSON.stringify`'s recursion limit parses fine,
+**The limit must not be signalled by throwing.** At `4f2724f`, `main.mjs:93-95` was a blanket
+`catch` that answered any throw inside the handler with `400 {"error": "request body must be valid
+JSON"}`, unconditionally, and the handler still has one. Verified: a body nested past `JSON.stringify`'s recursion limit parses fine,
 throws inside `project()`, and is answered `400` — the control plane blaming the caller for its
 own projection fault. A thrown 413 would be silently converted into the wrong status by the same
 path, and no contract test would catch it because the seam really would be answering a declared
@@ -472,8 +554,20 @@ body byte**: an unauthenticated request is answered `401` and destroyed without 
 read, which makes every other cost here an authenticated one. **Set the read timeouts** to what a
 1 MiB upload needs, not what Node assumes. **Apply a per-principal quota** on submissions, because
 a cap per request multiplied by an unlimited request rate is not a cap, and RR-10 records what an
-unbounded rate costs the store. The numbers are 2.1's to set from its own measurement; that each
-exists is decided here.
+unbounded rate costs the store. That each exists was decided here; task 2.1 set the numbers, as
+code constants in `packages/control-plane-api/src/admission.mjs`:
+
+- `headersTimeout` 10000 ms and `requestTimeout` 30000 ms. 1 MiB in 30 s needs about 35 KiB/s
+  sustained, with room for a 5 s key-set fetch. **Derived by arithmetic from the cap, not
+  measured** on a real link, which the threat model asked for; Node's defaults are 60 s and 300 s.
+- 60 submissions per principal per fixed 60 s window, the figure of the founder's gate decision
+  Q-5, answered 429 with `Retry-After` before the body is read. **Per process**: N processes admit
+  60·N, a restart resets the window, and at the cap that is up to 60 MiB a minute per principal
+  into the in-memory store. RR-6 and RR-10 record it; task 2.2's shared store is where it moves.
+- The cap is counted inside the read loop as specified, but the loop drives the body iterator by
+  hand rather than with `for await`: leaving a `for await` early destroys the request, and with it
+  the socket, before the 413 can be written, which is the destroy-first failure the Disposition
+  bullet above rules out.
 
 ## Policy administration
 
@@ -485,9 +579,9 @@ so every change to it tiers T3, and the gate emits an evidence artifact, tied to
 recording that T3 calls for two independent approvers. It records the requirement without
 verifying it — the workflow passes the engine no approver set — so whether two people approved
 is decided by branch protection, which is forge configuration this repository cannot show. The policy is validated at startup by `assertUsablePolicy`
-(`main.mjs:16-32`) and the process refuses to start on a policy that would make the seam emit a
+in `main.mjs` and the process refuses to start on a policy that would make the seam emit a
 202 its own published schema rejects. Registrations are validated on load by `createRegistry` and
-a bad one throws.
+a bad one throws, as does a registry document that is not `workspace-registry/1`.
 
 What does not hold. There is no `CODEOWNERS` file, so no reviewer is required by path — the two
 approvers the tier demands are any two. Commits are unsigned, so the attribution the trail
@@ -505,7 +599,9 @@ scope of the sprint the roadmap already calls its pressure point.
 ## Requirements handed to task 1.4
 
 Task 1.4 selects the OIDC issuer and the authorization model. These are the constraints this
-threat model puts on that choice, each traceable to a row above.
+threat model puts on that choice, each traceable to a row above. They are kept as handed over:
+the line citations and every "today" and "currently" below describe the code at `4f2724f`,
+before task 2.1 implemented ADR-0003 and ADR-0004.
 
 1. **The principal must bind to a registered `workspace_id`**, not merely authenticate. TB-4's
    trusted side is the registry, and `registry.get(workspaceId)` at
@@ -593,7 +689,7 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    test in the workspace green, and so can the `criticality: 'critical'` that puts
    `config/control-plane/**` at T3 (`tools/sdlc-controls/generate-component-map.mjs`, MIT-7). All
    three are true today and removable in silence. The two guardrail tests belong with MIT-11 in
-   2.1; the criticality test belongs with the PR gate.
+   2.1 (re-owned to 2.4 on 2026-10-07); the criticality test belongs with the PR gate.
 7. **`repository_url` and `evidence_endpoint` are checked only as non-empty strings**, never as URLs, and nothing dereferences
    today. Any component that later fetches either one — a portfolio integration, an evidence
    pull — is a server-side request forgery sink the day it ships, and has to treat both as
@@ -608,8 +704,9 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    - **1** accepted: the tombstone keeps its identifiers indefinitely (RR-4), reviewed at Gate 3.
    - **2** signed commits are required from Gate 2 on; `CODEOWNERS` and branch protection are
      accepted as residual while the founder works solo (RR-1).
-   - **3** and **6**'s two guardrail tests go to task 2.1 with MIT-11; **6**'s criticality test
+   - **3** and **6**'s two guardrail tests go to task 2.1 with MIT-11 (re-owned to 2.4 on
+     2026-10-07); **6**'s criticality test
      goes with **4**, **5** and **8** to a proposed hardening task (`docs/specs/sprint-1-progress.md`).
    - **7** binds whichever task first dereferences `repository_url` or `evidence_endpoint`.
-   - ADR-0003's outbound key-set fetch has no trust boundary here yet; task 2.1 adds one when it
-     ships the fetch.
+   - ADR-0003's outbound key-set fetch had no trust boundary here; added as TB-8 by task 2.1,
+     with the fetch.
