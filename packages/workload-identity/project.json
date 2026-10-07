@@ -1,0 +1,15 @@
+{
+  "name": "workload-identity",
+  "sourceRoot": "packages/workload-identity/src",
+  "projectType": "library",
+  "tags": ["scope:identity", "criticality:critical"],
+  "targets": {
+    "test": { "command": "node --test packages/workload-identity/src/*.test.mjs" },
+    "typecheck": {
+      "command": "node --check packages/workload-identity/src/constants.mjs && node --check packages/workload-identity/src/https-transport.mjs && node --check packages/workload-identity/src/key-set.mjs && node --check packages/workload-identity/src/jws.mjs && node --check packages/workload-identity/src/authenticate.mjs"
+    },
+    "build": {
+      "command": "node --check packages/workload-identity/src/constants.mjs && node --check packages/workload-identity/src/https-transport.mjs && node --check packages/workload-identity/src/key-set.mjs && node --check packages/workload-identity/src/jws.mjs && node --check packages/workload-identity/src/authenticate.mjs"
+    }
+  }
+}
