@@ -95,7 +95,8 @@ function bodyUnread(request) {
 // while the body is still unread, is respond-then-destroy - written and flushed with
 // `connection: close`, and only then is the request destroyed - so the caller reads the status and
 // the unread body is never drained, which would hand the peer the transfer it was refused (threat
-// model › Ingress body limit, Disposition). A request read to its end keeps its connection.
+// model › Ingress body limit, Disposition). Any other response - a status outside REFUSED_UNREAD
+// to a request whose body is read or absent - keeps its connection.
 function send(response, status, body, request, { headers = {} } = {}) {
   const payload = JSON.stringify(body);
   const close = REFUSED_UNREAD.has(status) || bodyUnread(request);
@@ -326,7 +327,10 @@ export function createRequestHandler({
 // The one place a server is built around a handler, so a test's server is wired exactly as the
 // service's: the admission timing constants, and a 'checkContinue' listener. With that listener
 // Node sends no automatic `100 Continue`; the handler is told the client is waiting, and only the
-// POST handler, once the request is admitted, sends it.
+// POST handler, once the request is admitted, sends it. A 'checkExpectation' listener does the
+// same for any other Expect value: without it Node answers 417 itself, bypassing send(), and then
+// reads and discards the body until requestTimeout. The handler ignores the expectation, as
+// RFC 9110 permits, so the request is refused or admitted exactly like one without the header.
 export function createSeamServer(handler) {
   const server = createServer(
     {
@@ -339,6 +343,7 @@ export function createSeamServer(handler) {
   server.on('checkContinue', (request, response) =>
     handler(request, response, { awaitsContinue: true }),
   );
+  server.on('checkExpectation', (request, response) => handler(request, response));
   return server;
 }
 

@@ -721,18 +721,24 @@ async function withServer(handler, body) {
 
 test('a 404 and a GET /health sent a streaming body get their status, then the server closes the connection', async () => {
   await withServer(seam(), async (server) => {
+    // Both framings: a chunked body that never ends, and a declared Content-Length of which only
+    // 64 KiB arrives. Either way the peer would keep streaming into a socket nobody reads.
+    const framings = {
+      chunked: `Transfer-Encoding: chunked\r\n\r\n10000\r\n${'x'.repeat(0x10000)}\r\n`,
+      'content-length': `Content-Length: ${MAX_BODY_BYTES}\r\n\r\n${'x'.repeat(0x10000)}`,
+    };
     for (const [line, expected] of [
       ['POST /v1/nope', 'HTTP/1.1 404'],
       ['GET /health', 'HTTP/1.1 200'],
     ]) {
-      const client = await rawClient(server);
-      // One 64 KiB chunk of a chunked body that never ends: the peer would keep streaming.
-      client.socket.write(
-        `${line} HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n10000\r\n${'x'.repeat(0x10000)}\r\n`,
-      );
-      await until(() => client.closed, `${line}: the server to close the connection`);
-      assert.deepEqual(statusLines(client.text), [expected], line);
-      assert.ok(closes(client.text), `${line}: no connection: close`);
+      for (const [framing, rest] of Object.entries(framings)) {
+        const at = `${line} (${framing})`;
+        const client = await rawClient(server);
+        client.socket.write(`${line} HTTP/1.1\r\nHost: x\r\n${rest}`);
+        await until(() => client.closed, `${at}: the server to close the connection`);
+        assert.deepEqual(statusLines(client.text), [expected], at);
+        assert.ok(closes(client.text), `${at}: no connection: close`);
+      }
     }
   });
 });
@@ -809,6 +815,37 @@ test('Expect: 100-continue is answered only once a POST is admitted; every refus
     client.socket.write(body);
     await until(() => statusLines(client.text).length === 2, 'the 202');
     assert.deepEqual(statusLines(client.text), ['HTTP/1.1 100', 'HTTP/1.1 202']);
+  });
+});
+
+// B-2. Without a 'checkExpectation' listener Node answers any other Expect value with 417 itself,
+// bypassing send(), keeps the connection and reads the body until requestTimeout.
+test('an unknown Expect value is ignored: refusals close unread, an admitted POST keeps its connection', async () => {
+  const body = JSON.stringify(validEvidence);
+  const unread = `Content-Length: ${MAX_BODY_BYTES}\r\n\r\n${'x'.repeat(0x10000)}`;
+  for (const [raw, expected] of [
+    [`POST /v1/evidence HTTP/1.1\r\nHost: x\r\nExpect: foo\r\n${unread}`, 'HTTP/1.1 401'],
+    [`GET /health HTTP/1.1\r\nHost: x\r\nExpect: foo\r\n${unread}`, 'HTTP/1.1 200'],
+  ])
+    await withServer(seam(), async (server) => {
+      const client = await rawClient(server);
+      client.socket.write(raw);
+      await until(() => client.closed, `${expected}: the server to close the connection`);
+      assert.deepEqual(statusLines(client.text), [expected]);
+      assert.ok(closes(client.text), `${expected}: no connection: close`);
+    });
+
+  await withServer(seam(), async (server) => {
+    const client = await rawClient(server);
+    client.socket.write(
+      `POST /v1/evidence HTTP/1.1\r\nHost: x\r\nExpect: foo\r\nAuthorization: ${bearer()}\r\n` +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`,
+    );
+    await until(() => statusLines(client.text).length === 1, 'the 202');
+    assert.deepEqual(statusLines(client.text), ['HTTP/1.1 202']);
+    assert.equal(closes(client.text), false, 'an admitted POST was answered connection: close');
+    await delay(50);
+    assert.equal(client.closed, false, 'the server closed an admitted request it had read');
   });
 });
 
