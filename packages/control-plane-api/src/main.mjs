@@ -95,8 +95,9 @@ function bodyUnread(request) {
 // while the body is still unread, is respond-then-destroy - written and flushed with
 // `connection: close`, and only then is the request destroyed - so the caller reads the status and
 // the unread body is never drained, which would hand the peer the transfer it was refused (threat
-// model › Ingress body limit, Disposition). Any other response - a status outside REFUSED_UNREAD
-// to a request whose body is read or absent - keeps its connection.
+// model › Ingress body limit, Disposition). For any other response the seam closes nothing; whether
+// the connection then stays open is Node's decision (Connection: close, HTTP/1.0, an unanswered
+// Expect: 100-continue all close it), so no keep-alive is promised.
 function send(response, status, body, request, { headers = {} } = {}) {
   const payload = JSON.stringify(body);
   const close = REFUSED_UNREAD.has(status) || bodyUnread(request);
