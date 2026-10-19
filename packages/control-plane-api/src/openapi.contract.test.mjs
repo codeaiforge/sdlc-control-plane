@@ -434,8 +434,9 @@ for (const scenario of scenarios) {
 
 // The POST description's connection claim, held to the seam: a status decided before the body is
 // read, x-unmatched-request included, is written with connection: close and then the request is
-// destroyed; so is any other response sent while a declared body is unread; a request with no
-// body keeps its connection.
+// destroyed; so is any other response sent while a declared body is unread. For a request with no
+// body the seam itself closes and destroys nothing - what Node then does with the connection is
+// not part of the claim.
 const disposition = async (handler, request) => {
   const events = [];
   let headers = {};
@@ -474,7 +475,7 @@ test('x-unmatched-request and the refusals close the connection after the respon
     assert.deepEqual(await disposition(handler, request), CLOSED, `${status} ${request.url}`);
 });
 
-test('a response sent while a declared body is unread closes the connection; one with no body does not', async () => {
+test('a response sent while a declared body is unread closes the connection; for one with no body the seam closes nothing', async () => {
   const unread = { headers: { 'transfer-encoding': 'chunked' }, complete: false };
   assert.deepEqual(await disposition(seam(), { ...anonymous('/health'), ...unread }), CLOSED);
   assert.deepEqual(
