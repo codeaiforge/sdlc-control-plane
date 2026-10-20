@@ -271,7 +271,12 @@ async function refusesEveryMisgrant(db, copy) {
     [
       'owner of the database',
       () => db.admin`ALTER DATABASE ${db.admin(db.name)} OWNER TO ${role}`,
-      () => db.admin`ALTER DATABASE ${db.admin(db.name)} OWNER TO evidence_owner`,
+      // Moving ownership away and back drops the role's CONNECT; grant it again so the next case
+      // does not depend on the copy's one connection staying open.
+      async () => {
+        await db.admin`ALTER DATABASE ${db.admin(db.name)} OWNER TO evidence_owner`;
+        await db.admin`GRANT CONNECT ON DATABASE ${db.admin(db.name)} TO ${role}`;
+      },
     ],
     [
       'INSERT on received_at',
