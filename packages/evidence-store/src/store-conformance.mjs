@@ -185,6 +185,33 @@ export function describeEvidenceStore(name, createStore) {
     assert.equal((await store.list()).length, 2);
   });
 
+  test(`${name}: a replay is compared with the caller's own record, never another workspace's`, async (t) => {
+    // Two workspaces may each submit a PR-1. A lookup that matched change_id alone would compare
+    // the second workspace's replay with the first's record - a 409 for a true duplicate - and
+    // answer with the other workspace's envelope and key, a disclosure across tenants.
+    const store = await openStore(t, createStore);
+    const other = 'another-workspace';
+    const theirs = await store.append(evidenceRecord(), { workspace_id: WORKSPACE });
+    const body = evidenceRecord({ result: { pass: false } });
+    const ours = await store.append(body, { workspace_id: other });
+    assert.equal(ours.outcome, 'appended');
+    assert.notEqual(ours.key, theirs.key);
+
+    const replay = await store.append(body, { workspace_id: other });
+    assert.equal(replay.outcome, 'duplicate');
+    assert.equal(replay.key, ours.key);
+    assert.equal(replay.envelope.workspace_id, other);
+    assert.equal(replay.envelope.idempotency_key, ours.key);
+    assert.equal(replay.envelope.evidence.result.pass, false);
+
+    const conflict = await store.append(evidenceRecord({ tier: 'T2' }), { workspace_id: other });
+    assert.equal(conflict.outcome, 'conflict');
+    assert.equal(conflict.key, ours.key);
+    assert.equal(conflict.envelope.workspace_id, other);
+    assert.equal(conflict.envelope.evidence.result.pass, false, 'our first record, not theirs');
+    assert.equal((await store.list()).length, 2);
+  });
+
   test(`${name}: a change_id that names an inherited property is keyed like any other`, async (t) => {
     // change_id is caller-controlled. A plain-object index resolves 'constructor' to an
     // inherited function, so the first submission carrying it would be answered as a replay of
