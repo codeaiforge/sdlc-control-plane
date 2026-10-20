@@ -162,7 +162,7 @@
             }
           },
           "503": {
-            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store could not be read - unreachable, refusing the connection, or no answer within 5 seconds; or the route faulted in some other way. The body names no cause beyond its error string, and the connection is closed after the response.",
+            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store could not be read - unreachable, refusing the connection, or no answer to the read within 5 seconds; or the route faulted in some other way. The body names no cause beyond its error string, and the connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {
@@ -297,7 +297,7 @@
             }
           },
           "503": {
-            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store did not take the write - unreachable, refusing the connection, or no answer within 5 seconds; or the route faulted in some other way. Retrying is safe: intake is idempotent, so a submission whose write did commit before the fault is answered as a duplicate (202). The body names no cause beyond its error string, and the connection is closed after the response.",
+            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store did not take the write - unreachable, refusing the connection, or no answer to one of its statements within 5 seconds (each statement has its own 5 seconds, and a submission whose key is already stored sends two, so the store can hold it for about 10 seconds before this answer); or the route faulted in some other way. Retrying is safe: intake is idempotent, so a submission whose write did commit before the fault is answered as a duplicate (202). The body names no cause beyond its error string, and the connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {
@@ -499,7 +499,7 @@
         "properties": {
           "total_records": {
             "type": "integer",
-            "description": "How many records this process accepted from the caller's workspace. Refused submissions are not counted."
+            "description": "How many accepted records the evidence store holds for the caller's workspace, excluding any whose payload has been redacted. Refused submissions are never stored."
           },
           "passing_records": {
             "type": "integer",
