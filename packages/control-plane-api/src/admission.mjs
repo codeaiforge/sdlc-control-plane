@@ -20,9 +20,9 @@ export const CONNECTIONS_CHECKING_INTERVAL_MS = 1000;
 
 // Per principal, per fixed window, PER PROCESS. The count lives in this process's memory: N
 // processes admit 60·N submissions per principal per window, and a restart resets the window.
-// At the 1 MiB cap that is up to 60 MiB a minute per principal into the in-memory store, which is
-// why RR-10 stays with task 2.2, whose shared store this quota moves to. It is not a service-wide
-// rate limit and must not be read as one.
+// At the 1 MiB cap that is up to 60 MiB a minute per principal into the evidence store. Task 2.2
+// moved the store into PostgreSQL and kept this quota per process (RR-6, re-accepted; RR-10
+// records the per-request read). It is not a service-wide rate limit and must not be read as one.
 export const SUBMISSION_QUOTA = 60;
 export const SUBMISSION_QUOTA_WINDOW_MS = 60000;
 
