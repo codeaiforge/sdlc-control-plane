@@ -176,6 +176,25 @@ test('the idempotency key is a server-side unique constraint, NULLS DISTINCT, an
   assert.match(index.indexdef, /\(received_at\)$/);
 });
 
+// No role but the owner can create an object today, so a missing search_path pin changes no
+// behaviour any other test can see; only the catalog can hold it (review cycle 1, N-1).
+test('the trigger function is SECURITY DEFINER, owned by evidence_owner, with its search path pinned', async (t) => {
+  const db = await migrated(t);
+  const [guard] = await db.admin`
+    SELECT p.prosecdef, array_to_string(p.proconfig, ';') AS proconfig,
+           pg_get_userbyid(p.proowner) AS owner
+      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'evidence' AND p.proname = 'guard_envelope_update'`;
+  assert.deepEqual(
+    { ...guard },
+    {
+      prosecdef: true,
+      proconfig: 'search_path=pg_catalog, pg_temp',
+      owner: 'evidence_owner',
+    },
+  );
+});
+
 test('the CHECK constraints refuse a string-scalar payload and a payload/redaction mismatch', async (t) => {
   const db = await migrated(t);
   const insert = (evidence, redactedAt, submitter = null) => db.admin`
