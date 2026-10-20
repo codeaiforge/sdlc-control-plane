@@ -128,7 +128,10 @@ change therefore takes effect on restart and not before. The evidence store is n
 scope: since task 2.2 it is ADR-0002's PostgreSQL envelope log, opened by `main.mjs`'s entry block
 through `openDurableEvidenceStore()`, and the process refuses to start without it - on an
 unusable configuration, an unreachable server, unverified TLS to a non-loopback host, a database
-role that could rewrite evidence, or a schema that is not the bundled one.
+role the startup check refuses (an elevated attribute, membership of any other role, ownership of
+the database or of anything in the `evidence` schema, or a grant that could change or remove a
+stored row or set its `received_at` or `redacted_at`; the stack profile's `Access control` row
+lists each), or a schema that is not the bundled one.
 
 Measured behaviour of the running seam at `4f2724f`, before task 2.1, quoted because the abuse
 cases below were established from it. The first three are closed at the seam since 2.1 (see
@@ -393,9 +396,13 @@ on PostgreSQL 16 (`packages/evidence-store/src/database-roles.integration.mjs`):
 a redaction row; it stamps `redacted_at` and nulls the four `submitted_by` names itself and refuses
 any update to a tombstone; the retention and audit roles cannot read a payload; and the application
 role's `INSERT` omits `redacted_at`, because the pairing `CHECK` alone admits a row that arrives
-already redacted. What remains is the trust root: `evidence_owner` and any cluster superuser can
+already redacted, and `received_at`, so the database's clock, not the application, sets each row's
+retention clock. What remains is the trust root: `evidence_owner` and any cluster superuser can
 still disable the trigger or re-grant themselves `DELETE` - a credential-custody requirement on the
-deploy target, stated in the stack profile's `Access control` row.
+deploy target, stated in the stack profile's `Access control` row. And the trigger checks the form
+of a redaction, not the age of the row: whoever holds the `evidence_retention` credential can
+redact every live payload at once, irreversibly, each leaving an `evidence_redaction` row. Holding
+redaction to the 90-day window is task 2.5's job, and this residual is an input to it.
 
 **ABU-13 — classified evidence at rest. Answered by task 2.2 for the roles it creates (MIT-16).**
 The durable store and every backup of it hold payloads and identifiers classified INTERNAL. Two
