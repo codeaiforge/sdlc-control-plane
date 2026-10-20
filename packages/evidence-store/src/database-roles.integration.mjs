@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test, { after } from 'node:test';
-import { closeHarness, createTestDatabase } from './pg-harness.mjs';
+import { closeHarness, createTestDatabase, rolePassword } from './pg-harness.mjs';
 import {
   StartupRefused,
   assertServiceRole,
@@ -132,6 +132,38 @@ test('evidence_app owns no object, and cannot insert a pre-redacted tombstone', 
   );
 });
 
+test('evidence_app cannot choose received_at: the database clock stamps every row', async (t) => {
+  const { db, as, store } = await setup(t);
+  // A future-dated row would never expire and a back-dated one would expire at once.
+  for (const at of ['2999-01-01T00:00:00Z', '1970-01-01T00:00:00Z'])
+    await assert.rejects(
+      as.app`
+        INSERT INTO evidence.evidence_envelope
+          (envelope_version, workspace_id, change_id, received_at, evidence)
+        VALUES ('evidence-envelope/0', 'payments-art', ${'PR-' + at}, ${at}::timestamptz, '{}'::jsonb)`,
+      refusedWith(DENIED),
+      at,
+    );
+  // The adapter refuses the option before any statement, and stamps nothing itself.
+  assert.throws(
+    () =>
+      store.append(record({ change_id: 'PR-2' }), {
+        workspace_id: 'payments-art',
+        received_at: '1970-01-01T00:00:00Z',
+      }),
+    { name: 'EvidenceStoreFault' },
+  );
+  const [{ low }] = await db.admin`SELECT statement_timestamp() AS low`;
+  const { envelope } = await store.append(record({ change_id: 'PR-3' }), {
+    workspace_id: 'payments-art',
+  });
+  const [{ high }] = await db.admin`SELECT statement_timestamp() AS high`;
+  const stamped = Date.parse(envelope.received_at);
+  assert.ok(stamped >= low.getTime() - 1 && stamped <= high.getTime(), 'the database clock');
+  const [{ n }] = await db.admin`SELECT count(*)::int AS n FROM evidence.evidence_envelope`;
+  assert.equal(n, 2, 'PR-1 from setup and PR-3; nothing else was stored');
+});
+
 // ---------------------------------------------------------------- D-16: startup role checks
 
 test('only evidence_app passes the startup role check; TLS is checked on the live connection', async (t) => {
@@ -157,6 +189,112 @@ test('only evidence_app passes the startup role check; TLS is checked on the liv
   await db.admin`GRANT UPDATE (policy_id) ON evidence.evidence_envelope TO evidence_app`;
   await assert.rejects(assertServiceRole(as.app, { requireTls: false }), { code: 'role-unsafe' });
 });
+
+// B-1 (review cycle 1). Role attributes and memberships are cluster-wide, and other test processes
+// start the service as evidence_app at the same time, so each mis-grant is made on a disposable
+// login role holding exactly evidence_app's grants - which passes the check until it is mis-granted.
+// The caller drops it, before the test's database is disposed.
+async function serviceRoleCopy(db) {
+  const name = `evidence_copy_${process.pid}_${Math.random().toString(16).slice(2, 10)}`;
+  const password = rolePassword(process.env.PGPASSWORD, name);
+  await db.admin.unsafe(
+    `CREATE ROLE ${name} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${password}'`,
+  );
+  await db.admin`GRANT CONNECT ON DATABASE ${db.admin(db.name)} TO ${db.admin(name)}`;
+  await db.admin`GRANT USAGE ON SCHEMA evidence TO ${db.admin(name)}`;
+  await db.admin`GRANT SELECT ON evidence.evidence_envelope, evidence.schema_migrations TO ${db.admin(name)}`;
+  await db.admin`
+    GRANT INSERT (envelope_version, workspace_id, change_id, policy_id, submitted_by, evidence)
+       ON evidence.evidence_envelope TO ${db.admin(name)}`;
+  const sql = db.connectAs(name, { max: 1 });
+  const drop = async () => {
+    await sql.end({ timeout: 1 }).catch(() => {});
+    // REASSIGN first: a failed run can leave it owning the database, which DROP OWNED keeps.
+    await db.admin`REASSIGN OWNED BY ${db.admin(name)} TO evidence_owner`;
+    await db.admin`DROP OWNED BY ${db.admin(name)}`;
+    await db.admin`DROP ROLE ${db.admin(name)}`;
+  };
+  return { name, sql, drop };
+}
+
+test('the startup check refuses a member of any role, every elevated attribute, and a database owner', async (t) => {
+  const { db } = await setup(t);
+  const copy = await serviceRoleCopy(db);
+  try {
+    await refusesEveryMisgrant(db, copy);
+  } finally {
+    await copy.drop();
+  }
+});
+
+async function refusesEveryMisgrant(db, copy) {
+  const role = db.admin(copy.name);
+  await assertServiceRole(copy.sql, { requireTls: false });
+
+  // The measured hole: NOINHERIT hides evidence_owner's privileges from has_*_privilege, yet the
+  // member can SET ROLE to it and disable the trigger (rolled back here; committed, it would let
+  // the next UPDATE rewrite a payload).
+  await db.admin`GRANT evidence_owner TO ${role}`;
+  const rolledBack = new Error('roll back');
+  await assert.rejects(
+    copy.sql.begin(async (tx) => {
+      await tx`SET LOCAL ROLE evidence_owner`;
+      await tx`ALTER TABLE evidence.evidence_envelope DISABLE TRIGGER evidence_envelope_guard`;
+      throw rolledBack;
+    }),
+    (error) => error === rolledBack,
+  );
+  await assert.rejects(
+    assertServiceRole(copy.sql, { requireTls: false }),
+    (error) => error instanceof StartupRefused && error.code === 'role-unsafe',
+    'member of evidence_owner',
+  );
+  await db.admin`REVOKE evidence_owner FROM ${role}`;
+  await assertServiceRole(copy.sql, { requireTls: false });
+
+  const misgrants = [
+    [
+      'member of pg_write_all_data',
+      () => db.admin`GRANT pg_write_all_data TO ${role}`,
+      () => db.admin`REVOKE pg_write_all_data FROM ${role}`,
+    ],
+    [
+      'member of evidence_retention',
+      () => db.admin`GRANT evidence_retention TO ${role}`,
+      () => db.admin`REVOKE evidence_retention FROM ${role}`,
+    ],
+    ...['CREATEROLE', 'CREATEDB', 'REPLICATION', 'BYPASSRLS'].map((attribute) => [
+      attribute,
+      () => db.admin.unsafe(`ALTER ROLE ${copy.name} ${attribute}`),
+      () => db.admin.unsafe(`ALTER ROLE ${copy.name} NO${attribute}`),
+    ]),
+    [
+      'owner of the database',
+      () => db.admin`ALTER DATABASE ${db.admin(db.name)} OWNER TO ${role}`,
+      () => db.admin`ALTER DATABASE ${db.admin(db.name)} OWNER TO evidence_owner`,
+    ],
+    [
+      'INSERT on received_at',
+      () => db.admin`GRANT INSERT (received_at) ON evidence.evidence_envelope TO ${role}`,
+      () => db.admin`REVOKE INSERT (received_at) ON evidence.evidence_envelope FROM ${role}`,
+    ],
+    [
+      'INSERT on redacted_at',
+      () => db.admin`GRANT INSERT (redacted_at) ON evidence.evidence_envelope TO ${role}`,
+      () => db.admin`REVOKE INSERT (redacted_at) ON evidence.evidence_envelope FROM ${role}`,
+    ],
+  ];
+  for (const [what, grant, revoke] of misgrants) {
+    await grant();
+    await assert.rejects(
+      assertServiceRole(copy.sql, { requireTls: false }),
+      (error) => error instanceof StartupRefused && error.code === 'role-unsafe',
+      what,
+    );
+    await revoke();
+    await assertServiceRole(copy.sql, { requireTls: false });
+  }
+}
 
 // ---------------------------------------------------------------- AC-6: the redaction trigger
 
@@ -451,7 +589,6 @@ column evidence_envelope.id | evidence_audit | SELECT
 column evidence_envelope.id | evidence_retention | SELECT
 column evidence_envelope.policy_id | evidence_app | INSERT
 column evidence_envelope.policy_id | evidence_audit | SELECT
-column evidence_envelope.received_at | evidence_app | INSERT
 column evidence_envelope.received_at | evidence_audit | SELECT
 column evidence_envelope.received_at | evidence_retention | SELECT
 column evidence_envelope.redacted_at | evidence_audit | SELECT

@@ -9,9 +9,11 @@
 -- role, by src/database-roles.integration.mjs. Edit nothing here without running it.
 
 -- The log. One row per accepted submission; nothing is ever deleted: no role holds DELETE or
--- TRUNCATE on it, and evidence_redaction's foreign key is ON DELETE RESTRICT. received_at is the database's clock, never the submitter's. There is
--- no idempotency_key column (it is derived from the pair on read) and no digest of the payload
--- (one would outlive a redacted body and become an offline oracle for it).
+-- TRUNCATE on it, and evidence_redaction's foreign key is ON DELETE RESTRICT. received_at is the
+-- database's clock, never the submitter's and never the service's: the service holds no INSERT
+-- on it, so the column default stamps every row. There is no idempotency_key column (it is
+-- derived from the pair on read) and no digest of the payload (one would outlive a redacted body
+-- and become an offline oracle for it).
 CREATE TABLE evidence.evidence_envelope (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   envelope_version text NOT NULL,
@@ -28,8 +30,8 @@ CREATE TABLE evidence.evidence_envelope (
   -- workspace_id claims no uniqueness (ADR-0002); the service never writes one (requireWorkspace).
   CONSTRAINT evidence_envelope_idempotency UNIQUE NULLS DISTINCT (workspace_id, change_id),
   -- A payload and a redaction time never coexist, and neither is ever absent together. With the
-  -- service's INSERT grant, which omits redacted_at, this means the service can only ever insert a
-  -- row that carries a payload.
+  -- service's INSERT grant, which omits received_at and redacted_at, this means the service can
+  -- only ever insert a row that carries a payload.
   CONSTRAINT evidence_envelope_redaction_pair CHECK ((evidence IS NULL) = (redacted_at IS NOT NULL))
 );
 
@@ -114,13 +116,14 @@ CREATE TRIGGER evidence_envelope_guard
 GRANT USAGE ON SCHEMA evidence TO evidence_app, evidence_retention, evidence_audit;
 
 -- The service: append and read. It owns nothing, so it cannot ALTER, DROP or disable the trigger.
--- INSERT names its columns: redacted_at is not one of them, so the service cannot write a row that
--- arrives already redacted. The pairing CHECK alone does not stop that - a NULL payload with a
--- redaction time satisfies it (measured) - and such a row would turn every later replay into a
--- duplicate with no evidence_redaction row behind it.
+-- INSERT names its columns, and the two timestamps are not among them. Without redacted_at the
+-- service cannot write a row that arrives already redacted: the pairing CHECK alone does not stop
+-- that - a NULL payload with a redaction time satisfies it (measured) - and such a row would turn
+-- every later replay into a duplicate with no evidence_redaction row behind it. Without
+-- received_at it cannot choose a row's retention clock: a future-dated row would never expire and
+-- a back-dated one would expire at once (task 2.5 selects on received_at).
 GRANT SELECT ON evidence.evidence_envelope TO evidence_app;
-GRANT INSERT (envelope_version, workspace_id, change_id, received_at, policy_id, submitted_by,
-              evidence)
+GRANT INSERT (envelope_version, workspace_id, change_id, policy_id, submitted_by, evidence)
   ON evidence.evidence_envelope TO evidence_app;
 GRANT SELECT ON evidence.schema_migrations TO evidence_app;
 

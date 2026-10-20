@@ -124,7 +124,7 @@ test('the payload and the submitter are stored as jsonb objects, not as string s
   assert.deepEqual({ ...row }, { evidence: 'object', submitter: 'object', deeper: 'true' });
 });
 
-test('the receipt time is the database clock unless the control plane passes one', async (t) => {
+test('the receipt time is the database clock, and the control plane cannot pass one', async (t) => {
   const db = await database(t);
   const store = createPostgresEvidenceStore({ sql: db.connectAs('evidence_app') });
   const [{ before }] = await db.admin`SELECT statement_timestamp() AS before`;
@@ -132,11 +132,15 @@ test('the receipt time is the database clock unless the control plane passes one
   const [{ afterwards }] = await db.admin`SELECT statement_timestamp() AS afterwards`;
   const stamped = Date.parse(envelope.received_at);
   assert.ok(stamped >= before.getTime() - 1 && stamped <= afterwards.getTime());
-  const passed = await store.append(record({ change_id: 'PR-2' }), {
-    workspace_id: 'payments-art',
-    received_at: '2026-09-22T10:30:00.000Z',
-  });
-  assert.equal(passed.envelope.received_at, '2026-09-22T10:30:00.000Z');
+  assert.throws(
+    () =>
+      store.append(record({ change_id: 'PR-2' }), {
+        workspace_id: 'payments-art',
+        received_at: '2026-09-22T10:30:00.000Z',
+      }),
+    { name: 'EvidenceStoreFault' },
+  );
+  assert.equal((await store.list()).length, 1, 'nothing was stored');
 });
 
 // D-9: a statement held by a lock never answers; the adapter cancels it after the literal timeout

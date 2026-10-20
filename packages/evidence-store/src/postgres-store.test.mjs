@@ -128,6 +128,8 @@ test("an envelope-option fault is the control plane's, decided before any statem
     { submitted_by: [] },
     { received_at: 'yesterday' },
     { received_at: 1700000000 },
+    // The database stamps received_at; even a well-formed one is refused, never stored.
+    { received_at: '2026-09-22T10:30:00.000Z' },
   ])
     assert.throws(
       () => store.append(record(), { workspace_id: 'payments-art', ...options }),
@@ -170,11 +172,12 @@ test('an append is one INSERT; nothing is read before it, so there is no select-
   assert.match(calls[0].text, /^INSERT INTO evidence\.evidence_envelope/);
   assert.match(calls[0].text, /ON CONFLICT ON CONSTRAINT evidence_envelope_idempotency DO NOTHING/);
   // Every value is a bound parameter, in order; none of them is in the statement text.
+  // received_at is not among them: the column default stamps it (the service holds no INSERT on it).
+  assert.doesNotMatch(calls[0].text, /received_at[^]*VALUES/);
   assert.deepEqual(calls[0].values, [
     'evidence-envelope/0',
     'payments-art',
     'PR-1',
-    null,
     'p@1',
     '{"run_id":"1"}',
     JSON.stringify(record({ extra: { b: 1, a: 2 } })),
@@ -315,6 +318,8 @@ test('list() binds its workspace filter, refuses a non-string one before any sta
 // database-roles.integration.mjs's; this pins what the check does with them.
 const roleRow = (overrides = {}) => ({
   superuser: false,
+  attributes: false,
+  member: false,
   schema_present: true,
   owns: false,
   ssl: true,
@@ -325,10 +330,12 @@ function catalog(role, privileges = { rewrites: false, appends: true }) {
 }
 const refused = (code) => (error) => error instanceof StartupRefused && error.code === code;
 
-test('startup refuses a superuser, an owner, a role that could rewrite, and one that cannot append', async () => {
+test('startup refuses a superuser, an elevated role, a member, an owner, a role that could rewrite, and one that cannot append', async () => {
   await assertServiceRole(catalog(roleRow()));
   for (const [sql, code] of [
     [catalog(roleRow({ superuser: true })), 'role-unsafe'],
+    [catalog(roleRow({ attributes: true })), 'role-unsafe'],
+    [catalog(roleRow({ member: true })), 'role-unsafe'],
     [catalog(roleRow({ owns: true })), 'role-unsafe'],
     [catalog(roleRow(), { rewrites: true, appends: true }), 'role-unsafe'],
     [catalog(roleRow(), { rewrites: false, appends: false }), 'role-unsafe'],
@@ -336,6 +343,31 @@ test('startup refuses a superuser, an owner, a role that could rewrite, and one 
     [catalog(undefined), 'schema-mismatch'],
   ])
     await assert.rejects(assertServiceRole(sql), refused(code));
+});
+
+// What a real server answers for each attribute, membership and grant is
+// database-roles.integration.mjs's; this pins that the statement asks for every one of them.
+test('the startup check reads every role attribute, any membership, and both stamped columns', async () => {
+  const { sql, calls } = fakeSql((text) =>
+    text.includes('pg_stat_ssl') ? [roleRow()] : [{ rewrites: false, appends: true }],
+  );
+  await assertServiceRole(sql);
+  const [attributes, privileges] = calls.map((call) => call.text);
+  for (const read of [
+    'r.rolsuper',
+    'r.rolcreaterole',
+    'r.rolcreatedb',
+    'r.rolreplication',
+    'r.rolbypassrls',
+    'pg_catalog.pg_auth_members m WHERE m.member = r.oid',
+    'd.datdba = r.oid',
+  ])
+    assert.ok(attributes.includes(read), read);
+  for (const column of ['received_at', 'redacted_at'])
+    assert.ok(
+      privileges.includes(`'evidence.evidence_envelope', '${column}', 'INSERT'`),
+      `INSERT on ${column}`,
+    );
 });
 
 test('startup refuses a connection that did not negotiate TLS where TLS is required (AC-24)', async () => {

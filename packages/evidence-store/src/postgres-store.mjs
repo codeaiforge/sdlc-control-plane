@@ -82,13 +82,6 @@ function toEnvelope(row) {
   });
 }
 
-function receivedAt(value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)))
-    throw new EvidenceStoreFault('received_at must be an ISO timestamp');
-  return value;
-}
-
 export function createPostgresEvidenceStore({ sql, requireWorkspace = false } = {}) {
   if (typeof sql !== 'function') throw new TypeError('createPostgresEvidenceStore needs a client');
 
@@ -106,24 +99,28 @@ export function createPostgresEvidenceStore({ sql, requireWorkspace = false } = 
     // conformance suite does not, so the port's null branch is still tested.
     if (requireWorkspace && workspace_id === null)
       throw new EvidenceStoreFault('workspace_id is required by this store');
-    const at = receivedAt(received_at);
+    // received_at is the database's clock: the column default stamps every row, and the service
+    // role holds no INSERT on the column (0001-evidence-envelope.sql). The port's option is the
+    // in-memory adapter's injected clock; a caller passing one here gets a fault, not a row whose
+    // retention clock it chose.
+    if (received_at !== undefined && received_at !== null)
+      throw new EvidenceStoreFault('received_at is stamped by the database in this store');
     const submitter = submitted_by === null ? null : JSON.stringify(submitted_by);
     const changeId = value.change_id;
-    return appendRows({ text, workspace_id, changeId, at, policy_id, submitter });
+    return appendRows({ text, workspace_id, changeId, policy_id, submitter });
   }
 
   // Two statements, never one. The INSERT's unique index decides the race; a SELECT folded into
   // the same statement would read the statement's snapshot and could miss the row a racing insert
   // just committed (measured design). Nothing is ever read before the INSERT, so there is no
   // select-then-insert path: uniqueness is the server's.
-  async function appendRows({ text, workspace_id, changeId, at, policy_id, submitter }) {
+  async function appendRows({ text, workspace_id, changeId, policy_id, submitter }) {
     const inserted = await run(
       sql`
         INSERT INTO evidence.evidence_envelope
-          (envelope_version, workspace_id, change_id, received_at, policy_id, submitted_by, evidence)
+          (envelope_version, workspace_id, change_id, policy_id, submitted_by, evidence)
         VALUES (
-          ${ENVELOPE_VERSION}, ${workspace_id}, ${changeId},
-          COALESCE(${at}::timestamptz, statement_timestamp()), ${policy_id},
+          ${ENVELOPE_VERSION}, ${workspace_id}, ${changeId}, ${policy_id},
           ${submitter}::text::jsonb, ${text}::text::jsonb
         )
         ON CONFLICT ON CONSTRAINT evidence_envelope_idempotency DO NOTHING
@@ -187,18 +184,31 @@ export function createPostgresEvidenceStore({ sql, requireWorkspace = false } = 
   return { append, list, listRecords };
 }
 
-// D-16. The service's database role may append and read, and nothing else. Checked once at
-// startup, on the live connection, against the server's own catalog: a role that is a superuser,
-// owns anything in the evidence schema, or holds any privilege that could rewrite or remove
-// evidence is refused, so a mis-granted deployment does not start rather than run with the
-// append-only control silently absent.
+// D-16. The service's database role is meant to append and read, and nothing more. Checked once at
+// startup, on the live connection, against the server's own catalog. Refused, as role-unsafe:
+// - a role attribute beyond LOGIN: SUPERUSER, CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS;
+// - membership of any other role. Privilege checks below do not count a NOINHERIT role's
+//   memberships, yet the role can still SET ROLE to any of them - to evidence_owner, say, and
+//   disable the trigger (measured on 16.15) - so a member of anything is refused outright;
+// - ownership of this database, the evidence schema, or any table, sequence or function in it;
+// - UPDATE, DELETE, TRUNCATE, REFERENCES or TRIGGER on the envelope log, any write on
+//   evidence_redaction, or INSERT on the two columns the database stamps, received_at and
+//   redacted_at;
+// - and a role that cannot insert a payload and read the log back.
+// What it reads is the catalog at startup: a grant made while the service runs is seen at the
+// next start, and a cluster superuser or evidence_owner can still change anything (stack.md
+// "Access control").
 export async function assertServiceRole(sql, { requireTls = true } = {}) {
   const [role] = await sql`
     SELECT r.rolsuper AS superuser,
+           r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls AS attributes,
+           EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = r.oid) AS member,
            pg_catalog.to_regclass('evidence.evidence_envelope') IS NOT NULL
              AND pg_catalog.to_regclass('evidence.evidence_redaction') IS NOT NULL AS schema_present,
-           EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
-                    WHERE n.nspname = 'evidence' AND n.nspowner = r.oid)
+           EXISTS (SELECT 1 FROM pg_catalog.pg_database d
+                    WHERE d.datname = pg_catalog.current_database() AND d.datdba = r.oid)
+             OR EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n
+                         WHERE n.nspname = 'evidence' AND n.nspowner = r.oid)
              OR EXISTS (SELECT 1 FROM pg_catalog.pg_class c
                           JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
                          WHERE n.nspname = 'evidence' AND c.relowner = r.oid)
@@ -210,7 +220,8 @@ export async function assertServiceRole(sql, { requireTls = true } = {}) {
       FROM pg_catalog.pg_roles r
      WHERE r.rolname = current_user`;
   if (role === undefined || !role.schema_present) throw new StartupRefused('schema-mismatch');
-  if (role.superuser || role.owns) throw new StartupRefused('role-unsafe');
+  if (role.superuser || role.attributes || role.member || role.owns)
+    throw new StartupRefused('role-unsafe');
   const [privileges] = await sql`
     SELECT pg_catalog.has_any_column_privilege('evidence.evidence_envelope', 'UPDATE')
              OR pg_catalog.has_table_privilege('evidence.evidence_envelope',
@@ -218,6 +229,7 @@ export async function assertServiceRole(sql, { requireTls = true } = {}) {
              OR pg_catalog.has_any_column_privilege('evidence.evidence_redaction', 'INSERT, UPDATE')
              OR pg_catalog.has_table_privilege('evidence.evidence_redaction',
                                                'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+             OR pg_catalog.has_column_privilege('evidence.evidence_envelope', 'received_at', 'INSERT')
              OR pg_catalog.has_column_privilege('evidence.evidence_envelope', 'redacted_at', 'INSERT')
              AS rewrites,
            pg_catalog.has_column_privilege('evidence.evidence_envelope', 'evidence', 'INSERT')
