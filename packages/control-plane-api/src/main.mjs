@@ -424,8 +424,8 @@ export function createApp({
 
 // The service: the durable store or nothing. openDurableEvidenceStore() reads the PG* variables
 // (database-config.mjs, not here) and refuses - an unusable configuration, an unreachable server,
-// unverified TLS to a non-loopback host, a role that could rewrite evidence, a schema that is not
-// the bundled one - and the process exits 1 with one fixed line, never a driver message.
+// unverified TLS to a non-loopback host, a role its startup role check refuses, a schema that is
+// not the bundled one - and the process exits 1 with one fixed line, never a driver message.
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const port = Number(process.env.PORT ?? 3000);
   openDurableEvidenceStore().then(
