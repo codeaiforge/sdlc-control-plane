@@ -14,8 +14,9 @@
 //   step 5 there is no principal at all: an unverified token's repository_id would blame a
 //   repository that sent nothing (ADR-0003 › Credential transport).
 // - No error message is ever logged. In current V8 a JSON.parse error quotes part of its input,
-//   so an error caught while decoding a token can carry token bytes. Callers map a catch to a
-//   reason code and drop the error.
+//   so an error caught while decoding a token can carry token bytes; a database driver's error
+//   can carry the failing row and the bound parameters. Callers map a catch to a reason code and
+//   drop the error.
 // Never the body, the token or the Authorization value, whatever the status.
 
 export const REFUSAL_REASONS = Object.freeze([
@@ -52,6 +53,11 @@ export const REFUSAL_REASONS = Object.freeze([
   'rejected',
   'needs-remediation',
   'unmatched-route',
+  // 409: a different body under a key already held (ADR-0002); the first record stands
+  'conflict',
+  // 503 after authorization: the evidence store failed, or anything else in a route did
+  'store-unavailable',
+  'handler-fault',
 ]);
 
 const PRINCIPAL_IDS = ['repository_owner_id', 'repository_id', 'run_id', 'run_attempt'];

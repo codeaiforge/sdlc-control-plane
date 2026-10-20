@@ -6,7 +6,7 @@ import { createAuthenticator } from '../../workload-identity/src/authenticate.mj
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 import { createRequestHandler, routes } from './main.mjs';
-import { createInMemoryEvidenceStore } from './evidence-store.mjs';
+import { createInMemoryEvidenceStore } from '../../evidence-store/src/evidence-store.mjs';
 import { validateAgainstSchema } from './openapi-schema.mjs';
 
 // Claim shapes from AC-20's measured token (GitHub Actions run 39384901065, 2026-10-20), recorded in
@@ -328,6 +328,20 @@ const scenarios = [
     },
   },
   {
+    name: 'POST /v1/evidence -> 409 a different body under a key already held',
+    method: 'POST',
+    path: '/v1/evidence',
+    status: 409,
+    seam: () => {
+      const store = createInMemoryEvidenceStore();
+      store.append({ ...validEvidence, result: { pass: false } }, { workspace_id: 'payments-art' });
+      return seam(store);
+    },
+    request: () => post(JSON.stringify(validEvidence)),
+    claim: (body) =>
+      assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments-art","PR-1"]' }),
+  },
+  {
     name: 'POST /v1/evidence -> 429 a principal over its submission quota',
     method: 'POST',
     path: '/v1/evidence',
@@ -526,7 +540,7 @@ test('security is declared on exactly the routes that require a workload', () =>
   assert.deepEqual(sorted(secured), sorted(workload));
 });
 
-test('every operation but GET /health declares 401, 403 and 503, and the POST 413 and 429', () => {
+test('every operation but GET /health declares 401, 403 and 503, and the POST 409, 413 and 429', () => {
   for (const { path, method, operation } of operations) {
     const statuses = Object.keys(operation.responses);
     if (path === '/health') {
@@ -537,13 +551,14 @@ test('every operation but GET /health declares 401, 403 and 503, and the POST 41
       assert.ok(statuses.includes(status), `${method} ${path} does not declare ${status}`);
   }
   const post = Object.keys(document.paths['/v1/evidence'].post.responses);
-  for (const status of ['413', '429']) assert.ok(post.includes(status));
+  for (const status of ['409', '413', '429']) assert.ok(post.includes(status));
 });
 
-test('info.version is 0.2.0', () => {
-  // Bumped once, by task 2.1, for the authentication statuses, the 413, the 429, Workspace /1 and
-  // evidence_attestation together.
-  assert.equal(document.info.version, '0.2.0');
+test('info.version is 0.3.0', () => {
+  // Bumped once by task 2.1 (0.2.0: the authentication statuses, the 413, the 429, Workspace /1
+  // and evidence_attestation), and once by task 2.2 (0.3.0: the 409, the store's 503, unstorable
+  // strings in divergence 5, divergence 6 replaced, and the durable 202 caveat).
+  assert.equal(document.info.version, '0.3.0');
 });
 
 test('evidence_attestation is required and single-valued on the three schemas ADR-0004 names', () => {
@@ -713,17 +728,153 @@ test('divergence: the 202 is synchronous, so it promises nothing about later wor
   );
 });
 
-test('divergence 6: a conflicting replay is answered 202 and the first record stands', async () => {
+// Divergence 6, as 0.3.0 states it: a replay is answered with the decision computed for the
+// replay, while the stored envelope stays the first acceptance - here a record the store holds as
+// accepted under another policy.
+test('divergence 6: a replay is answered with the decision computed for the replay', async () => {
+  const store = createInMemoryEvidenceStore();
+  store.append(validEvidence, { workspace_id: 'payments-art', policy_id: 'earlier-policy@0' });
+  const { status, body } = await call(seam(store), post(JSON.stringify(validEvidence)));
+  assert.equal(status, 202);
+  assert.equal(body.decision.policy_id, 'test-policy@1', "the decision is the replay's own");
+  assert.equal(store.list().length, 1);
+  assert.equal(store.list()[0].policy_id, 'earlier-policy@0', 'the stored record is the first');
+  assert.match(
+    document.info.description,
+    /6\. A replay is answered with the decision computed for the replay\./,
+  );
+  assert.doesNotMatch(document.info.description, /conflicting replay is answered 202/);
+});
+
+test('divergence 6: two bodies differing only in key order are one submission', async () => {
   const store = createInMemoryEvidenceStore();
   const handler = seam(store);
   assert.equal((await call(handler, post(JSON.stringify(validEvidence)))).status, 202);
-  const changed = { ...validEvidence, result: { pass: false } };
-  const { status, body } = await call(handler, post(JSON.stringify(changed)));
-  assert.equal(status, 202, 'until 2.2 assigns a conflict its own status (ADR-0002)');
+  const reordered = JSON.stringify(Object.fromEntries(Object.entries(validEvidence).reverse()));
+  const { status, body } = await call(handler, post(reordered));
+  assert.equal(status, 202);
   assert.equal(body.decision.disposition, 'accepted');
   assert.equal(store.list().length, 1);
-  assert.equal(store.list()[0].evidence.result.pass, true, 'the first record stands');
-  assert.match(document.info.description, /6\. A conflicting replay is answered 202\./);
+  assert.match(document.info.description, /key order is not significant/);
+});
+
+test('the 409 body is closed, carries the key, and never the stored payload or a decision', async () => {
+  const schema = document.components.schemas.ConflictResponse;
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ['error', 'idempotency_key']);
+  assert.deepEqual(schema.properties.error.enum, ['conflict']);
+  assert.equal(
+    conforms({ error: 'conflict', idempotency_key: 'k', decision: {} }, schema).ok,
+    false,
+  );
+  assert.equal(
+    conforms({ error: 'conflict', idempotency_key: 'k', evidence: {} }, schema).ok,
+    false,
+  );
+  const store = createInMemoryEvidenceStore();
+  store.append(
+    { ...validEvidence, binding_used: 'STORED-binding' },
+    { workspace_id: 'payments-art' },
+  );
+  const { status, body } = await call(seam(store), post(JSON.stringify(validEvidence)));
+  assert.equal(status, 409);
+  assert.doesNotMatch(JSON.stringify(body), /STORED|binding|decision/);
+});
+
+// The store's 503 and the catch-all's 503 are not in the scenario table, which holds one entry
+// per (route, status) pair and already drives each route's 503 through the key set. Their bodies
+// are held to the same documented schema here.
+const down = async () => {
+  throw new Error('ECONNREFUSED');
+};
+const unavailableStore = { append: down, list: down, listRecords: down };
+
+test('a store fault is a 503 the document declares, on both routes that reach the store', async () => {
+  for (const [path, request] of [
+    ['/v1/evidence', post(JSON.stringify(validEvidence))],
+    ['/v1/indicators', get('/v1/indicators')],
+  ]) {
+    const method = request.method.toLowerCase();
+    const { status, body, headers } = await call(seam(unavailableStore), request);
+    assert.equal(status, 503, path);
+    assert.deepEqual(body, { error: 'evidence store unavailable' });
+    assert.deepEqual(conforms(body, responseSchema(path, method, 503)).errors, []);
+    assert.equal(headers.connection, 'close');
+    assert.match(document.paths[path][method].responses['503'].description, /evidence store/);
+  }
+  assert.doesNotMatch(document.paths['/v1/evidence'].post.description, /first five statuses/);
+});
+
+test('a fault anywhere in an authenticated route is a 503 the document declares', async () => {
+  const handler = seam(undefined, {
+    registry: {
+      bindingFor: () => 'payments-art',
+      get: () => {
+        throw new Error('registry fault');
+      },
+    },
+  });
+  for (const [path, request] of [
+    ['/v1/workspaces', get('/v1/workspaces')],
+    ['/v1/indicators', get('/v1/indicators')],
+    ['/v1/evidence', post(JSON.stringify(validEvidence))],
+  ]) {
+    const { status, body } = await call(handler, request);
+    assert.equal(status, 503, path);
+    assert.deepEqual(body, { error: 'service unavailable' });
+    assert.deepEqual(
+      conforms(body, responseSchema(path, request.method.toLowerCase(), 503)).errors,
+      [],
+    );
+    assert.match(
+      document.paths[path][request.method.toLowerCase()].responses['503'].description,
+      /faulted in some other way/,
+    );
+  }
+});
+
+// Divergence 5, widened in 0.3.0.
+test('divergence 5: a record holding U+0000 or an unpaired surrogate is refused before policy, nothing stored', async () => {
+  let policyRead = false;
+  const watched = { ...policy };
+  Object.defineProperty(watched, 'policy_version', {
+    get() {
+      policyRead = true;
+      return 'guardrails/0';
+    },
+  });
+  const store = createInMemoryEvidenceStore();
+  for (const raw of [
+    JSON.stringify({ ...validEvidence, binding_used: 'a\u0000b' }),
+    JSON.stringify(validEvidence).replace('"PR-1"', '"PR-\\ud800"'),
+  ]) {
+    const { status, body } = await call(seam(store, { policy: watched }), post(raw));
+    assert.equal(status, 400);
+    assert.deepEqual(conforms(body, responseSchema('/v1/evidence', 'post', 400)).errors, []);
+  }
+  assert.equal(policyRead, false);
+  assert.equal(store.list().length, 0);
+  assert.match(document.info.description, /U\+0000/);
+  assert.match(document.paths['/v1/evidence'].post.responses['400'].description, /U\+0000/);
+});
+
+// AC-17. The write completes before the 202 is written: the store already holds the record at the
+// moment writeHead runs. And the caveat says so without promising what the database does after.
+test('the record is in the store when the 202 is written, and the caveat claims no more than that', async () => {
+  const store = createInMemoryEvidenceStore();
+  let heldAtWrite;
+  await seam(store)(post(JSON.stringify(validEvidence)), {
+    writeHead: () => {
+      heldAtWrite = store.list().length;
+    },
+    end: (_value, done) => done?.(),
+  });
+  assert.equal(heldAtWrite, 1);
+  const caveat = document.info.description.slice(document.info.description.indexOf('202 caveat'));
+  assert.match(caveat, /completed and committed first/);
+  assert.match(caveat, /Nothing is queued\./);
+  assert.match(caveat, /which this service does not control/);
+  assert.doesNotMatch(document.info.description, /Nothing is durable|in-process store/);
 });
 
 // Phase 4 cycle 3 found the drift protection above to be one-directional. Every request-schema

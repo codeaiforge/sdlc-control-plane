@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 // The contract every evidence-store adapter has to satisfy, written once so the in-memory
-// adapter shipped in 1.2 and the PostgreSQL adapter written in 2.2 are held to the same claims
+// adapter (task 1.2) and the PostgreSQL adapter (task 2.2) are held to the same claims
 // rather than to two descriptions of the same claims. ADR-0002 is the reasoning behind it.
 //
 // Three properties keep it portable:
@@ -10,8 +10,9 @@ import test from 'node:test';
 // 1. It takes a factory, not a store, so every test gets a fresh instance and the order the
 //    runner happens to pick cannot make one test depend on another's appends.
 // 2. Every store call is awaited. `await` on a synchronous value is a no-op, so the in-memory
-//    adapter passes an awaiting suite unchanged, and 2.2's async adapter passes this same file
-//    unedited. The one deliberate exception is the synchronous-reads test, which says so.
+//    adapter passes an awaiting suite unchanged, and the async PostgreSQL adapter passes this same
+//    file. The synchronous-reads test that once stood here was deleted in the change that made
+//    reads async (ADR-0002 Consequences); the seam has awaited every store call since task 2.1.
 // 3. It imports nothing from packages/contracts and nothing adapter-specific, and every fixture
 //    below is an inline literal. An import of the contracts package would take that project's
 //    fan-in from 2 to 3, which flips its `shared` flag and permanently retiers every future
@@ -33,14 +34,20 @@ const evidenceRecord = (overrides = {}) => ({
 
 const WORKSPACE = 'payments-art';
 
-// The factory may be sync or async, and may return a store or a { store, dispose } pair — 2.2's
-// adapter has a connection to close, and a suite that leaked one per test would exhaust the pool
-// long before it ran out of tests. `append` is the discriminator: a store has one, a pair does not.
-async function openStore(t, createStore) {
+// The factory may be sync or async, and may return a store or a { store, dispose, redact } bundle
+// — the PostgreSQL adapter has a connection to close, and a suite that leaked one per test would
+// exhaust the pool long before it ran out of tests. `append` is the discriminator: a store has
+// one, a bundle does not. `redact({ workspace_id, change_id })` is never a store method (see the
+// MIT-14 test below): it is whatever the adapter's retention path is, performed here by the test.
+async function openLog(t, createStore) {
   const created = await createStore();
-  const { store, dispose } = typeof created?.append === 'function' ? { store: created } : created;
-  if (dispose) t.after(() => dispose());
-  return store;
+  const bundle = typeof created?.append === 'function' ? { store: created } : created;
+  if (bundle.dispose) t.after(() => bundle.dispose());
+  return bundle;
+}
+
+async function openStore(t, createStore) {
+  return (await openLog(t, createStore)).store;
 }
 
 export function describeEvidenceStore(name, createStore) {
@@ -256,22 +263,6 @@ export function describeEvidenceStore(name, createStore) {
     }
   });
 
-  test(`${name}: reads are synchronous`, async (t) => {
-    // The one call in this suite that is deliberately not awaited. Until task 2.1, GET
-    // /v1/indicators summarised store.listRecords() inside a synchronous send(), so a read that
-    // returned a promise would have serialised a pending promise into the response body. Since
-    // 2.1 the seam awaits every store call, so nothing there depends on this any more; it stays
-    // until task 2.2 deletes it in the same change that makes this adapter's reads async.
-    const store = await openStore(t, createStore);
-    await store.append(evidenceRecord());
-    const envelopes = store.list();
-    const records = store.listRecords();
-    assert.equal(Array.isArray(envelopes), true);
-    assert.equal(Array.isArray(records), true);
-    assert.notEqual(typeof envelopes.then, 'function');
-    assert.notEqual(typeof records.then, 'function');
-  });
-
   // NFR-6.1's first clause is "retain the approving decision reference". A store that keeps the
   // record but not the policy that accepted it can say when evidence arrived and not under which
   // approved policy - and guardrails.json is editable between two appends, so the answer is not
@@ -287,13 +278,13 @@ export function describeEvidenceStore(name, createStore) {
 
   // "Append-only is structural, not a convention" is ADR-0002's central claim. At the database
   // layer that is a missing UPDATE grant; at this layer it is the absence of any method that
-  // could remove or rewrite a record. 2.2 writes its adapter against this suite, so without
-  // this an adapter carrying a destructive method would pass it unedited.
+  // could remove or rewrite a record.
   //
-  // The list is exact, not a denylist of scary names. Retention in 2.2 adds the one deliberate
-  // exception to append-only, so 2.2 will have to edit this line — which is the point: a new
-  // mutating method should not be able to appear without touching the file that documents why
-  // there are none.
+  // The list is exact, not a denylist of scary names. Redaction is the one deliberate exception
+  // to append-only, and it is not a method here and never will be: in the durable store it is a
+  // different database role on a different connection, constrained by a trigger the application
+  // role cannot reach, so nothing holding a store can redact through it. A new mutating method
+  // should not be able to appear without touching the file that documents why there are none.
   test(`${name}: the port exposes no method that could remove or rewrite a record`, async (t) => {
     const store = await openStore(t, createStore);
     assert.deepEqual(Object.keys(store).sort(), ['append', 'list', 'listRecords']);
@@ -364,6 +355,204 @@ export function describeEvidenceStore(name, createStore) {
     const stored = await store.list();
     assert.equal(stored.length, 1);
     assert.deepEqual(stored[0].submitted_by, submitter());
+  });
+
+  // ADR-0002 "Expiry behaviour": a redacted envelope keeps its identity and loses its payload, and
+  // a replay of it is a duplicate on the key alone - there is no body left to compare and no digest
+  // kept to compare against. Pinned in the change that implements redaction, against both
+  // adapters, with the redaction performed by the adapter's own retention path.
+  const REDACTED_ENVELOPE_KEYS = [
+    'envelope_version',
+    'workspace_id',
+    'received_at',
+    'idempotency_key',
+    'policy_id',
+    'submitted_by',
+    'evidence',
+    'redacted_at',
+  ];
+
+  test(`${name}: a redacted envelope keeps its identity, loses its payload, and a replay is a duplicate`, async (t) => {
+    const { store, redact } = await openLog(t, createStore);
+    assert.equal(typeof redact, 'function', `${name}: the factory must hand the suite a redact()`);
+    const first = await store.append(evidenceRecord(), {
+      workspace_id: WORKSPACE,
+      policy_id: 'baseline-engineering-controls@1',
+      submitted_by: submitter(),
+    });
+    await store.append(evidenceRecord({ change_id: 'PR-2' }), { workspace_id: WORKSPACE });
+    assert.equal(await redact({ workspace_id: WORKSPACE, change_id: 'PR-1' }), true);
+
+    const [tombstone, kept] = await store.list();
+    assert.deepEqual(Object.keys(tombstone), REDACTED_ENVELOPE_KEYS);
+    assert.equal(tombstone.evidence, null, 'nothing derived from the payload survives');
+    assert.equal(typeof tombstone.redacted_at, 'string');
+    assert.ok(Number.isFinite(Date.parse(tombstone.redacted_at)), 'redacted_at is a timestamp');
+    assert.equal(kept.redacted_at, null);
+    assert.equal(kept.evidence.change_id, 'PR-2');
+    for (const field of [
+      'envelope_version',
+      'workspace_id',
+      'received_at',
+      'idempotency_key',
+      'policy_id',
+    ])
+      assert.equal(tombstone[field], first.envelope[field], `${field} is kept`);
+    // ADR-0004: the seven identifiers stay, the four names a person chose are nulled.
+    assert.deepEqual(tombstone.submitted_by, {
+      ...submitter(),
+      ref: null,
+      event_name: null,
+      workflow_ref: null,
+      job_workflow_ref: null,
+    });
+    assert.throws(() => {
+      tombstone.submitted_by.ref = 'refs/heads/main';
+    }, TypeError);
+    assert.deepEqual(
+      (await store.listRecords()).map((record) => record.change_id),
+      ['PR-2'],
+      'a redacted envelope is no longer a record',
+    );
+
+    const replay = await store.append(evidenceRecord(), { workspace_id: WORKSPACE });
+    assert.equal(replay.outcome, 'duplicate');
+    assert.deepEqual(replay.envelope, tombstone, 'the stored tombstone is the answer');
+    const different = await store.append(evidenceRecord({ result: { pass: false } }), {
+      workspace_id: WORKSPACE,
+    });
+    assert.equal(different.outcome, 'duplicate', 'there is no body left to disagree with');
+    assert.equal((await store.list()).length, 2, 'a replay of a redacted record appends nothing');
+    assert.equal(
+      await redact({ workspace_id: WORKSPACE, change_id: 'PR-1' }),
+      false,
+      'a tombstone is not redacted twice',
+    );
+    assert.equal(await redact({ workspace_id: WORKSPACE, change_id: 'PR-absent' }), false);
+  });
+
+  test(`${name}: an envelope that has not been redacted says so`, async (t) => {
+    const store = await openStore(t, createStore);
+    const { envelope } = await store.append(evidenceRecord(), { workspace_id: WORKSPACE });
+    assert.deepEqual(Object.keys(envelope), REDACTED_ENVELOPE_KEYS);
+    assert.equal(envelope.redacted_at, null);
+    assert.deepEqual(Object.keys((await store.list())[0]), REDACTED_ENVELOPE_KEYS);
+  });
+
+  // AC-15. Key order carries no meaning in JSON, and jsonb compares values, not text; a body that
+  // differs from the stored one only in the order its keys were written is the same submission.
+  test(`${name}: two bodies differing only in key order are a duplicate`, async (t) => {
+    const store = await openStore(t, createStore);
+    const first = await store.append(evidenceRecord({ nested: { a: 1, b: [{ x: 1, y: 2 }] } }), {
+      workspace_id: WORKSPACE,
+    });
+    const reordered = Object.fromEntries(
+      Object.entries(evidenceRecord({ nested: { b: [{ y: 2, x: 1 }], a: 1 } })).reverse(),
+    );
+    const replay = await store.append(reordered, { workspace_id: WORKSPACE });
+    assert.equal(first.outcome, 'appended');
+    assert.equal(replay.outcome, 'duplicate');
+    assert.equal((await store.list()).length, 1);
+    // Array order is meaning, not notation: reordering an array is a different body.
+    const swapped = await store.append(
+      evidenceRecord({ nested: { a: 1, b: [{ x: 1, y: 2 }] }, affected_set: ['b', 'a'] }),
+      { workspace_id: WORKSPACE },
+    );
+    assert.equal(swapped.outcome, 'conflict');
+  });
+
+  // AC-16. PostgreSQL cannot hold U+0000 in text or jsonb, nor an unpaired surrogate in jsonb, and
+  // stores one in a text column as U+FFFD (measured). Both adapters refuse such a record as the
+  // caller's fault, before anything is stored, wherever the string sits.
+  test(`${name}: a record holding U+0000 or an unpaired surrogate is refused and nothing is stored`, async (t) => {
+    const store = await openStore(t, createStore);
+    const unstorable = [
+      evidenceRecord({ binding_used: 'origin/main\u0000..HEAD' }),
+      evidenceRecord({ tool: { name: 'sdlc-controls', version: 'v0.2.0\ud800' } }),
+      evidenceRecord({ affected_set: ['packages/\udc00contracts'] }),
+      evidenceRecord({ extra: { 'key\u0000': 'value' } }),
+      evidenceRecord({ extra: { 'key\ud83d': 'value' } }),
+      evidenceRecord({ change_id: 'PR-\u0000' }),
+      evidenceRecord({ change_id: 'PR-\udfff' }),
+    ];
+    for (const record of unstorable) {
+      await assert.rejects(
+        async () => store.append(record, { workspace_id: WORKSPACE }),
+        TypeError,
+      );
+    }
+    assert.deepEqual(await store.list(), []);
+    // A well-formed pair is an ordinary character and is stored unchanged.
+    const { outcome } = await store.append(evidenceRecord({ change_id: 'PR-😀' }), {
+      workspace_id: WORKSPACE,
+    });
+    assert.equal(outcome, 'appended');
+    assert.equal((await store.list())[0].evidence.change_id, 'PR-😀');
+  });
+
+  // The envelope options are built by the control plane from the verified principal, never by the
+  // caller, so a wrong one is the control plane's fault: refused before anything is stored, and
+  // not as a TypeError, which the seam would answer as the caller's.
+  test(`${name}: an unstorable envelope option is refused as the control plane's fault`, async (t) => {
+    const store = await openStore(t, createStore);
+    const faults = [
+      { workspace_id: 'payments\u0000' },
+      { workspace_id: '' },
+      { workspace_id: 42 },
+      { policy_id: 'p\ud800' },
+      { submitted_by: 'not an object' },
+      { submitted_by: submitter({ ref: 'refs/heads/\u0000' }) },
+    ];
+    for (const options of faults) {
+      await assert.rejects(
+        async () => store.append(evidenceRecord(), options),
+        (error) => error.name === 'EvidenceStoreFault' && !(error instanceof TypeError),
+        JSON.stringify(options),
+      );
+    }
+    assert.deepEqual(await store.list(), []);
+  });
+
+  // RR-10. The read the indicators route makes is one workspace's envelopes, never the whole
+  // store; the filter is optional, so the method set is unchanged.
+  test(`${name}: list() filtered by workspace returns that workspace's envelopes in append order`, async (t) => {
+    const store = await openStore(t, createStore);
+    await store.append(evidenceRecord({ change_id: 'PR-1' }), { workspace_id: 'ws-a' });
+    await store.append(evidenceRecord({ change_id: 'PR-2' }), { workspace_id: 'ws-b' });
+    await store.append(evidenceRecord({ change_id: 'PR-3' }), { workspace_id: 'ws-a' });
+    await store.append(evidenceRecord({ change_id: 'PR-4' }));
+    const changes = (envelopes) => envelopes.map((envelope) => envelope.evidence.change_id);
+    assert.deepEqual(changes(await store.list({ workspace_id: 'ws-a' })), ['PR-1', 'PR-3']);
+    assert.deepEqual(changes(await store.list({ workspace_id: 'ws-b' })), ['PR-2']);
+    assert.deepEqual(await store.list({ workspace_id: 'ws-none' }), []);
+    assert.deepEqual(changes(await store.list()), ['PR-1', 'PR-2', 'PR-3', 'PR-4']);
+    assert.deepEqual(changes(await store.list({})), ['PR-1', 'PR-2', 'PR-3', 'PR-4']);
+    for (const filter of [null, 42, ['ws-a']])
+      await assert.rejects(async () => store.list({ workspace_id: filter }), TypeError);
+  });
+
+  // NFR-1.1: an unrecognised additive field survives the store unchanged. jsonb keeps values, not
+  // text, so this is value equality - and an object stays an object (a JSON string bound as jsonb
+  // is stored as a string scalar, which only a round trip notices).
+  test(`${name}: an unrecognised additive field round-trips unchanged in value`, async (t) => {
+    const store = await openStore(t, createStore);
+    const addition = {
+      text: 'é ☃ 😀 "quoted" \\ back',
+      numbers: [0, -1, 1.5, 1e21, 123456789012345],
+      flags: [true, false, null],
+      nested: { empty: {}, list: [], deeper: { key: 'value' } },
+    };
+    const { envelope } = await store.append(evidenceRecord({ upstream_addition: addition }), {
+      workspace_id: WORKSPACE,
+    });
+    const [stored] = await store.list();
+    for (const read of [envelope, stored]) {
+      assert.equal(typeof read.evidence, 'object');
+      assert.deepEqual(
+        read.evidence,
+        JSON.parse(JSON.stringify(evidenceRecord({ upstream_addition: addition }))),
+      );
+    }
   });
 
   test(`${name}: every envelope declares the envelope version`, async (t) => {

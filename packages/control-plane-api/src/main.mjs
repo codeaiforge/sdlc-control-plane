@@ -18,7 +18,11 @@ import {
   createSubmissionQuota,
   readBodyCapped,
 } from './admission.mjs';
-import { createInMemoryEvidenceStore, project } from './evidence-store.mjs';
+import {
+  StartupRefused,
+  openDurableEvidenceStore,
+} from '../../evidence-store/src/database-config.mjs';
+import { project } from '../../evidence-store/src/evidence-store.mjs';
 import { refusalEvent, stderrLog } from './refusal-log.mjs';
 
 // createRegistry validates every registration at load and throws, and refuses a document whose
@@ -66,18 +70,21 @@ const registry = createRegistry(
     readFileSync(new URL('../../../config/control-plane/workspaces.json', import.meta.url)),
   ),
 );
-// One store, one key set, one quota per process, created at module scope exactly as the store
-// was before them, so the running service keeps one of each. createApp() takes injection seams
-// instead of reaching for these bindings, so a test can hold its own without sharing these.
-// Building them does no I/O: the key set's first fetch happens on the first authenticated
-// request, so importing this module (the threat-model check does) fetches nothing.
-const defaultEvidenceStore = createInMemoryEvidenceStore();
+// One key set and one quota per process, created at module scope, so the running service keeps
+// one of each. createApp() takes injection seams instead of reaching for these bindings, so a test
+// can hold its own without sharing these. Building them does no I/O: the key set's first fetch
+// happens on the first authenticated request, so importing this module (the threat-model check
+// does) fetches nothing. There is no store here: the durable one is opened by the entry block
+// below, which needs the database, and a test injects its own - so importing this module reads no
+// database configuration and builds no client.
 const defaultAuthenticate = createAuthenticator({ keySet: createKeySet() });
 const defaultQuota = createSubmissionQuota();
 
 // The statuses that refuse a request without reading its body: 404, 401, 503, 403 and 429 are
 // decided on the request line and headers, 413 on content-length or part-way through the read.
-// Each one closes the connection whatever the body's state (ADR-0003 › Wire statuses).
+// Each one closes the connection whatever the body's state (ADR-0003 › Wire statuses). 503 is
+// also the answer to a store or handler fault, after the body has been read; closing then costs
+// the caller a reconnect and nothing else.
 const REFUSED_UNREAD = new Set([404, 401, 503, 403, 429, 413]);
 
 // True while the request declares a body the parser has not yet seen the end of. `complete`
@@ -133,6 +140,11 @@ const INVALID_TOKEN = { error: 'invalid token' };
 const WWW_AUTHENTICATE = { 'www-authenticate': 'Bearer error="invalid_token"' };
 const FORBIDDEN = { error: 'forbidden' };
 const KEY_SET_UNAVAILABLE = { error: 'key set unavailable' };
+// A store failure is the control plane's fault, never the caller's body (ADR-0002 Consequences):
+// it is answered 503, retry-safe because intake is idempotent - a commit whose answer was lost
+// replays as a duplicate. No driver message ever reaches a body or a log line.
+const STORE_UNAVAILABLE = { error: 'evidence store unavailable' };
+const SERVICE_UNAVAILABLE = { error: 'service unavailable' };
 
 // Step 6, the one "authorized for W" predicate every route but GET /health applies (ADR-0003 ›
 // Route authorization): the verified triple binds to W, read back through registry.get; W is
@@ -205,8 +217,15 @@ export const routes = [
     auth: 'workload',
     // Only W's envelopes, and only those that still carry a payload - the filter listRecords()
     // applies - taken through list() so the port does not change (ADR-0003 › Route authorization).
-    handle: async ({ evidenceStore }, request, response, caller) => {
-      const envelopes = await evidenceStore.list();
+    // The store reads W's rows only (RR-10); the two filters below stay as defence in depth.
+    handle: async (context, request, response, caller) => {
+      let envelopes;
+      try {
+        envelopes = await context.evidenceStore.list({ workspace_id: caller.workspaceId });
+      } catch {
+        logRefusal(context, caller.route, 503, 'store-unavailable', caller);
+        return send(response, 503, STORE_UNAVAILABLE, request);
+      }
       const records = envelopes
         .filter((envelope) => envelope.workspace_id === caller.workspaceId)
         .filter((envelope) => envelope.evidence !== null)
@@ -230,13 +249,11 @@ export const routes = [
           headers: { 'retry-after': String(allowance.retryAfterS) },
         });
       }
-      // The try spans the body read, the parse and the evaluation. Narrowing it would change
-      // what a fault puts on the wire: a throw inside this span is answered with the
-      // documented 400 envelope, whereas outside it the throw escapes the handler, rejects
-      // the returned promise and leaves the caller with no response at all. The body read is
-      // inside for that reason and not only for tidiness — a client that opens a POST and
-      // drops the socket makes the read throw, and an unhandled rejection there terminates
-      // the process under Node's default behaviour, which `nx serve` runs with.
+      // The try spans the body read, the parse, the evaluation and the append. A throw inside it
+      // is answered with the documented 400 envelope - a body the caller got wrong - except a
+      // store failure, which the append's own catch answers 503 first. The body read is inside
+      // for a reason beyond tidiness: a client that opens a POST and drops the socket makes the
+      // read throw. Anything that still escapes is the request handler's catch-all's (503).
       try {
         // The cap is a returned value, never a throw: this catch would answer a thrown 413 as
         // 400. Enforced before JSON.parse and before project(), from inside the read loop.
@@ -267,11 +284,32 @@ export const routes = [
           return send(response, 422, { decision }, request);
         }
         // workspace_id and submitted_by come from the verified principal, never from the body.
-        await evidenceStore.append(record, {
-          workspace_id: caller.workspaceId,
-          policy_id: decision.policy_id ?? null,
-          submitted_by: submittedBy(caller.principal),
-        });
+        // The write completes before the 202 is written: nothing is queued (ADR-0002 "The 202").
+        let appended;
+        try {
+          appended = await evidenceStore.append(record, {
+            workspace_id: caller.workspaceId,
+            policy_id: decision.policy_id ?? null,
+            submitted_by: submittedBy(caller.principal),
+          });
+        } catch (error) {
+          // By class, not by message: a TypeError is a record the store cannot keep (the depth
+          // band in divergence 5), the caller's fault, answered 400 by the catch below. Anything
+          // else - unreachable, refused, timed out, an envelope option the seam built wrongly -
+          // is the control plane's.
+          if (error instanceof TypeError) throw error;
+          logRefusal(context, route, 503, 'store-unavailable', caller);
+          return send(response, 503, STORE_UNAVAILABLE, request);
+        }
+        // A different body under a key already held (ADR-0002): nothing was appended and the
+        // first record stands. The answer names the key - the caller's own workspace and change -
+        // and never carries the stored payload, which the caller may not have sent.
+        if (appended.outcome === 'conflict') {
+          logRefusal(context, route, 409, 'conflict', caller);
+          return send(response, 409, { error: 'conflict', idempotency_key: appended.key }, request);
+        }
+        // `appended` or `duplicate`: a replay is answered with the decision computed for the
+        // replay (openapi.json divergence 6).
         return send(response, 202, { decision }, request);
       } catch {
         logRefusal(context, route, 400, 'body-not-json', caller);
@@ -317,11 +355,26 @@ export function createRequestHandler({
       logRefusal(context, null, 404, 'unmatched-route');
       return send(response, 404, { error: 'not found' }, request);
     }
-    // GET /health reads no credential, even when one is sent.
+    // GET /health reads no credential, even when one is sent. It does no I/O and cannot reject.
     if (route.auth === 'none') return route.handle(context, request, response);
-    const caller = await authorizeRequest(context, route, request, response);
-    if (caller === null) return;
-    return route.handle(context, request, response, { ...caller, awaitsContinue });
+    // The catch-all (2.1 SEC-6): a rejection anywhere in an authenticated route is answered 503
+    // and logged, and the promise this returns never rejects - an unhandled rejection terminates
+    // the process under Node's default, which `nx serve` runs with. If a response is already on
+    // the wire, all that is left to do is close it.
+    let caller = null;
+    try {
+      caller = await authorizeRequest(context, route, request, response);
+      if (caller === null) return;
+      return await route.handle(context, request, response, { ...caller, awaitsContinue });
+    } catch {
+      logRefusal(context, route, 503, 'handler-fault', caller ?? undefined);
+      try {
+        if (response.headersSent) request.destroy?.();
+        else send(response, 503, SERVICE_UNAVAILABLE, request);
+      } catch {
+        request.destroy?.();
+      }
+    }
   };
 }
 
@@ -348,11 +401,15 @@ export function createSeamServer(handler) {
   return server;
 }
 
+// No default store, exactly as createRequestHandler has no default authenticator: a service built
+// without one must not exist, rather than exist and quietly keep evidence in memory.
 export function createApp({
-  evidenceStore = defaultEvidenceStore,
+  evidenceStore,
   authenticate = defaultAuthenticate,
   log = stderrLog,
 } = {}) {
+  if (evidenceStore === undefined || evidenceStore === null)
+    throw new TypeError('createApp needs an evidence store');
   return createSeamServer(
     createRequestHandler({
       registry,
@@ -365,7 +422,22 @@ export function createApp({
   );
 }
 
+// The service: the durable store or nothing. openDurableEvidenceStore() reads the PG* variables
+// (database-config.mjs, not here) and refuses - an unusable configuration, an unreachable server,
+// unverified TLS to a non-loopback host, a role that could rewrite evidence, a schema that is not
+// the bundled one - and the process exits 1 with one fixed line, never a driver message.
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const port = Number(process.env.PORT ?? 3000);
-  createApp().listen(port, () => console.log(`control plane scaffold listening on :${port}`));
+  openDurableEvidenceStore().then(
+    (evidenceStore) =>
+      createApp({ evidenceStore }).listen(port, () =>
+        console.log(`control plane listening on :${port}`),
+      ),
+    (error) => {
+      const line =
+        error instanceof StartupRefused ? error.message : 'control plane refused to start: failed';
+      process.stderr.write(`${line}\n`);
+      process.exit(1);
+    },
+  );
 }

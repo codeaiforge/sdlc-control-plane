@@ -5,7 +5,7 @@ import { createAuthenticator } from '../../workload-identity/src/authenticate.mj
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 import { createSubmissionQuota } from './admission.mjs';
-import { createInMemoryEvidenceStore } from './evidence-store.mjs';
+import { createInMemoryEvidenceStore } from '../../evidence-store/src/evidence-store.mjs';
 import { createRequestHandler } from './main.mjs';
 import { REFUSAL_REASONS, refusalEvent, stderrLog } from './refusal-log.mjs';
 
@@ -147,12 +147,12 @@ const okFetch = async () => ({
   cacheControl: 'max-age=3600',
 });
 
-function seam({ fetchKeySet = okFetch, keySet, log, quota } = {}) {
+function seam({ fetchKeySet = okFetch, keySet, log, quota, store } = {}) {
   const set = keySet ?? createKeySet({ now: () => NOW_MS, fetchKeySet });
   return createRequestHandler({
     registry: createRegistry(REGISTRY_DOC),
     policy,
-    evidenceStore: createInMemoryEvidenceStore(),
+    evidenceStore: store ?? createInMemoryEvidenceStore(),
     authenticate: createAuthenticator({ keySet: set, now: () => NOW_MS }),
     quota: quota ?? createSubmissionQuota({ now: () => NOW_MS }),
     log,
@@ -253,12 +253,54 @@ function scenarios() {
     body: JSON.stringify(evidence({ verification: { verified: ['CANARY-BODY-control'] } })),
   });
   add('unmatched-route', 404, good, { url: `/v1/evidence?access_token=${good}` });
+  // The 409 body carries the key - the caller's own workspace and change_id - so this scenario's
+  // change_id is not a canary; every other body field still is, and none of them may appear.
+  const conflicting = evidence({ change_id: 'PR-conflict', access_token: 'CANARY-BODY-token' });
+  const held = createInMemoryEvidenceStore();
+  held.append({ ...conflicting, result: { pass: false } }, { workspace_id: 'payments-art' });
+  add('conflict', 409, good, { body: JSON.stringify(conflicting), store: held });
+  add('store-unavailable', 503, good, {
+    store: {
+      ...createInMemoryEvidenceStore(),
+      append: async () => {
+        throw new Error(`CANARY-ERROR-driver ${good}`);
+      },
+    },
+  });
+  add('handler-fault', 503, good, {
+    quota: {
+      take: () => {
+        throw new Error(`CANARY-ERROR-handler ${good}`);
+      },
+    },
+  });
   return list;
 }
 
 const ALLOWED_KEYS = ['event', 'at', 'route', 'status', 'reason', 'principal'];
 const PRINCIPAL_KEYS = [...FOUR_IDS, 'workspace_id'];
-const AFTER_STEP_5 = new Set([400, 403, 413, 422, 429]);
+// Keyed by reason, not status: 503 is answered both before step 5 (no key set) and after it (a
+// store or handler fault), and only the second has a verified principal to log.
+const BEFORE_STEP_5 = new Set([
+  'credential-missing',
+  'credential-repeated',
+  'credential-malformed',
+  'token-too-large',
+  'header-invalid',
+  'alg-unsupported',
+  'kid-unknown',
+  'signature-invalid',
+  'iss-mismatch',
+  'aud-mismatch',
+  'token-expired',
+  'token-not-yet-valid',
+  'iat-in-future',
+  'lifetime-exceeded',
+  'claim-invalid',
+  'key-set-unavailable',
+  'verifier-fault',
+  'unmatched-route',
+]);
 
 async function runAll() {
   const results = [];
@@ -268,6 +310,7 @@ async function runAll() {
       fetchKeySet: scenario.fetchKeySet,
       keySet: scenario.keySet,
       quota: scenario.quota,
+      store: scenario.store,
       // Serialised exactly as the stderr sink serialises it.
       log: (event) => lines.push(JSON.stringify(event)),
     });
@@ -305,7 +348,7 @@ test('no line carries a principal before step 5, and after it only the four ids 
     const event = JSON.parse(lines[0]);
     for (const key of Object.keys(event))
       assert.ok(ALLOWED_KEYS.includes(key), `${scenario.reason}: unexpected key ${key}`);
-    if (!AFTER_STEP_5.has(scenario.status)) {
+    if (BEFORE_STEP_5.has(scenario.reason)) {
       assert.equal(Object.hasOwn(event, 'principal'), false, scenario.reason);
       continue;
     }

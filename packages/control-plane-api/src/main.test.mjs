@@ -7,7 +7,11 @@ import { ISSUER as VERIFIER_ISSUER } from '../../workload-identity/src/constants
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { ACCEPTED_ISSUERS, createRegistry } from '../../workspace-registry/src/registry.mjs';
 import { assertIssuerAgreement, assertUsablePolicy, createRequestHandler } from './main.mjs';
-import { createInMemoryEvidenceStore } from './evidence-store.mjs';
+import {
+  EvidenceStoreFault,
+  createInMemoryEvidenceLog,
+  createInMemoryEvidenceStore,
+} from '../../evidence-store/src/evidence-store.mjs';
 
 // Claim shapes from AC-20's measured token (GitHub Actions run 39384901065, 2026-10-20), recorded in
 // .ai/sprints/sprint-2/tasks/2.1.md; swap the values here and nowhere else.
@@ -415,4 +419,136 @@ test('a handler cannot be built without an authenticator', () => {
       }),
     /needs an authenticate function/,
   );
+});
+
+// ------------------------------------------------- task 2.2: the store's faults are not the caller's
+
+const rejecting = (error) => ({
+  append: async () => {
+    throw error;
+  },
+  list: async () => {
+    throw error;
+  },
+  listRecords: async () => {
+    throw error;
+  },
+});
+
+// AC-13(a). ADR-0002 Consequences: a store failure answered with the 400 body-fault envelope tells
+// the caller its valid record was malformed. Measured before this task: it was.
+test('a store that rejects an append is answered 503, never the 400 body-fault envelope', async () => {
+  for (const error of [
+    new EvidenceStoreFault('evidence store failed an append', { cause: new Error('ECONNREFUSED') }),
+    new Error('anything else the driver throws'),
+    Object.assign(new RangeError('not a record fault'), { code: 'XX000' }),
+  ]) {
+    const lines = [];
+    const { status, body } = await call(
+      seam(rejecting(error), { log: (event) => lines.push(event) }),
+      post(JSON.stringify(validEvidence)),
+    );
+    assert.equal(status, 503, error.message);
+    assert.deepEqual(body, { error: 'evidence store unavailable' });
+    assert.deepEqual(
+      lines.map((event) => event.reason),
+      ['store-unavailable'],
+    );
+    assert.doesNotMatch(JSON.stringify(lines), /ECONNREFUSED|driver|record fault/);
+  }
+});
+
+test('a TypeError from the store is a record fault, still answered 400', async () => {
+  const store = {
+    ...createInMemoryEvidenceStore(),
+    append: () => {
+      throw new TypeError('evidence record must be JSON-serialisable');
+    },
+  };
+  const { status, body } = await call(seam(store), post(JSON.stringify(validEvidence)));
+  assert.equal(status, 400);
+  assert.deepEqual(body, { error: 'request body must be valid JSON' });
+});
+
+// AC-13(b), SEC-6. Measured before this task: this rejection escaped the handler and exited the
+// process. The handler now answers it, and its own promise resolves.
+test('a store that rejects a read is answered 503 on GET /v1/indicators, and the handler resolves', async () => {
+  const handler = seam(rejecting(new EvidenceStoreFault('down')));
+  const { status, body } = await call(handler, get('/v1/indicators'));
+  assert.equal(status, 503);
+  assert.deepEqual(body, { error: 'evidence store unavailable' });
+  const health = await call(handler, { method: 'GET', url: '/health' });
+  assert.equal(health.status, 200, 'the process answers health whatever the store does');
+});
+
+test('GET /v1/indicators asks the store for the caller workspace only', async () => {
+  const filters = [];
+  const store = createInMemoryEvidenceStore();
+  const spy = { ...store, list: (filter) => (filters.push(filter), store.list(filter)) };
+  await call(seam(spy), get('/v1/indicators'));
+  assert.deepEqual(filters, [{ workspace_id: 'payments-art' }]);
+});
+
+// AC-12. A conflict is the caller's to resolve, and the answer names the key and nothing stored.
+test('a conflicting submission is answered 409 with the key, never the stored payload', async () => {
+  const store = createInMemoryEvidenceStore();
+  const handler = seam(store);
+  const first = { ...validEvidence, binding_used: 'STORED-binding' };
+  assert.equal((await call(handler, post(JSON.stringify(first)))).status, 202);
+  const lines = [];
+  const conflicted = seam(store, { log: (event) => lines.push(event) });
+  const { status, body } = await call(
+    conflicted,
+    post(JSON.stringify({ ...first, result: { pass: false } })),
+  );
+  assert.equal(status, 409);
+  assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments-art","PR-1"]' });
+  assert.doesNotMatch(JSON.stringify(body), /STORED|decision|pass/);
+  assert.deepEqual(
+    lines.map((event) => [event.status, event.reason]),
+    [[409, 'conflict']],
+  );
+  assert.equal(store.list().length, 1);
+  assert.equal(store.list()[0].evidence.result.pass, true, 'the first record stands');
+});
+
+// AC-16. PostgreSQL cannot hold U+0000 or an unpaired surrogate; the seam refuses them as the
+// caller's fault, before policy is read, and nothing is stored.
+test('a body holding U+0000 or an unpaired surrogate is 400 before policy is evaluated', async () => {
+  for (const raw of [
+    JSON.stringify({ ...validEvidence, change_id: 'PR-\u0000' }),
+    '{"schema_version":"evidence/0","change_id":"PR-\\ud800","tier":"T1"}',
+    '{"schema_version":"evidence/0","change_id":"PR-1","note":{"k\\u0000":1}}',
+  ]) {
+    let policyRead = false;
+    const watched = { ...policy };
+    Object.defineProperty(watched, 'policy_version', {
+      get() {
+        policyRead = true;
+        return 'guardrails/0';
+      },
+    });
+    const store = createInMemoryEvidenceStore();
+    const { status, body } = await call(seam(store, { policy: watched }), post(raw));
+    assert.equal(status, 400, raw);
+    assert.deepEqual(body, { error: 'request body must be valid JSON' });
+    assert.equal(policyRead, false, `policy was evaluated for ${raw}`);
+    assert.equal(store.list().length, 0);
+  }
+});
+
+// AC-8 at the seam: a redacted envelope is not a record, so the indicator does not count it.
+test('a redacted envelope is not counted by the indicator, and its replay is a duplicate', async () => {
+  const { store, redact } = createInMemoryEvidenceLog();
+  const handler = seam(store);
+  assert.equal((await call(handler, post(JSON.stringify(validEvidence)))).status, 202);
+  assert.equal((await call(handler, get('/v1/indicators'))).body.data.total_records, 1);
+  assert.equal(redact({ workspace_id: 'payments-art', change_id: 'PR-1' }), true);
+  assert.equal((await call(handler, get('/v1/indicators'))).body.data.total_records, 0);
+  const replay = await call(
+    handler,
+    post(JSON.stringify({ ...validEvidence, result: { pass: false } })),
+  );
+  assert.equal(replay.status, 202, 'there is no body left to conflict with');
+  assert.equal(store.list().length, 1);
 });

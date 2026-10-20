@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SDLC Control Plane API",
-    "version": "0.2.0",
-    "description": "The HTTP surface of the SDLC control plane. This document is the source of truth for the routes, the statuses each one can answer with, and the body shapes on either side of them; packages/control-plane-api/src/openapi.contract.test.mjs fails when it and the seam in packages/control-plane-api/src/main.mjs disagree - in both directions. A claim this document makes that the seam does not honour fails there, and so does a constraint this document drops that the seam still enforces: the required fields, the non-empty-string constraints and the enums on an evidence record are read out of this document and asserted against the running seam, so relaxing one here does not quietly widen the published contract.\n\nThe contract version above is the version of this document, not of the package and not of any evidence or policy schema.\n\nDivergences between this document and the running seam are recorded rather than hidden, because a contract that quietly overstates its implementation is worse than one that states its own limits. They come in two kinds. Six are behavioural and are listed below. The others are field-level: a handful of properties are documented from the upstream contract rather than enforced by this seam, and each one says so in its own description - affected_set and verification.verified element types, ai_assisted, ai_tool, and on a workspace, owners element types and solution. Read a constraint's own description before relying on it.\n\n1. Query strings are not ignored. Routing compares the raw request target, so GET /health?x=1 does not match the documented GET /health; it is answered by x-unmatched-request.\n\n2. There is no 405. A documented path addressed with an undeclared method - GET /v1/evidence, POST /health - is answered by x-unmatched-request, and no Allow header is sent.\n\n3. There is no 415. The request content-type is never inspected: a JSON body labelled text/plain is parsed and accepted exactly like one labelled application/json.\n\n4. Timestamps are not parsed. computed_at is documented as a non-empty string rather than a date-time, because the validator only checks that it is a non-empty string. No schema in this document carries a format keyword, and the checker that reads it rejects one as unsupported - so this document cannot silently acquire a constraint of a kind nothing here can check. That guarantee is about keywords the checker does not implement; it is not a claim that every constraint written in a supported keyword is enforced by the seam, which is what the field-level divergences above are about.\n\n5. A record nested deeper than the serialiser's recursion limit is refused, not stored. JSON.parse is iterative in V8 while JSON.stringify is recursive, so the seam can parse a body it cannot project into the append-only store. Such a record is refused with the 400 above and nothing is stored, but the caller is told its body is at fault for JSON that parsed. No acceptance escapes: past the limit the wire outcome is a 400 with an empty store at every depth. The ordering behind that is narrower than it looks. The seam projects the record before evaluating policy, so well past the limit it is refused before policy is read at all; but the store projects again one stack frame deeper, so in a one-level band at the limit the seam's projection fits and the store's does not, and there policy is evaluated for a record that is then refused. evaluateGuardrails is pure, so nothing observable follows from that. The threshold is a property of the runtime, not of this contract, and it moves with the host's stack size. A body over the 1 MiB ingress cap never reaches this point: it is answered 413 before it is parsed, so this band is reachable only by a deep record inside the cap.\n\n6. A conflicting replay is answered 202. A second submission from the same workspace with the same change_id and a different body is a conflict under ADR-0002: nothing is appended and the first record stands, but the seam answers it exactly as it answers an acceptance, with the decision computed for the new body. Assigning a conflict its own status is task 2.2's (ADR-0002); until then a 202 does not prove that the body sent is the body stored.\n\nAuthentication: every operation except GET /health requires a GitHub Actions OIDC workload token (securitySchemes.githubActionsOidc, ADR-0003), and every disposition and indicator is labelled self-attested (ADR-0004): it rests on the submitting workload's own claims, bound to its verified run identity, and the control plane verifies none of them.\n\n202 caveat: the 202 on POST /v1/evidence is not a promise of deferred work. The policy decision in the body is final, and the record is already in the in-process store when the response is written. Nothing is queued. Nothing is durable either - durable, idempotent intake is NFR-3.1 and is not built yet - so read the 202 as 'accepted into this process', not 'accepted for later processing'."
+    "version": "0.3.0",
+    "description": "The HTTP surface of the SDLC control plane. This document is the source of truth for the routes, the statuses each one can answer with, and the body shapes on either side of them; packages/control-plane-api/src/openapi.contract.test.mjs fails when it and the seam in packages/control-plane-api/src/main.mjs disagree - in both directions. A claim this document makes that the seam does not honour fails there, and so does a constraint this document drops that the seam still enforces: the required fields, the non-empty-string constraints and the enums on an evidence record are read out of this document and asserted against the running seam, so relaxing one here does not quietly widen the published contract.\n\nThe contract version above is the version of this document, not of the package and not of any evidence or policy schema.\n\nDivergences between this document and the running seam are recorded rather than hidden, because a contract that quietly overstates its implementation is worse than one that states its own limits. They come in two kinds. Six are behavioural and are listed below. The others are field-level: a handful of properties are documented from the upstream contract rather than enforced by this seam, and each one says so in its own description - affected_set and verification.verified element types, ai_assisted, ai_tool, and on a workspace, owners element types and solution. Read a constraint's own description before relying on it.\n\n1. Query strings are not ignored. Routing compares the raw request target, so GET /health?x=1 does not match the documented GET /health; it is answered by x-unmatched-request.\n\n2. There is no 405. A documented path addressed with an undeclared method - GET /v1/evidence, POST /health - is answered by x-unmatched-request, and no Allow header is sent.\n\n3. There is no 415. The request content-type is never inspected: a JSON body labelled text/plain is parsed and accepted exactly like one labelled application/json.\n\n4. Timestamps are not parsed. computed_at is documented as a non-empty string rather than a date-time, because the validator only checks that it is a non-empty string. No schema in this document carries a format keyword, and the checker that reads it rejects one as unsupported - so this document cannot silently acquire a constraint of a kind nothing here can check. That guarantee is about keywords the checker does not implement; it is not a claim that every constraint written in a supported keyword is enforced by the seam, which is what the field-level divergences above are about.\n\n5. A record nested deeper than the serialiser's recursion limit is refused, not stored. JSON.parse is iterative in V8 while JSON.stringify is recursive, so the seam can parse a body it cannot project into the append-only store. Such a record is refused with the 400 above and nothing is stored, but the caller is told its body is at fault for JSON that parsed. No acceptance escapes: past the limit the wire outcome is a 400 with an empty store at every depth. The ordering behind that is narrower than it looks. The seam projects the record before evaluating policy, so well past the limit it is refused before policy is read at all; but the store projects again one stack frame deeper, so in a one-level band at the limit the seam's projection fits and the store's does not, and there policy is evaluated for a record that is then refused. evaluateGuardrails is pure, so nothing observable follows from that. The threshold is a property of the runtime, not of this contract, and it moves with the host's stack size. The same 400, with the same ordering, refuses a record holding U+0000 or a string or key that is not well-formed UTF-16 (an unpaired surrogate) anywhere in it: JSON.parse accepts both, and the durable evidence store can hold neither unchanged, so the record is refused before policy is evaluated and nothing is stored. A body over the 1 MiB ingress cap never reaches this point: it is answered 413 before it is parsed, so this band is reachable only by a deep record inside the cap.\n\n6. A replay is answered with the decision computed for the replay. A second submission from the same workspace with the same change_id and the same body is a duplicate: nothing is appended, the first record stands, and the answer is a 202 carrying the decision computed for this submission, not the stored one. The same body means the same JSON value - key order is not significant, so two bodies differing only in the order their keys were written are the same submission - and once a record's payload has been redacted, any body under its key is a duplicate. The policy is loaded at startup, so after a restart under a changed policy a replay's decision may name a different policy_id than the stored record does, or be a 422 for a record the store holds as accepted; the stored record is the first acceptance. A different body under the same key is a conflict, answered 409.\n\nAuthentication: every operation except GET /health requires a GitHub Actions OIDC workload token (securitySchemes.githubActionsOidc, ADR-0003), and every disposition and indicator is labelled self-attested (ADR-0004): it rests on the submitting workload's own claims, bound to its verified run identity, and the control plane verifies none of them.\n\n202 caveat: the 202 on POST /v1/evidence is not a promise of deferred work. The policy decision in the body is final, and the record is in the durable evidence store before the response is written: the statement that stored it - for a replay, the earlier one - completed and committed first. Nothing is queued. What a committed write then survives - disk flushes, replication, backups - is the database deployment's configuration, which this service does not control."
   },
   "servers": [
     {
@@ -97,7 +97,7 @@
             }
           },
           "503": {
-            "description": "The control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token; the fault is the control plane's, not the caller's credential. It is also the answer to an unexpected fault inside verification. Retrying later is the right response. Decided before any body byte is read.",
+            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the route faulted in some other way. The body names no cause beyond its error string, and the connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {
@@ -114,7 +114,7 @@
       "get": {
         "operationId": "getIndicators",
         "summary": "Summarise the caller's workspace's accepted evidence by tier and passing result.",
-        "description": "Counts the evidence this process accepted from the workspace the caller is authorized for, and from no other. Records refused at 400, 413 or 422 are never counted, so the summary describes what passed the contract and the policy, not what was submitted, and every count is of claims the workspace made, labelled self-attested (ADR-0004), not of verified outcomes. The summary is descriptive only: it carries its own disclaimer field and never expresses a funding, staffing, prioritisation or release decision (FR-3.2, FR-4.1). The counts live in process memory and reset with it.",
+        "description": "Counts the evidence the durable evidence store holds for the workspace the caller is authorized for, and for no other. Records refused at 400, 409, 413 or 422 are never counted, and neither is a record whose payload has been redacted, so the summary describes what passed the contract and the policy, not what was submitted, and every count is of claims the workspace made, labelled self-attested (ADR-0004), not of verified outcomes. The summary is descriptive only: it carries its own disclaimer field and never expresses a funding, staffing, prioritisation or release decision (FR-3.2, FR-4.1).",
         "security": [
           {
             "githubActionsOidc": []
@@ -162,7 +162,7 @@
             }
           },
           "503": {
-            "description": "The control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token; the fault is the control plane's, not the caller's credential. It is also the answer to an unexpected fault inside verification. Retrying later is the right response. Decided before any body byte is read.",
+            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store could not be read - unreachable, refusing the connection, or no answer within 5 seconds; or the route faulted in some other way. The body names no cause beyond its error string, and the connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {
@@ -179,7 +179,7 @@
       "post": {
         "operationId": "submitEvidence",
         "summary": "Submit an evidence/0 record for contract validation and policy evaluation.",
-        "description": "Validates the record against the supported evidence/0 subset and then evaluates it against the approved guardrail policy (FR-2.1, FR-2.2, FR-3.1). Only a record that passes both is stored and counted. The caller must present a GitHub Actions OIDC workload token authorized for a registered workspace W (NFR-2.1, ADR-0003); the stored record is attributed to W and to the token's verified run identity, never to anything the body says. The answer is decided in this order: 404 for an unmatched request, then 401 or 503, 403, 429 and 413, then 400, 422 or 202. The first five statuses (404, 401, 503, 403 and 429) are decided from the request line and headers alone, before any body byte is read, and each of them closes the connection after the response is written. So does 413, and so does any response sent while part of the declared body is still unread, whatever the request's Expect header says. No response promises to keep the connection open.",
+        "description": "Validates the record against the supported evidence/0 subset and then evaluates it against the approved guardrail policy (FR-2.1, FR-2.2, FR-3.1). Only a record that passes both is stored and counted. The caller must present a GitHub Actions OIDC workload token authorized for a registered workspace W (NFR-2.1, ADR-0003); the stored record is attributed to W and to the token's verified run identity, never to anything the body says. The answer is decided in this order: 404 for an unmatched request, then 401 or 503, 403, 429 and 413, then 400, 422, 409, 503 or 202. 404, 401, 403, 429 and a 503 for an unavailable key set are decided from the request line and headers alone, before any body byte is read, and each of them closes the connection after the response is written. So does 413; so does a 503 for a store or handler fault, which is decided after the body has been read; and so does any response sent while part of the declared body is still unread, whatever the request's Expect header says. No response promises to keep the connection open.",
         "requestBody": {
           "required": true,
           "description": "An evidence/0 record. The request content-type is never inspected and there is no 415: any body that JSON.parse accepts is processed, whatever it is labelled. A body that JSON.parse rejects is a 400.",
@@ -198,7 +198,7 @@
         ],
         "responses": {
           "202": {
-            "description": "The record satisfied both the evidence/0 contract and the approved policy, and has been stored and counted. The decision in the body is final and was made before this response was written - see the 202 caveat in info.description. The record is attributed to the caller's workspace; a conflicting replay is also answered 202 - see divergence 6.",
+            "description": "The record satisfied both the evidence/0 contract and the approved policy, and is stored and counted. The decision in the body is final and was made before this response was written - see the 202 caveat in info.description. The record is attributed to the caller's workspace. A replay of an accepted submission - the same body, byte for byte or differing only in key order - is a duplicate and is answered 202 the same way; nothing is appended - see divergence 6.",
             "content": {
               "application/json": {
                 "schema": {
@@ -208,7 +208,7 @@
             }
           },
           "400": {
-            "description": "The body is not parseable JSON, or evaluating it faulted. No policy disposition is claimed, because none was reached.",
+            "description": "The body is not parseable JSON, cannot be stored unchanged - it holds U+0000, or a string or key that is not well-formed UTF-16, or it is nested past the serialiser's limit (divergence 5) - or evaluating it faulted. No policy disposition is claimed, because none was reached, and nothing is stored.",
             "content": {
               "application/json": {
                 "schema": {
@@ -243,6 +243,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A different body under a key already held: an accepted record from the same workspace (taken from the verified token, never from the body) has the same change_id and a different payload. Nothing is appended and the first record stands (ADR-0002). The body names the key - the caller's own workspace and change_id - and nothing else: never the stored payload and no decision. A replay of a record whose payload has been redacted is never a conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictResponse"
                 }
               }
             }
@@ -287,7 +297,7 @@
             }
           },
           "503": {
-            "description": "The control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token; the fault is the control plane's, not the caller's credential. It is also the answer to an unexpected fault inside verification. Retrying later is the right response. Decided before any body byte is read.",
+            "description": "The fault is the control plane's, not the caller's, and retrying later is the right response. Either the control plane has no unexpired copy of the issuer's key set and could not fetch one, so it cannot verify any token - decided before any body byte is read, and also the answer to an unexpected fault inside verification; or the evidence store did not take the write - unreachable, refusing the connection, or no answer within 5 seconds; or the route faulted in some other way. Retrying is safe: intake is idempotent, so a submission whose write did commit before the fault is answered as a duplicate (202). The body names no cause beyond its error string, and the connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {
@@ -332,6 +342,22 @@
           "error": {
             "type": "string",
             "description": "A short human-readable reason. Not a stable identifier; callers must branch on the status code, not on this text."
+          }
+        }
+      },
+      "ConflictResponse": {
+        "type": "object",
+        "description": "The answer to a conflict (409). Closed: the control plane constructs it, and it carries the key and nothing stored.",
+        "required": ["error", "idempotency_key"],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": ["conflict"]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "The key the submission collided on: JSON.stringify([workspace_id, change_id]), the workspace being the caller's own (ADR-0002)."
           }
         }
       },

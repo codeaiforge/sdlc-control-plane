@@ -17,7 +17,7 @@ import {
   SUBMISSION_QUOTA_WINDOW_MS,
   createSubmissionQuota,
 } from './admission.mjs';
-import { createInMemoryEvidenceStore } from './evidence-store.mjs';
+import { createInMemoryEvidenceStore } from '../../evidence-store/src/evidence-store.mjs';
 import { createApp, createRequestHandler, createSeamServer, routes } from './main.mjs';
 
 // Claim shapes from AC-20's measured token (GitHub Actions run 39384901065, 2026-10-20), recorded in
@@ -644,7 +644,7 @@ test('the quota answers whole seconds, never zero', () => {
 });
 
 test('createApp sets headersTimeout 10000 and requestTimeout 30000', () => {
-  const server = createApp({ log: () => {} });
+  const server = createApp({ evidenceStore: createInMemoryEvidenceStore(), log: () => {} });
   assert.equal(server.headersTimeout, 10000);
   assert.equal(server.requestTimeout, 30000);
   assert.equal(server.listening, false, 'createApp must not listen');
@@ -655,9 +655,17 @@ test('createApp sets headersTimeout 10000 and requestTimeout 30000', () => {
 // 10 s and 30 s the bound to within a second. A behavioural test would take 10 s: the check runs
 // on Node's own monotonic clock, which mock.timers cannot advance.
 test('createApp checks the read timeouts every 1000 ms, not every 30 s', () => {
-  const server = createApp({ log: () => {} });
+  const server = createApp({ evidenceStore: createInMemoryEvidenceStore(), log: () => {} });
   assert.equal(server.connectionsCheckingInterval, 1000);
   assert.equal(createSeamServer(seam()).connectionsCheckingInterval, 1000);
+});
+
+// D-15: the service has no default store, so a server built without one does not exist - rather
+// than exist and keep evidence in process memory. The durable store is opened by main.mjs's entry
+// block; tests inject theirs.
+test('createApp cannot be built without an evidence store', () => {
+  for (const options of [undefined, {}, { evidenceStore: null }, { log: () => {} }])
+    assert.throws(() => createApp(options), /createApp needs an evidence store/);
 });
 
 test('the cap, timeouts and quota are literal constants', () => {
@@ -896,11 +904,89 @@ test("a duplicate and a conflict keep the first envelope's submitted_by", async 
     handler,
     postAs({ ...validEvidence, result: { pass: false } }, { run_id: '3' }),
   );
-  // Divergence 6: both are answered 202 until 2.2 assigns a conflict its status.
+  // A replay is a duplicate, answered 202; a different body under the same key is a conflict,
+  // answered 409 (task 2.2). Neither is a second submitter.
   assert.equal(replay.status, 202);
-  assert.equal(conflict.status, 202);
+  assert.equal(conflict.status, 409);
   const stored = store.list();
   assert.equal(stored.length, 1);
   assert.equal(stored[0].submitted_by.run_id, '1');
   assert.equal(stored[0].evidence.result.pass, true);
+});
+
+// ---------------------------------------------------------------- AC-13: faults are answered
+
+// 2.1 SEC-6, measured: a store whose list() rejected took the process down through GET
+// /v1/indicators, because the rejection escaped the handler. A rejection anywhere in an
+// authenticated route is now answered, and the handler's promise resolves.
+test('a throwing quota is answered 503 handler-fault, and the handler promise resolves', async () => {
+  const lines = [];
+  const handler = seam({
+    quota: {
+      take: () => {
+        throw new Error('CANARY quota backend down');
+      },
+    },
+    log: (event) => lines.push(event),
+  });
+  const { status, body, events } = await call(handler, postAs(validEvidence));
+  assert.equal(status, 503);
+  assert.deepEqual(body, { error: 'service unavailable' });
+  assert.deepEqual(events, ['writeHead', 'end', 'destroy']);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].reason, 'handler-fault');
+  assert.doesNotMatch(JSON.stringify(lines), /CANARY/);
+});
+
+test('a fault after the response is on the wire closes the connection and answers nothing twice', async () => {
+  const store = createInMemoryEvidenceStore();
+  const handler = seam({ store, log: () => {} });
+  const req = getAs('/v1/workspaces');
+  const events = [];
+  req.destroy = () => events.push('destroy');
+  await handler(req, {
+    headersSent: true,
+    writeHead: () => {
+      events.push('writeHead');
+      throw new Error('socket gone');
+    },
+    end: () => events.push('end'),
+  });
+  assert.deepEqual(events, ['writeHead', 'destroy']);
+});
+
+test('on a real socket, a store that rejects every call never produces an unhandled rejection', async (t) => {
+  const unhandled = [];
+  const listener = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', listener);
+  t.after(() => process.off('unhandledRejection', listener));
+  const down = async () => {
+    throw new Error('ECONNREFUSED');
+  };
+  const store = { append: down, list: down, listRecords: down };
+  await withServer(seam({ store }), async (server) => {
+    for (const [path, wire] of [
+      [
+        '/v1/indicators',
+        `GET /v1/indicators HTTP/1.1\r\nHost: x\r\nAuthorization: ${bearer()}\r\n\r\n`,
+      ],
+      [
+        '/v1/evidence',
+        `POST /v1/evidence HTTP/1.1\r\nHost: x\r\nAuthorization: ${bearer()}\r\n` +
+          `Content-Length: ${Buffer.byteLength(JSON.stringify(validEvidence))}\r\n\r\n${JSON.stringify(validEvidence)}`,
+      ],
+      ['/health', 'GET /health HTTP/1.1\r\nHost: x\r\n\r\n'],
+    ]) {
+      const client = await rawClient(server);
+      client.socket.write(wire);
+      await until(() => statusLines(client.text).length === 1, path);
+      assert.deepEqual(
+        statusLines(client.text),
+        [path === '/health' ? 'HTTP/1.1 200' : 'HTTP/1.1 503'],
+        path,
+      );
+    }
+  });
+  await delay(20);
+  assert.deepEqual(unhandled, []);
 });

@@ -1,0 +1,21 @@
+{
+  "name": "evidence-store",
+  "sourceRoot": "packages/evidence-store/src",
+  "projectType": "library",
+  "tags": ["scope:persistence", "criticality:critical"],
+  "targets": {
+    "test": { "command": "node --test packages/evidence-store/src/*.test.mjs" },
+    "integration": {
+      "command": "node --test packages/evidence-store/src/*.integration.mjs",
+      "cache": false
+    },
+    "typecheck": {
+      "command": "for f in packages/evidence-store/src/*.mjs; do node --check \"$f\" || exit 1; done"
+    },
+    "build": {
+      "command": "for f in packages/evidence-store/src/*.mjs; do node --check \"$f\" || exit 1; done"
+    },
+    "migrate": { "command": "node packages/evidence-store/src/migrate.mjs migrate" },
+    "bootstrap": { "command": "node packages/evidence-store/src/migrate.mjs bootstrap" }
+  }
+}
