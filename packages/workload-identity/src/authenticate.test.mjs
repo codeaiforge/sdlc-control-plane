@@ -9,18 +9,20 @@ import {
 } from './authenticate.mjs';
 import { createKeySet } from './key-set.mjs';
 
-// Claim shapes from AC-20's measured token. PROVISIONAL until the measurement in
-// .ai/sprints/sprint-2/tasks/2.1.md is recorded; swap the values here and nowhere else.
+// Claim shapes from AC-20's measured token (GitHub Actions run 39384901065, 2026-10-20), recorded in
+// .ai/sprints/sprint-2/tasks/2.1.md; swap the values here and nowhere else.
 const MEASURED = {
-  provisional: true,
-  lifetime_s: 300, // exp - iat
-  nbf_before_iat_s: 600,
-  job_workflow_claims_outside_reusable: false,
-  run_id: '18203345671', // digits only; length provisional
+  provisional: false,
+  lifetime_s: 300, // exp - iat, measured
+  nbf_before_iat_s: 300, // iat - nbf, measured (ADR-0003's example payload had 600)
+  job_workflow_claims_outside_reusable: true, // present, equal to workflow_ref / workflow_sha
+  run_id: '39384901065',
   run_attempt: '1',
-  sha: 'a'.repeat(40),
+  sha: '445079d0e62a947dc442832eaeca02e99e673d98',
+  // Measured equal to sha (the run built the commit holding the workflow); kept distinct here so a
+  // test cannot pass by reading the wrong claim.
   job_workflow_sha: 'b'.repeat(40),
-  actor_id: '1000001',
+  actor_id: '3251178',
 };
 
 test(
