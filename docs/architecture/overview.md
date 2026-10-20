@@ -37,9 +37,9 @@ flowchart TB
 
 ## Runtime boundaries
 
-`contracts` owns validation and version recognition. `workspace-registry` owns the static identity and ownership metadata of a workspace. `guardrail-policy` evaluates a received record against an approved policy and returns a deterministic recommendation. `indicators` derives descriptive metrics only. `workload-identity` verifies a workload's OIDC token. `control-plane-api` composes them behind a small HTTP seam. All are Nx projects under `packages/` and own a `project.json`; the API is the sole initial deployable artifact, while the others are libraries.
+`contracts` owns validation and version recognition. `workspace-registry` owns the static identity and ownership metadata of a workspace. `guardrail-policy` evaluates a received record against an approved policy and returns a deterministic recommendation. `indicators` derives descriptive metrics only. `workload-identity` verifies a workload's OIDC token. `evidence-store` is the append-only evidence port and its PostgreSQL adapter, migrations and database roles. `control-plane-api` composes them behind a small HTTP seam. All are Nx projects under `packages/` and own a `project.json`; the API is the sole initial deployable artifact, while the others are libraries.
 
-`workload-identity` is the one package that reaches an external system: it fetches GitHub's published key set from a pinned URL. No package depends on a portfolio or finance provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.
+Two packages reach an external system: `workload-identity` fetches GitHub's published key set from a pinned URL, and `evidence-store` connects to PostgreSQL, the durable evidence store. No package depends on a portfolio or finance provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.
 
 ## Non-goals
 
