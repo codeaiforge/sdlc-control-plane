@@ -130,7 +130,7 @@ through `openDurableEvidenceStore()`, and the process refuses to start without i
 unusable configuration, an unreachable server, unverified TLS to a non-loopback host, a database
 role the startup check refuses (an elevated attribute, membership of any other role, ownership of
 the database or of anything in the `evidence` schema, or a grant that could change or remove a
-stored row or set its `received_at` or `redacted_at`; the stack profile's `Access control` row
+row of the envelope log or its redaction table, or set a row's `received_at` or `redacted_at`; the stack profile's `Access control` row
 lists each), or a schema that is not the bundled one.
 
 Measured behaviour of the running seam at `4f2724f`, before task 2.1, quoted because the abuse
