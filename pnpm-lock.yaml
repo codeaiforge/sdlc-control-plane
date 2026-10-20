@@ -12,6 +12,10 @@ overrides:
 importers:
 
   .:
+    dependencies:
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
     devDependencies:
       nx:
         specifier: 22.7.12
@@ -432,6 +436,10 @@ packages:
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
+
+  postgres@3.4.9:
+    resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
+    engines: {node: '>=12'}
 
   prettier@3.9.8:
     resolution: {integrity: sha512-WRFq3Wn3WId7LLROfMLdH7xaFr2jR62wU8nLO6rQUOLOxNZUviyJQs1M0iIhLexSFy+L+w0ch66wtoO2jRjG0A==}
@@ -1029,6 +1037,8 @@ snapshots:
   path-key@3.1.1: {}
 
   picocolors@1.1.1: {}
+
+  postgres@3.4.9: {}
 
   prettier@3.9.8: {}
 
