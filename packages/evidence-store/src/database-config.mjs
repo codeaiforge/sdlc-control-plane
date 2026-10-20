@@ -134,8 +134,9 @@ export function connect(env = process.env) {
 // The service's only constructor for its store. Refuses - exit 1, one fixed line from the caller -
 // on a configuration it cannot use safely, an unreachable server, a connection that did not
 // negotiate TLS where TLS is required, a role assertServiceRole refuses (an elevated attribute, a
-// membership of any other role, an ownership, or a grant that could change or remove a stored row
-// or set its received_at or redacted_at - its comment lists each), or a schema that is not exactly
+// membership of any other role, an ownership, or a grant that could change or remove a row of the
+// envelope log or its redaction table, or set a row's received_at or redacted_at - its comment
+// lists each), or a schema that is not exactly
 // the one bundled. Then constructs the adapter with requireWorkspace, always.
 export async function openDurableEvidenceStore({ env = process.env, client = postgres } = {}) {
   const { options, loopback } = readDatabaseConfig(env);
