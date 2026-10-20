@@ -23,14 +23,38 @@ pnpm install
 git config core.hooksPath .githooks   # enables the commit-msg provenance check
 pnpm test
 pnpm nx graph
-pnpm start:api
 ```
 
-CI also runs `pnpm format:check`, `pnpm test:controls` and `pnpm build`; run them before pushing.
+`pnpm test` needs no database. CI also runs `pnpm audit`, `pnpm format:check`, `pnpm test:controls`, `pnpm test:integration` (against PostgreSQL, below) and `pnpm build`; run them before pushing.
+
+### Integration tests
+
+The integration tests run against a real PostgreSQL 16 server, never a simulator, and fail rather than skip without one. Locally:
+
+```sh
+docker run --rm -d --name evidence-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:5432:5432 postgres:16-alpine
+PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=postgres pnpm test:integration
+docker stop evidence-pg
+```
+
+The `PG*` variables name a cluster administrator; the harness creates the service's roles and a fresh database per test. Use `127.0.0.1`, not `localhost`: any host that is not a literal loopback address requires verified TLS.
+
+### Running the service
+
+The service runs only on its durable store, PostgreSQL 16, and refuses to start without it. Once per cluster, as an administrator, create the roles and the database, then give each role a password out of band; then apply the schema as `evidence_owner` and serve as `evidence_app`:
+
+```sh
+PGHOST=... PGUSER=<admin> PGPASSWORD=... PGDATABASE=postgres pnpm nx run evidence-store:bootstrap --database sdlc_control_plane
+#   then, as the administrator: ALTER ROLE evidence_owner PASSWORD '...'; (and evidence_app, evidence_retention, evidence_audit)
+PGHOST=... PGUSER=evidence_owner PGPASSWORD=... PGDATABASE=sdlc_control_plane pnpm nx run evidence-store:migrate
+PGHOST=... PGUSER=evidence_app PGPASSWORD=... PGDATABASE=sdlc_control_plane pnpm start:api
+```
+
+Connection settings are `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLROOTCERT`, and nothing else. The service refuses to start, with one line naming the reason, on an unusable configuration, an unreachable server, a non-loopback host without verified TLS, a role that could rewrite evidence, or a schema that is not the one it bundles. What the roles may do, and what is left to whoever deploys it, is the `Access control` row of [docs/specs/stack.md](docs/specs/stack.md).
 
 The HTTP surface — routes, statuses and bodies — is [packages/control-plane-api/openapi.json](packages/control-plane-api/openapi.json), and a contract test fails when it and the seam disagree.
 
-The API is authenticated by GitHub Actions OIDC ([ADR-0003](docs/adr/0003-github-actions-oidc-workload-authorization.md)): every route but `GET /health` needs a workload token bound to a registered workspace, and each caller sees only its own workspace. It is still in-memory: accepted evidence and the submission quota live in one process and a restart loses them. Every hop that carries the token needs TLS, and the API should not be exposed until task 2.2 makes intake durable. The shipped `config/control-plane/workspaces.json` registers one example workspace, suspended, so out of the box no token is authorized. Current status is in the latest `docs/specs/sprint-*-progress.md`.
+The API is authenticated by GitHub Actions OIDC ([ADR-0003](docs/adr/0003-github-actions-oidc-workload-authorization.md)): every route but `GET /health` needs a workload token bound to a registered workspace, and each caller sees only its own workspace. Accepted evidence is stored durably in PostgreSQL and a replay is answered as a duplicate across restarts (task 2.2); the submission quota is still per process. Every hop that carries the token needs TLS, and so does the database connection unless it is on loopback. The shipped `config/control-plane/workspaces.json` registers one example workspace, suspended, so out of the box no token is authorized. Current status is in the latest `docs/specs/sprint-*-progress.md`.
 
 ## Repository authority
 
