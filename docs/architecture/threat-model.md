@@ -399,7 +399,13 @@ role's `INSERT` omits `redacted_at`, because the pairing `CHECK` alone admits a 
 already redacted, and `received_at`, so the database's clock, not the application, sets each row's
 retention clock. What remains is the trust root: `evidence_owner` and any cluster superuser can
 still disable the trigger or re-grant themselves `DELETE` - a credential-custody requirement on the
-deploy target, stated in the stack profile's `Access control` row. And the trigger checks the form
+deploy target, stated in the stack profile's `Access control` row. So is a member of the built-in
+`pg_write_all_data` role once it is also granted `CONNECT`: it can forge or delete
+`evidence_redaction` rows, back-date a row's `received_at` and rewrite `schema_migrations`
+(measured). A stolen `evidence_app` credential rewrites nothing, but it can append records for any
+workspace, attributed to anyone, and so claim another workspace's `(workspace_id, change_id)` first:
+that workspace's real submission is then answered 409 for good. Only the token check in front of
+the seam binds a record to its workspace. And the trigger checks the form
 of a redaction, not the age of the row: whoever holds the `evidence_retention` credential can
 redact every live payload at once, irreversibly, each leaving an `evidence_redaction` row. Holding
 redaction to the 90-day window is task 2.5's job, and this residual is an input to it.
