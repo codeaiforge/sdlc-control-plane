@@ -7,9 +7,9 @@
 -- the three non-owner roles. Stage two (`migrate`) runs as evidence_owner and never as this.
 --
 -- Four roles, fixed names, created without passwords: the operator sets each one out of band
--- (ALTER ROLE ... PASSWORD), so no credential is ever written in this repository. Re-running is a
--- no-op: a role that already exists is left as it is, and the runner and the service refuse to
--- run as a role that turns out to be a superuser.
+-- (psql's \password, which sends only a hash), so no credential is ever written in this
+-- repository. Re-running is a no-op: a role that already exists is left as it is, and the runner
+-- and the service refuse to run as a role that turns out to be a superuser.
 --
 --   evidence_owner      owns every object; used only by `migrate`
 --   evidence_app        the service: INSERT and SELECT on the envelope log, owns nothing
