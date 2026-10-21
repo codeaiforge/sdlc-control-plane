@@ -409,7 +409,9 @@ The durable store and every backup of it hold payloads and identifiers classifie
 roles can read a payload - `evidence_app`, which serves the indicators, and `evidence_owner`, which
 owns the table - and the retention and audit roles cannot; the stack profile's `Access control`
 row records who and why, and a grants snapshot compares the server's real ACLs with that list. A
-cluster superuser, backups, replicas and operator copies are outside anything this code controls,
+cluster superuser, a member of a built-in read role such as `pg_read_all_data` once it is also
+granted `CONNECT` (two administrator acts the grants snapshot does not see), backups, replicas and
+operator copies are outside anything this code controls,
 and are stated there as requirements on whoever selects the deploy target, not as properties.
 
 **ABU-14 — abuse leaves no trace. Reachable before task 2.1 (at `4f2724f`, from the absence of
