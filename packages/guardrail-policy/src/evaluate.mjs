@@ -28,6 +28,17 @@ export function evaluateGuardrails(evidence, policy) {
   }
   // Every rule is read as rules.<key>: policy-conformance.test.mjs reads those names out of this
   // source and holds them equal to the keys the policy validator admits.
+  // A rules block that is present but not a plain object is refused the same way: read as
+  // "no rules" it would accept every record.
+  if (
+    policy.rules !== undefined &&
+    (policy.rules === null || typeof policy.rules !== 'object' || Array.isArray(policy.rules))
+  )
+    return {
+      accepted: false,
+      disposition: 'rejected',
+      reasons: ['unsupported guardrail policy: rules is not an object'],
+    };
   const rules = policy.rules ?? {};
   // A list rule that is present but not a list is refused as the version gate refuses a policy:
   // read as off it would accept, and read as a list a string would match by substring. The service

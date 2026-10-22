@@ -195,6 +195,23 @@ for (const [rule, value] of [
   });
 }
 
+// Review N2-2: the same one level up. A rules block that is not a plain object is not "no rules".
+test('rules present but not an object is an unsupported policy, not accepted', () => {
+  for (const malformed of ['T1', 42, [], null]) {
+    assert.deepEqual(
+      evaluateGuardrails(evidence, { ...policy, rules: malformed }),
+      {
+        accepted: false,
+        disposition: 'rejected',
+        reasons: ['unsupported guardrail policy: rules is not an object'],
+      },
+      JSON.stringify(malformed),
+    );
+  }
+  const { rules: _dropped, ...rest } = policy;
+  assert.equal(evaluateGuardrails(evidence, rest).accepted, true, 'control: absent rules accept');
+});
+
 test('the version gate reads the contracts constant, not a literal', () => {
   const source = readFileSync(new URL('./evaluate.mjs', import.meta.url), 'utf8');
   assert.match(source, /policy\?\.policy_version !== GUARDRAIL_SCHEMA_VERSION/);
