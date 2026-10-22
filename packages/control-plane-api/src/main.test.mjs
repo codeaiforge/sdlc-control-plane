@@ -386,6 +386,16 @@ test('a policy edited after the handler is built changes no decision', async () 
   assert.notDeepEqual(assertUsablePolicy(mine), [], 'control: the edit made it unusable');
 });
 
+// Review N2-1: a policy that refers to itself is refused as unusable, not by a stack overflow.
+test('a self-referencing policy is refused as unusable', () => {
+  const cyclic = structuredClone(policy);
+  cyclic.self = cyclic;
+  assert.throws(() => seam(undefined, { policy: cyclic }), {
+    name: 'TypeError',
+    message: /needs a usable guardrail policy: .*self/,
+  });
+});
+
 test('loadGuardrailPolicy returns a policy frozen at every level', () => {
   const loaded = loadGuardrailPolicy();
   for (const level of [loaded, loaded.approval, loaded.rules, loaded.rules.blocked_tiers])

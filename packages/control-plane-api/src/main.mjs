@@ -42,12 +42,14 @@ export function assertUsablePolicy(candidate) {
 
 // What a seam holds: a deep-frozen copy, and the copy is what the validator checks, so the policy
 // the validator accepted is the one every request is evaluated under, whatever a caller does with
-// its own object afterwards. A value structuredClone cannot copy throws here.
+// its own object afterwards. A value structuredClone cannot copy throws here. Each object is
+// frozen before its children are visited, and a frozen one is not revisited, so a policy that
+// refers to itself reaches the validator instead of exhausting the stack.
 function heldPolicy(candidate) {
   const freeze = (value) => {
-    if (value !== null && typeof value === 'object') {
-      for (const child of Object.values(value)) freeze(child);
+    if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
       Object.freeze(value);
+      for (const child of Object.values(value)) freeze(child);
     }
     return value;
   };
