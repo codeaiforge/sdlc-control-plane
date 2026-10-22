@@ -95,13 +95,49 @@ test('P4: docs/contracts.md says what checks the policy, and names only real fie
     assert.ok(section.includes(name), `the section no longer names ${name}`);
   assert.match(section, /No route serves it/);
   assert.doesNotMatch(section, /nothing checks|no contract test|distributed only after/i);
+  assert.deepEqual(identifiersNotFields(section), []);
+});
+
+// Every identifier the section puts in code font, a dotted one segment by segment, is a field
+// guardrails/0 has or a name in this list. A span that is not an identifier - a path, a version
+// such as guardrails/0, a command - names no field and is not read.
+const NON_FIELD_IDENTIFIERS = new Set(['validateGuardrailPolicy']);
+function identifiersNotFields(section) {
   const known = new Set([
     ...GUARDRAIL_POLICY_KEYS,
     ...GUARDRAIL_APPROVAL_KEYS,
     ...GUARDRAIL_RULE_KEYS,
   ]);
-  for (const [, token] of section.matchAll(/`([a-z0-9]+(?:_[a-z0-9]+)+)`/g))
-    assert.ok(known.has(token), `the section names ${token}, which guardrails/0 does not have`);
+  const unknown = [];
+  const seen = new Set();
+  for (const [, span] of section.matchAll(/`([^`\n]+)`/g)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(span)) continue;
+    if (NON_FIELD_IDENTIFIERS.has(span)) continue;
+    for (const segment of span.split('.')) {
+      seen.add(segment);
+      if (!known.has(segment)) unknown.push(segment);
+    }
+  }
+  // The section names both blocks today; a scan that stops seeing them has stopped reading.
+  for (const name of ['approval', 'rules'])
+    assert.ok(seen.has(name), `the field scan no longer reads \`${name}\` in the section`);
+  return unknown;
+}
+
+test('P4: the field scan refuses a field guardrails/0 does not have', () => {
+  const page = readFileSync(CONTRACTS_PAGE, 'utf8');
+  const start = page.indexOf('\n## Outbound: guardrail binding\n');
+  const end = page.indexOf('\n## ', start + 1);
+  const section = page.slice(start, end);
+  assert.deepEqual(identifiersNotFields(section), [], 'control: the shipped section passes');
+  for (const [stray, named] of [
+    ['`owner`', ['owner']],
+    ['`approver`', ['approver']],
+    ['`approval.owner`', ['owner']],
+    ['`rules.blocked_tier`', ['blocked_tier']],
+  ])
+    assert.deepEqual(identifiersNotFields(`${section} ${stray}`), named, stray);
+  assert.throws(() => identifiersNotFields('`policy_id` only'), /no longer reads `approval`/);
 });
 
 test('P5: the drift checks refuse a drifted copy of the shipped file', () => {
