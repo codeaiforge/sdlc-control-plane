@@ -121,10 +121,17 @@ const token = (overrides = {}) =>
 const policy = {
   policy_version: 'guardrails/0',
   policy_id: 'test-policy@1',
+  effective_from: '2026-01-01T00:00:00Z',
+  approval: {
+    decision_id: 'TEST-DECISION-1',
+    approved_by: 'test-approver',
+    approved_at: '2026-01-01T00:00:00Z',
+  },
   rules: {
     minimum_evidence_schema: 'evidence/0',
-    require_verified_controls: ['CAF-SDLC-002:tier'],
+    blocked_tiers: [],
     require_ai_provenance_when_assisted: true,
+    require_verified_controls: ['CAF-SDLC-002:tier'],
   },
 };
 
@@ -138,6 +145,7 @@ const validEvidence = {
   tool: { name: 'sdlc-controls', version: 'v0.2.0' },
   verification: { verified: ['CAF-SDLC-002:tier'] },
   result: { pass: true },
+  ai_assisted: false,
 };
 
 const workspace = {
@@ -554,11 +562,13 @@ test('every operation but GET /health declares 401, 403 and 503, and the POST 40
   for (const status of ['409', '413', '429']) assert.ok(post.includes(status));
 });
 
-test('info.version is 0.3.0', () => {
+test('info.version is 0.4.0', () => {
   // Bumped once by task 2.1 (0.2.0: the authentication statuses, the 413, the 429, Workspace /1
-  // and evidence_attestation), and once by task 2.2 (0.3.0: the 409, the store's 503, unstorable
-  // strings in divergence 5, divergence 6 replaced, and the durable 202 caveat).
-  assert.equal(document.info.version, '0.3.0');
+  // and evidence_attestation), once by task 2.2 (0.3.0: the 409, the store's 503, unstorable
+  // strings in divergence 5, divergence 6 replaced, and the durable 202 caveat), and once by task
+  // 2.4 (0.4.0: ai_assisted required, ai_tool held to a named tool, 'rejected' a contract failure
+  // only).
+  assert.equal(document.info.version, '0.4.0');
 });
 
 test('evidence_attestation is required and single-valued on the three schemas ADR-0004 names', () => {
@@ -844,11 +854,15 @@ test('divergence 5: a record holding U+0000 or an unpaired surrogate is refused 
     },
   });
   const store = createInMemoryEvidenceStore();
+  // The handler checks its policy when it is built, so the watch is armed after that and before
+  // the first request.
+  const handler = seam(store, { policy: watched });
+  policyRead = false;
   for (const raw of [
     JSON.stringify({ ...validEvidence, binding_used: 'a\u0000b' }),
     JSON.stringify(validEvidence).replace('"PR-1"', '"PR-\\ud800"'),
   ]) {
-    const { status, body } = await call(seam(store, { policy: watched }), post(raw));
+    const { status, body } = await call(handler, post(raw));
     assert.equal(status, 400);
     assert.deepEqual(conforms(body, responseSchema('/v1/evidence', 'post', 400)).errors, []);
   }
@@ -892,7 +906,7 @@ const evidenceSchema = document.components.schemas.EvidenceRecord;
 test('every required evidence field the document names is one the seam also requires', async () => {
   const required = evidenceSchema.required;
   assert.ok(
-    required.length >= 9,
+    required.length >= 10 && required.includes('ai_assisted'),
     'EvidenceRecord.required has been relaxed below the enforced set',
   );
   for (const field of required) {
@@ -959,7 +973,7 @@ test('divergence: a record too deep to project is refused, and never reaches the
   const body =
     '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
     '"tier":"T1","affected_set":[],"tool":{"name":"n","version":"v"},' +
-    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},' +
+    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},"ai_assisted":false,' +
     '"deep":' +
     '{"n":'.repeat(depth) +
     '"x"' +
@@ -982,7 +996,7 @@ test('a record well past the serialiser limit is refused before policy is evalua
   const body =
     '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
     '"tier":"T1","affected_set":[],"tool":{"name":"n","version":"v"},' +
-    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},' +
+    '"verification":{"verified":["CAF-SDLC-002:tier"]},"result":{"pass":true},"ai_assisted":false,' +
     '"deep":' +
     '{"n":'.repeat(depth) +
     '"x"' +
@@ -998,6 +1012,8 @@ test('a record well past the serialiser limit is refused before policy is evalua
   });
   const store = createInMemoryEvidenceStore();
   const handler = seam(store, { policy: watched });
+  // Armed after the handler is built: building it checks the policy (createRequestHandler).
+  policyRead = false;
   const { status } = await call(handler, post(body));
   assert.equal(status, 400);
   assert.equal(policyRead, false, 'the policy was evaluated for a record that cannot be stored');
@@ -1012,4 +1028,90 @@ test('a record well past the serialiser limit is refused before policy is evalua
   policyRead = false;
   await call(handler, post(JSON.stringify(validEvidence)));
   assert.equal(policyRead, true, 'control: a normal record does reach policy');
+});
+
+// ------------------------------------------------------------ task 2.4: AI provenance at the seam
+
+// AC-5, AC-6. A malformed provenance claim is a contract failure: 422 'rejected', no policy named,
+// nothing stored or counted, and never the 400 a body fault gets. An assisted record with no tool
+// is the policy's to decide: 422 'needs-remediation', naming the policy. A tool on an unassisted
+// record is a relation between two fields, which the checker that reads the document cannot
+// express; ai_tool's description states it, and the seam is held to it here.
+const unacceptedSchema = responseSchema('/v1/evidence', 'post', 422);
+
+for (const [name, overrides, reason] of [
+  ['ai_assisted: "yes"', { ai_assisted: 'yes' }, 'ai_assisted must be true or false'],
+  ['ai_assisted: null', { ai_assisted: null }, 'ai_assisted must be true or false'],
+  ['ai_tool: 42', { ai_assisted: true, ai_tool: 42 }, 'ai_tool must be a string naming a tool'],
+  ['ai_tool: {}', { ai_assisted: true, ai_tool: {} }, 'ai_tool must be a string naming a tool'],
+  [
+    'ai_tool on a record that is not assisted',
+    { ai_assisted: false, ai_tool: 'claude-code' },
+    'ai_tool requires ai_assisted true',
+  ],
+]) {
+  test(`${name} is a contract failure at the seam: 422 rejected, nothing stored`, async () => {
+    const record = { ...validEvidence, ...overrides };
+    if (reason !== 'ai_tool requires ai_assisted true')
+      assert.equal(conforms(record, recordSchema).ok, false, 'the document accepts it');
+    const store = createInMemoryEvidenceStore();
+    const handler = seam(store);
+    const { status, body } = await call(handler, post(JSON.stringify(record)));
+    assert.equal(status, 422);
+    assert.deepEqual(conforms(body, unacceptedSchema).errors, []);
+    assert.equal(body.decision.disposition, 'rejected');
+    assert.equal(Object.hasOwn(body.decision, 'policy_id'), false);
+    assert.deepEqual(body.decision.reasons, [reason]);
+    assert.equal(store.list().length, 0);
+    assert.equal((await call(handler, get('/v1/indicators'))).body.data.total_records, 0);
+  });
+}
+
+test('an assisted record with no ai_tool needs remediation and names the policy', async () => {
+  const record = { ...validEvidence, ai_assisted: true };
+  assert.deepEqual(conforms(record, recordSchema).errors, []);
+  const store = createInMemoryEvidenceStore();
+  const { status, body } = await call(seam(store), post(JSON.stringify(record)));
+  assert.equal(status, 422);
+  assert.deepEqual(conforms(body, unacceptedSchema).errors, []);
+  assert.equal(body.decision.disposition, 'needs-remediation');
+  assert.equal(body.decision.policy_id, 'test-policy@1');
+  assert.deepEqual(body.decision.reasons, ['AI-assisted evidence is missing ai_tool provenance']);
+  assert.equal(store.list().length, 0);
+});
+
+test('an assisted record naming its tool is accepted and stored as sent', async () => {
+  const record = { ...validEvidence, ai_assisted: true, ai_tool: ' claude-code ' };
+  assert.deepEqual(conforms(record, recordSchema).errors, []);
+  const store = createInMemoryEvidenceStore();
+  const { status, body } = await call(seam(store), post(JSON.stringify(record)));
+  assert.equal(status, 202);
+  assert.equal(body.decision.disposition, 'accepted');
+  assert.equal(store.list()[0].evidence.ai_tool, ' claude-code ');
+});
+
+// AC-8. The document says what is enforced, and stops there.
+test('the provenance fields and the 422 say what is enforced, and no more', () => {
+  const { ai_assisted, ai_tool } = evidenceSchema.properties;
+  for (const description of [ai_assisted.description, ai_tool.description])
+    assert.doesNotMatch(
+      description,
+      /documented from the upstream contract|truthiness|known weakness|Sprint 1/,
+    );
+  assert.equal(ai_assisted.type, 'boolean');
+  assert.equal(ai_tool.type, 'string');
+  assert.equal(ai_tool.minLength, 1);
+  const divergences = document.info.description.match(/field-level:[^.]*\./)[0];
+  assert.doesNotMatch(divergences, /ai_assisted|ai_tool/);
+  const unaccepted = document.components.schemas.UnacceptedDecision;
+  for (const description of [
+    document.paths['/v1/evidence'].post.responses['422'].description,
+    unaccepted.properties.disposition.description,
+    unaccepted.properties.policy_id.description,
+  ])
+    assert.doesNotMatch(description, /configured (guardrail )?policy/);
+  assert.doesNotMatch(
+    document.components.schemas.AcceptedDecision.properties.policy_id.description,
+    /traceable to the human approval/,
+  );
 });

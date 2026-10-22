@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { evaluateGuardrails } from './evaluate.mjs';
+import { evaluateGuardrails, validateGuardrailPolicy } from './evaluate.mjs';
 
 const policy = {
   policy_version: 'guardrails/0',
   policy_id: 'p@1',
-  rules: { require_verified_controls: ['CAF-SDLC-002:tier'] },
+  effective_from: '2026-01-01T00:00:00Z',
+  approval: {
+    decision_id: 'TEST-DECISION-1',
+    approved_by: 'test-approver',
+    approved_at: '2026-01-01T00:00:00Z',
+  },
+  rules: {
+    minimum_evidence_schema: 'evidence/0',
+    blocked_tiers: [],
+    require_ai_provenance_when_assisted: true,
+    require_verified_controls: ['CAF-SDLC-002:tier'],
+  },
 };
 const evidence = {
   schema_version: 'evidence/0',
@@ -18,6 +29,7 @@ const evidence = {
   tool: { name: 'sdlc-controls', version: '0.2.0' },
   verification: { verified: ['CAF-SDLC-002:tier'] },
   result: { pass: true },
+  ai_assisted: false,
 };
 test('accepts evidence that meets an approved technical policy', () =>
   assert.equal(evaluateGuardrails(evidence, policy).accepted, true));
@@ -71,4 +83,102 @@ test('the evaluator source carries no wording of verification in a reason', () =
   assert.doesNotMatch(source, /not verified/i);
   assert.doesNotMatch(source, /verified:/i);
   assert.doesNotMatch(source, /not\W+verif/i);
+});
+
+// AC-10. One named test per rule, so a deleted branch fails a test that says which rule went.
+// Each runs under a policy the validator accepts, and has a control: the same record passes once
+// the cause is removed, so the test fails for the rule and not for anything else.
+const withRules = (rules) => ({ ...policy, rules: { ...policy.rules, ...rules } });
+
+test('the provenance rule is applied: assisted without a tool needs remediation', () => {
+  assert.equal(validateGuardrailPolicy(policy).ok, true);
+  assert.deepEqual(evaluateGuardrails({ ...evidence, ai_assisted: true }, policy), {
+    accepted: false,
+    disposition: 'needs-remediation',
+    policy_id: 'p@1',
+    reasons: ['AI-assisted evidence is missing ai_tool provenance'],
+  });
+  assert.equal(
+    evaluateGuardrails({ ...evidence, ai_assisted: true, ai_tool: 'claude-code' }, policy).accepted,
+    true,
+    'control: the same record naming its tool is accepted',
+  );
+});
+
+test('the blocked_tiers rule is applied: a blocked tier needs remediation', () => {
+  const blocking = withRules({ blocked_tiers: ['T0'] });
+  assert.equal(validateGuardrailPolicy(blocking).ok, true);
+  assert.deepEqual(evaluateGuardrails(evidence, blocking), {
+    accepted: false,
+    disposition: 'needs-remediation',
+    policy_id: 'p@1',
+    reasons: ['tier T0 is blocked by policy'],
+  });
+  assert.equal(
+    evaluateGuardrails({ ...evidence, tier: 'T1' }, blocking).accepted,
+    true,
+    'control: a tier the policy does not block is accepted under the same policy',
+  );
+});
+
+// AC-7, fail-closed. The evaluator does not validate the policy (the service does, before it
+// starts), so it must not read a missing key as "off": only an explicit false turns the rule off,
+// and validateGuardrailPolicy refuses a policy that says false.
+test('the provenance rule applies when a policy omits it', () => {
+  const { require_ai_provenance_when_assisted, ...rest } = policy.rules;
+  assert.equal(require_ai_provenance_when_assisted, true);
+  const omitting = { ...policy, rules: rest };
+  assert.deepEqual(evaluateGuardrails({ ...evidence, ai_assisted: true }, omitting).reasons, [
+    'AI-assisted evidence is missing ai_tool provenance',
+  ]);
+  assert.deepEqual(
+    evaluateGuardrails({ ...evidence, ai_assisted: true }, { ...policy, rules: undefined }).reasons,
+    ['AI-assisted evidence is missing ai_tool provenance'],
+  );
+  assert.equal(
+    evaluateGuardrails(
+      { ...evidence, ai_assisted: true },
+      withRules({ require_ai_provenance_when_assisted: false }),
+    ).accepted,
+    true,
+  );
+  assert.equal(
+    validateGuardrailPolicy(withRules({ require_ai_provenance_when_assisted: false })).ok,
+    false,
+  );
+});
+
+test('a malformed provenance claim is a contract failure, decided before any policy', () => {
+  for (const overrides of [
+    { ai_assisted: 'yes' },
+    { ai_assisted: true, ai_tool: 42 },
+    { ai_assisted: false, ai_tool: 'claude-code' },
+  ]) {
+    const result = evaluateGuardrails({ ...evidence, ...overrides }, policy);
+    assert.equal(result.disposition, 'rejected', JSON.stringify(overrides));
+    assert.equal(Object.hasOwn(result, 'policy_id'), false);
+  }
+  const { ai_assisted, ...unflagged } = evidence;
+  assert.equal(ai_assisted, false);
+  assert.deepEqual(evaluateGuardrails(unflagged, policy), {
+    accepted: false,
+    disposition: 'rejected',
+    reasons: ['ai_assisted must be true or false'],
+  });
+});
+
+// A rule of the wrong type no longer acts on an unvalidated policy (F3): a string does not block
+// the tiers it contains, and does not iterate as a list of one-character controls.
+test('a string where a rule list belongs blocks nothing and requires nothing', () => {
+  assert.equal(evaluateGuardrails(evidence, withRules({ blocked_tiers: 'xT0x' })).accepted, true);
+  assert.equal(
+    evaluateGuardrails(evidence, withRules({ require_verified_controls: 'CAF' })).accepted,
+    true,
+  );
+});
+
+test('the version gate reads the contracts constant, not a literal', () => {
+  const source = readFileSync(new URL('./evaluate.mjs', import.meta.url), 'utf8');
+  assert.match(source, /policy\?\.policy_version !== GUARDRAIL_SCHEMA_VERSION/);
+  assert.doesNotMatch(source, /'guardrails\/0'/);
 });

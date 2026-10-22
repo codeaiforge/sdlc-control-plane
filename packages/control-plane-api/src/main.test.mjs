@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict';
 import { constants, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createAuthenticator } from '../../workload-identity/src/authenticate.mjs';
 import { ISSUER as VERIFIER_ISSUER } from '../../workload-identity/src/constants.mjs';
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { ACCEPTED_ISSUERS, createRegistry } from '../../workspace-registry/src/registry.mjs';
-import { assertIssuerAgreement, assertUsablePolicy, createRequestHandler } from './main.mjs';
+import {
+  assertIssuerAgreement,
+  assertUsablePolicy,
+  createRequestHandler,
+  loadGuardrailPolicy,
+} from './main.mjs';
 import {
   EvidenceStoreFault,
   createInMemoryEvidenceLog,
@@ -90,10 +98,17 @@ const token = (overrides = {}) =>
 const policy = {
   policy_version: 'guardrails/0',
   policy_id: 'test-policy@1',
+  effective_from: '2026-01-01T00:00:00Z',
+  approval: {
+    decision_id: 'TEST-DECISION-1',
+    approved_by: 'test-approver',
+    approved_at: '2026-01-01T00:00:00Z',
+  },
   rules: {
     minimum_evidence_schema: 'evidence/0',
-    require_verified_controls: ['CAF-SDLC-002:tier'],
+    blocked_tiers: [],
     require_ai_provenance_when_assisted: true,
+    require_verified_controls: ['CAF-SDLC-002:tier'],
   },
 };
 
@@ -107,6 +122,7 @@ const validEvidence = {
   tool: { name: 'sdlc-controls', version: 'v0.2.0' },
   verification: { verified: ['CAF-SDLC-002:tier'] },
   result: { pass: true },
+  ai_assisted: false,
 };
 
 const workspace = {
@@ -255,19 +271,28 @@ test('a body stream that aborts mid-read is answered, not left to reject', async
 // without validation, so a policy file missing policy_id made the seam emit a 202 that its own
 // published schema rejects, and an unsupported policy version made a valid record come back as
 // disposition "rejected" - telling the caller its evidence was malformed when the fault was ours.
+// Since task 2.4 the guard is validateGuardrailPolicy; every input refused before stays refused,
+// for the same field, and the bare two-field policy accepted before is now incomplete.
 test('a policy that cannot honour the published contract is refused at load', () => {
-  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0', policy_id: 'p@1' }), []);
-  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0' }), [
-    'policy_id must be a non-empty string',
+  assert.deepEqual(assertUsablePolicy(policy), []);
+  const reasonsFor = (candidate) => assertUsablePolicy({ ...policy, ...candidate });
+  const { policy_id, ...withoutId } = policy;
+  assert.equal(policy_id, 'test-policy@1');
+  assert.deepEqual(assertUsablePolicy(withoutId), [
+    'policy_id must be a non-blank string with no leading or trailing whitespace',
   ]);
-  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/0', policy_id: '' }), [
-    'policy_id must be a non-empty string',
+  assert.deepEqual(reasonsFor({ policy_id: '' }), [
+    'policy_id must be a non-blank string with no leading or trailing whitespace',
   ]);
-  assert.deepEqual(assertUsablePolicy({ policy_version: 'guardrails/1', policy_id: 'p@1' }), [
+  assert.deepEqual(reasonsFor({ policy_version: 'guardrails/1' }), [
     'policy_version must be guardrails/0',
   ]);
   assert.deepEqual(assertUsablePolicy(null), ['policy must be an object']);
   assert.deepEqual(assertUsablePolicy([]), ['policy must be an object']);
+  assert.ok(
+    assertUsablePolicy({ policy_version: 'guardrails/0', policy_id: 'p@1' }).length > 0,
+    'a policy with no approval and no rules is refused',
+  );
 });
 
 test('the shipped guardrail policy satisfies that guard', () => {
@@ -275,6 +300,86 @@ test('the shipped guardrail policy satisfies that guard', () => {
     readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
   );
   assert.deepEqual(assertUsablePolicy(shipped), []);
+  assert.deepEqual(loadGuardrailPolicy(), shipped);
+});
+
+// AC-1, AC-3, AC-4 at load: the shipped file with one hurried edit each, read from a temp file
+// through the same function the module scope calls. The message names the field, never a value.
+test('loadGuardrailPolicy refuses an incomplete, placeholder or rule-less policy', () => {
+  const shipped = JSON.parse(
+    readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
+  );
+  const dir = mkdtempSync(join(tmpdir(), 'guardrails-'));
+  const load = (text) => {
+    const file = join(dir, 'guardrails.json');
+    writeFileSync(file, text);
+    return () => loadGuardrailPolicy(pathToFileURL(file));
+  };
+  const edited = (edit) => {
+    const copy = structuredClone(shipped);
+    edit(copy);
+    return load(JSON.stringify(copy));
+  };
+  try {
+    assert.deepEqual(load(JSON.stringify(policy))(), policy);
+    assert.throws(
+      edited((copy) => delete copy.approval),
+      { message: 'unusable guardrail policy: approval must be an object' },
+    );
+    assert.throws(
+      edited((copy) => (copy.approval = {})),
+      {
+        message:
+          'unusable guardrail policy: approval.decision_id must be a non-blank string with no leading or trailing whitespace; approval.approved_by must be a non-blank string with no leading or trailing whitespace; approval.approved_at must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day',
+      },
+    );
+    assert.throws(
+      edited((copy) => (copy.approval.decision_id = 'LPM-EXAMPLE-001')),
+      {
+        message:
+          'unusable guardrail policy: approval.decision_id is a placeholder, not a decision reference',
+      },
+    );
+    assert.throws(
+      edited((copy) => delete copy.rules),
+      { message: 'unusable guardrail policy: rules must be an object' },
+    );
+    assert.throws(load('{"policy_version": "guardrails/0", CANARY'), {
+      message: 'unusable guardrail policy: not JSON',
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// F5: no test or fixture can build a seam around a policy the service would refuse to start with.
+test('a handler cannot be built with an unusable guardrail policy', () => {
+  const { approval, ...unapproved } = policy;
+  assert.equal(approval.decision_id, 'TEST-DECISION-1');
+  for (const [candidate, reason] of [
+    [unapproved, 'approval must be an object'],
+    [
+      { ...policy, rules: { ...policy.rules, require_ai_provenance_when_assisted: false } },
+      'rules.require_ai_provenance_when_assisted must be true',
+    ],
+    [undefined, 'policy must be an object'],
+  ]) {
+    assert.throws(() => seam(undefined, { policy: candidate }), {
+      name: 'TypeError',
+      message: `createRequestHandler needs a usable guardrail policy: ${reason}`,
+    });
+  }
+});
+
+// The module scope loads the shipped policy through loadGuardrailPolicy before createApp exists, so
+// the process stops before it listens or opens the store; this pins that structure.
+test('main.mjs checks the shipped policy at import, before anything is built', () => {
+  const source = readFileSync(new URL('./main.mjs', import.meta.url), 'utf8');
+  const load = source.indexOf('\nconst policy = loadGuardrailPolicy();\n');
+  assert.ok(load > 0, 'the module scope no longer loads the policy through loadGuardrailPolicy');
+  for (const later of ['\nconst registry = createRegistry(', '\nexport function createApp('])
+    assert.ok(source.indexOf(later) > load, later);
+  assert.equal(source.match(/\bconst policy = /g).length, 1);
 });
 
 // Regression — Phase 4 cycle 2 found `raw += chunk` stringified each Buffer independently, so a
@@ -529,7 +634,11 @@ test('a body holding U+0000 or an unpaired surrogate is 400 before policy is eva
       },
     });
     const store = createInMemoryEvidenceStore();
-    const { status, body } = await call(seam(store, { policy: watched }), post(raw));
+    // The handler checks its policy when it is built, so the watch is armed after that and
+    // before the first request.
+    const handler = seam(store, { policy: watched });
+    policyRead = false;
+    const { status, body } = await call(handler, post(raw));
     assert.equal(status, 400, raw);
     assert.deepEqual(body, { error: 'request body must be valid JSON' });
     assert.equal(policyRead, false, `policy was evaluated for ${raw}`);

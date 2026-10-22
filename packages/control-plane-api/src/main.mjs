@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { evaluateGuardrails } from '../../guardrail-policy/src/evaluate.mjs';
+import {
+  evaluateGuardrails,
+  validateGuardrailPolicy,
+} from '../../guardrail-policy/src/evaluate.mjs';
 import { EVIDENCE_ATTESTATION, summarizeEvidence } from '../../indicators/src/summarize.mjs';
 import { createAuthenticator, submittedBy } from '../../workload-identity/src/authenticate.mjs';
 import { ISSUER, isRefusedActor } from '../../workload-identity/src/constants.mjs';
@@ -25,21 +28,33 @@ import {
 import { project } from '../../evidence-store/src/evidence-store.mjs';
 import { refusalEvent, stderrLog } from './refusal-log.mjs';
 
-// createRegistry validates every registration at load and throws, and refuses a document whose
-// registry_version is not workspace-registry/1. The policy was the one configuration loaded
-// unchecked. openapi.json requires policy_id on an accepted decision
-// because an acceptance that names no approved policy is not traceable (FR-3.1, NFR-6.1), and
-// evaluateGuardrails passes policy.policy_id straight through - so an unvalidated policy file
-// makes the seam emit a 202 its own published schema rejects. Fail at startup instead.
+// createRegistry validates every registration at load and throws; the policy is held to
+// validateGuardrailPolicy (guardrails/0, closed at every level) the same way. It checks form: a
+// complete approval that is not placeholder-shaped and not dated after the policy takes effect,
+// every rule present and well-typed, and the provenance rule on (MIT-12). Whether the approval
+// names a decision record is a repository fact, checked by
+// tools/sdlc-controls/policy-conformance.test.mjs, not here: a deployed host need not ship the
+// record. Anything this refuses stops the service before it listens, and createRequestHandler
+// refuses it too, so no seam runs under a policy the validator has not accepted.
 export function assertUsablePolicy(candidate) {
-  const errors = [];
-  if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate))
-    return ['policy must be an object'];
-  if (candidate.policy_version !== 'guardrails/0')
-    errors.push('policy_version must be guardrails/0');
-  if (typeof candidate.policy_id !== 'string' || candidate.policy_id.length === 0)
-    errors.push('policy_id must be a non-empty string');
-  return errors;
+  return validateGuardrailPolicy(candidate).errors;
+}
+
+const SHIPPED_POLICY = new URL('../../../config/control-plane/guardrails.json', import.meta.url);
+
+// Read, parse and check, or throw. A parse failure is reported without the file's text, as every
+// other reason is reported without a value.
+export function loadGuardrailPolicy(url = SHIPPED_POLICY) {
+  let candidate;
+  try {
+    candidate = JSON.parse(readFileSync(url, 'utf8'));
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw new Error('unusable guardrail policy: not JSON');
+  }
+  const errors = assertUsablePolicy(candidate);
+  if (errors.length > 0) throw new Error(`unusable guardrail policy: ${errors.join('; ')}`);
+  return candidate;
 }
 
 // The issuer is written twice - workload-identity's ISSUER, which step 4 compares `iss` against,
@@ -58,12 +73,7 @@ const issuerErrors = assertIssuerAgreement();
 if (issuerErrors.length > 0)
   throw new Error(`issuer constants disagree: ${issuerErrors.join('; ')}`);
 
-const policy = JSON.parse(
-  readFileSync(new URL('../../../config/control-plane/guardrails.json', import.meta.url)),
-);
-const policyErrors = assertUsablePolicy(policy);
-if (policyErrors.length > 0)
-  throw new Error(`unusable guardrail policy: ${policyErrors.join('; ')}`);
+const policy = loadGuardrailPolicy();
 
 const registry = createRegistry(
   JSON.parse(
@@ -332,6 +342,13 @@ export function createRequestHandler({
   // exist and fail on its first request.
   if (typeof authenticate !== 'function')
     throw new TypeError('createRequestHandler needs an authenticate function');
+  // The same check as startup, so a test or fixture cannot build a seam around a policy the
+  // service would refuse to start with.
+  const policyErrors = assertUsablePolicy(policy);
+  if (policyErrors.length > 0)
+    throw new TypeError(
+      `createRequestHandler needs a usable guardrail policy: ${policyErrors.join('; ')}`,
+    );
   const context = {
     registry,
     policy,

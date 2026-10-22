@@ -47,6 +47,16 @@ export function validateEvidence(value) {
   if (!isObject(value.result) || typeof value.result.pass !== 'boolean') {
     errors.push('result.pass must be a boolean');
   }
+  // AI provenance (CAF-SDLC-010, MIT-11). ai_assisted is required so the provenance rule cannot be
+  // skipped by leaving it out; a tool, when named, must be a string naming one, and only on an
+  // assisted record, because naming a tool implies assistance. An assisted record with no tool is
+  // not a contract failure: the policy decides it (needs-remediation), so FR-3.1 reads literally.
+  if (typeof value.ai_assisted !== 'boolean') errors.push('ai_assisted must be true or false');
+  if (Object.hasOwn(value, 'ai_tool')) {
+    if (typeof value.ai_tool !== 'string' || !/\S/.test(value.ai_tool))
+      errors.push('ai_tool must be a string naming a tool');
+    else if (value.ai_assisted === false) errors.push('ai_tool requires ai_assisted true');
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -131,5 +141,113 @@ export function validateWorkspaceRegistration(value) {
   if (!Array.isArray(value.owners) || value.owners.length === 0)
     errors.push('owners must be a non-empty array');
   validateWorkloadIdentity(value.workload_identity, errors);
+  return { ok: errors.length === 0, errors };
+}
+
+// guardrails/0, closed at every level: a misspelt rule would otherwise load and enforce nothing.
+// A second exception to NFR-1.1's additive tolerance, accepted at task 2.4's Phase ① gate
+// (2026-10-22) and recorded in docs/contracts.md. tools/sdlc-controls/policy-conformance.test.mjs
+// holds these lists, the shipped file, the rules evaluate.mjs reads and that page together.
+export const GUARDRAIL_POLICY_KEYS = Object.freeze([
+  'policy_version',
+  'policy_id',
+  'effective_from',
+  'approval',
+  'rules',
+]);
+export const GUARDRAIL_APPROVAL_KEYS = Object.freeze(['decision_id', 'approved_by', 'approved_at']);
+export const GUARDRAIL_RULE_KEYS = Object.freeze([
+  'minimum_evidence_schema',
+  'blocked_tiers',
+  'require_ai_provenance_when_assisted',
+  'require_verified_controls',
+]);
+
+// A word an unfilled template or an example leaves behind. Matched against whole alphanumeric
+// runs, never substrings, so LPM-EXAMPLE-001 and TBD are refused and a surname that contains
+// "todo" is not. Look-alike letters from another script escape it, as they escape
+// adr-conformance.test.mjs's outstanding-words rule.
+export const PLACEHOLDER_TOKEN =
+  /^(examples?|samples?|placeholder|dummy|changeme|todo|tbd|tbc|fixme|pending|awaiting|unknown|x{3,})\d*$/;
+
+export function isPlaceholderText(value) {
+  if (typeof value !== 'string') return false;
+  if (/[<>]/.test(value)) return true;
+  return (value.match(/[A-Za-z0-9]+/g) ?? []).some((token) =>
+    PLACEHOLDER_TOKEN.test(token.toLowerCase()),
+  );
+}
+
+// The full form only, and a real calendar instant: Date rolls 2026-02-30 and T24:00:00 over to the
+// next day rather than refusing them, so the round trip is what catches them. Two values that pass
+// compare correctly as strings.
+const UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+export function isUtcTimestamp(value) {
+  if (typeof value !== 'string' || !UTC_TIMESTAMP.test(value)) return false;
+  const instant = new Date(value);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === value.replace('Z', '.000Z');
+}
+
+// Non-blank, with no leading or trailing whitespace: a value compared as written, never trimmed.
+const isText = (value) => typeof value === 'string' && /\S/.test(value) && value === value.trim();
+const TEXT = 'must be a non-blank string with no leading or trailing whitespace';
+const TIMESTAMP = 'must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day';
+
+function unrecognised(value, known, prefix, errors) {
+  for (const key of Object.keys(value)) {
+    if (!known.includes(key)) errors.push(`${prefix}${key} is not a recognised field`);
+  }
+}
+
+function validateApproval(approval, effectiveFrom, errors) {
+  if (!isObject(approval)) {
+    errors.push('approval must be an object');
+    return;
+  }
+  unrecognised(approval, GUARDRAIL_APPROVAL_KEYS, 'approval.', errors);
+  if (!isText(approval.decision_id)) errors.push(`approval.decision_id ${TEXT}`);
+  else if (isPlaceholderText(approval.decision_id))
+    errors.push('approval.decision_id is a placeholder, not a decision reference');
+  if (!isText(approval.approved_by)) errors.push(`approval.approved_by ${TEXT}`);
+  else if (isPlaceholderText(approval.approved_by))
+    errors.push('approval.approved_by is a placeholder, not an approver');
+  if (!isUtcTimestamp(approval.approved_at)) errors.push(`approval.approved_at ${TIMESTAMP}`);
+  else if (isUtcTimestamp(effectiveFrom) && approval.approved_at > effectiveFrom)
+    errors.push('approval.approved_at must not be after effective_from');
+}
+
+const distinct = (values) => new Set(values).size === values.length;
+
+function validateRules(rules, errors) {
+  if (!isObject(rules)) {
+    errors.push('rules must be an object');
+    return;
+  }
+  unrecognised(rules, GUARDRAIL_RULE_KEYS, 'rules.', errors);
+  if (rules.minimum_evidence_schema !== EVIDENCE_SCHEMA_VERSION)
+    errors.push(`rules.minimum_evidence_schema must be ${EVIDENCE_SCHEMA_VERSION}`);
+  const tiers = rules.blocked_tiers;
+  if (!Array.isArray(tiers) || !tiers.every((tier) => TIERS.has(tier)) || !distinct(tiers))
+    errors.push('rules.blocked_tiers must be an array of distinct tiers from T0, T1, T2, T3');
+  if (rules.require_ai_provenance_when_assisted !== true)
+    errors.push('rules.require_ai_provenance_when_assisted must be true');
+  const controls = rules.require_verified_controls;
+  if (!Array.isArray(controls) || !controls.every(isText) || !distinct(controls))
+    errors.push('rules.require_verified_controls must be an array of distinct non-blank strings');
+}
+
+// The form of an approved policy, checked before the service will start (MIT-12): one reason per
+// failing field, naming the field and never its value. Whether the approval is real is not
+// decidable here; the decision record test checks what the repository can show.
+export function validateGuardrailPolicy(value) {
+  if (!isObject(value)) return { ok: false, errors: ['policy must be an object'] };
+  const errors = [];
+  unrecognised(value, GUARDRAIL_POLICY_KEYS, '', errors);
+  if (value.policy_version !== GUARDRAIL_SCHEMA_VERSION)
+    errors.push(`policy_version must be ${GUARDRAIL_SCHEMA_VERSION}`);
+  if (!isText(value.policy_id)) errors.push(`policy_id ${TEXT}`);
+  if (!isUtcTimestamp(value.effective_from)) errors.push(`effective_from ${TIMESTAMP}`);
+  validateApproval(value.approval, value.effective_from, errors);
+  validateRules(value.rules, errors);
   return { ok: errors.length === 0, errors };
 }
