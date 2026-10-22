@@ -29,12 +29,26 @@ export function evaluateGuardrails(evidence, policy) {
   // Every rule is read as rules.<key>: policy-conformance.test.mjs reads those names out of this
   // source and holds them equal to the keys the policy validator admits.
   const rules = policy.rules ?? {};
+  // A list rule that is present but not a list is refused as the version gate refuses a policy:
+  // read as off it would accept, and read as a list a string would match by substring. The service
+  // refuses such a policy before it starts; this does not rely on that.
+  for (const [name, list] of [
+    ['blocked_tiers', rules.blocked_tiers],
+    ['require_verified_controls', rules.require_verified_controls],
+  ]) {
+    if (list !== undefined && !Array.isArray(list))
+      return {
+        accepted: false,
+        disposition: 'rejected',
+        reasons: [`unsupported guardrail policy: ${name} is not a list`],
+      };
+  }
   const reasons = [];
   if (rules.minimum_evidence_schema && rules.minimum_evidence_schema !== EVIDENCE_SCHEMA_VERSION) {
     reasons.push('policy requests an unsupported evidence schema');
   }
   if (!TIERS.has(evidence.tier)) reasons.push('invalid evidence tier');
-  // An array or nothing: a string would otherwise block every tier it contains as a substring.
+  // An array or absent by now; absent blocks nothing.
   if (Array.isArray(rules.blocked_tiers) && rules.blocked_tiers.includes(evidence.tier))
     reasons.push(`tier ${evidence.tier} is blocked by policy`);
   // Fail-closed: applied unless a policy turns it off, and the policy validator refuses a policy

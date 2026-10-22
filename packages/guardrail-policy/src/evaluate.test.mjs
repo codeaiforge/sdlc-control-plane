@@ -167,15 +167,33 @@ test('a malformed provenance claim is a contract failure, decided before any pol
   });
 });
 
-// A rule of the wrong type no longer acts on an unvalidated policy (F3): a string does not block
-// the tiers it contains, and does not iterate as a list of one-character controls.
-test('a string where a rule list belongs blocks nothing and requires nothing', () => {
-  assert.equal(evaluateGuardrails(evidence, withRules({ blocked_tiers: 'xT0x' })).accepted, true);
-  assert.equal(
-    evaluateGuardrails(evidence, withRules({ require_verified_controls: 'CAF' })).accepted,
-    true,
-  );
-});
+// A list rule of the wrong type on an unvalidated policy is refused, as an unsupported version
+// is (fail-closed, review S-1): it neither matches by substring nor reads as "off". Absent, a
+// list rule blocks or requires nothing.
+for (const [rule, value] of [
+  ['blocked_tiers', 'xT0x'],
+  ['require_verified_controls', 'CAF'],
+]) {
+  test(`${rule} present but not a list is an unsupported policy, not accepted`, () => {
+    for (const malformed of [value, null, {}, 1]) {
+      assert.deepEqual(
+        evaluateGuardrails(evidence, withRules({ [rule]: malformed })),
+        {
+          accepted: false,
+          disposition: 'rejected',
+          reasons: [`unsupported guardrail policy: ${rule} is not a list`],
+        },
+        JSON.stringify(malformed),
+      );
+    }
+    const { [rule]: _dropped, ...rest } = policy.rules;
+    assert.equal(
+      evaluateGuardrails(evidence, { ...policy, rules: rest }).accepted,
+      true,
+      'control: the same policy without the rule accepts',
+    );
+  });
+}
 
 test('the version gate reads the contracts constant, not a literal', () => {
   const source = readFileSync(new URL('./evaluate.mjs', import.meta.url), 'utf8');
