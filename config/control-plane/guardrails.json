@@ -1,11 +1,11 @@
 {
   "policy_version": "guardrails/0",
-  "policy_id": "baseline-engineering-controls@1",
-  "effective_from": "2026-09-18T00:00:00Z",
+  "policy_id": "baseline-engineering-controls@2",
+  "effective_from": "2026-10-22T00:00:00Z",
   "approval": {
-    "decision_id": "LPM-EXAMPLE-001",
-    "approved_by": "lean-portfolio-management",
-    "approved_at": "2026-09-18T00:00:00Z"
+    "decision_id": "POL-0001",
+    "approved_by": "dsofianos (founder)",
+    "approved_at": "2026-10-22T00:00:00Z"
   },
   "rules": {
     "minimum_evidence_schema": "evidence/0",
