@@ -94,7 +94,18 @@ const claims = (overrides = {}) => ({
 const policy = {
   policy_version: 'guardrails/0',
   policy_id: 'test-policy@1',
-  rules: { require_verified_controls: ['CAF-SDLC-002:tier'] },
+  effective_from: '2026-01-01T00:00:00Z',
+  approval: {
+    decision_id: 'TEST-DECISION-1',
+    approved_by: 'test-approver',
+    approved_at: '2026-01-01T00:00:00Z',
+  },
+  rules: {
+    minimum_evidence_schema: 'evidence/0',
+    blocked_tiers: [],
+    require_ai_provenance_when_assisted: true,
+    require_verified_controls: ['CAF-SDLC-002:tier'],
+  },
 };
 const evidence = (overrides = {}) => ({
   schema_version: 'evidence/0',
@@ -106,6 +117,7 @@ const evidence = (overrides = {}) => ({
   tool: { name: 'sdlc-controls', version: 'v0.2.0' },
   verification: { verified: ['CAF-SDLC-002:tier'] },
   result: { pass: true },
+  ai_assisted: false,
   ...overrides,
 });
 
