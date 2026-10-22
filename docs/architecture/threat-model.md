@@ -747,7 +747,8 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    `blocked_tiers` rule in `evaluate.mjs` can each be deleted with every test in the workspace
    green, and so can the `criticality: 'critical'` that puts
    `config/control-plane/**` at T3 (`tools/sdlc-controls/generate-component-map.mjs`, MIT-7). All
-   three are true today and removable in silence. The two guardrail tests belong with MIT-11 in
+   three were true at Gate 2 and removable in silence; task 2.4 gave the two guardrail rules tests
+   (see 9). The two guardrail tests belong with MIT-11 in
    2.1 (re-owned to 2.4 on 2026-10-07); the criticality test belongs with the PR gate.
 7. **`repository_url` and `evidence_endpoint` are checked only as non-empty strings**, never as URLs, and nothing dereferences
    today. Any component that later fetches either one — a portfolio integration, an evidence
