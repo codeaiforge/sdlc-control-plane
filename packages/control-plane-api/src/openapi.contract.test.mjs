@@ -843,21 +843,28 @@ test('a fault anywhere in an authenticated route is a 503 the document declares'
   }
 });
 
-// Divergence 5, widened in 0.3.0.
-test('divergence 5: a record holding U+0000 or an unpaired surrogate is refused before policy, nothing stored', async () => {
-  let policyRead = false;
-  const watched = { ...policy };
-  Object.defineProperty(watched, 'policy_version', {
-    get() {
-      policyRead = true;
-      return 'guardrails/0';
-    },
+// Whether a request reached policy. The seam holds a deep-frozen copy of its policy, so a getter
+// on the caller's object can no longer watch it. evaluateGuardrails's first step, validateEvidence,
+// looks the record's tier up in contracts' TIERS set, and nothing else a request runs does (the
+// policy validator does too, but only while the handler is built). A spy on that one set's lookup
+// records it; mocked on the test's context, so it is restored when the test ends.
+const watchPolicyEvaluation = (t) => {
+  const has = Set.prototype.has;
+  const isTiers = (set) =>
+    set.size === 4 && ['T0', 'T1', 'T2', 'T3'].every((tier) => has.call(set, tier));
+  const watch = { reached: false };
+  t.mock.method(Set.prototype, 'has', function (value) {
+    if (isTiers(this)) watch.reached = true;
+    return has.call(this, value);
   });
+  return watch;
+};
+
+// Divergence 5, widened in 0.3.0.
+test('divergence 5: a record holding U+0000 or an unpaired surrogate is refused before policy, nothing stored', async (t) => {
   const store = createInMemoryEvidenceStore();
-  // The handler checks its policy when it is built, so the watch is armed after that and before
-  // the first request.
-  const handler = seam(store, { policy: watched });
-  policyRead = false;
+  const handler = seam(store);
+  const policyRead = watchPolicyEvaluation(t);
   for (const raw of [
     JSON.stringify({ ...validEvidence, binding_used: 'a\u0000b' }),
     JSON.stringify(validEvidence).replace('"PR-1"', '"PR-\\ud800"'),
@@ -866,8 +873,10 @@ test('divergence 5: a record holding U+0000 or an unpaired surrogate is refused 
     assert.equal(status, 400);
     assert.deepEqual(conforms(body, responseSchema('/v1/evidence', 'post', 400)).errors, []);
   }
-  assert.equal(policyRead, false);
+  assert.equal(policyRead.reached, false);
   assert.equal(store.list().length, 0);
+  await call(handler, post(JSON.stringify(validEvidence)));
+  assert.equal(policyRead.reached, true, 'control: a storable record does reach policy');
   assert.match(document.info.description, /U\+0000/);
   assert.match(document.paths['/v1/evidence'].post.responses['400'].description, /U\+0000/);
 });
@@ -988,10 +997,10 @@ test('divergence: a record too deep to project is refused, and never reaches the
 });
 
 // The 400 above was also the answer before the fix - what changed is the order, and the order is
-// not observable on the wire. evaluateGuardrails reads policy.policy_version first, so a getter on
-// it records whether policy was reached at all. If this fails, the seam is computing a disposition
-// for a record it cannot store, which is how an acceptance gets granted and then lost.
-test('a record well past the serialiser limit is refused before policy is evaluated', async () => {
+// not observable on the wire, so watchPolicyEvaluation records whether policy was reached at all.
+// If this fails, the seam is computing a disposition for a record it cannot store, which is how
+// an acceptance gets granted and then lost.
+test('a record well past the serialiser limit is refused before policy is evaluated', async (t) => {
   const depth = 6000;
   const body =
     '{"schema_version":"evidence/0","change_id":"PR-deep","binding_used":"b","computed_at":"t",' +
@@ -1002,21 +1011,17 @@ test('a record well past the serialiser limit is refused before policy is evalua
     '"x"' +
     '}'.repeat(depth) +
     '}';
-  let policyRead = false;
-  const watched = { ...policy };
-  Object.defineProperty(watched, 'policy_version', {
-    get() {
-      policyRead = true;
-      return 'guardrails/0';
-    },
-  });
   const store = createInMemoryEvidenceStore();
-  const handler = seam(store, { policy: watched });
+  const handler = seam(store);
   // Armed after the handler is built: building it checks the policy (createRequestHandler).
-  policyRead = false;
+  const policyRead = watchPolicyEvaluation(t);
   const { status } = await call(handler, post(body));
   assert.equal(status, 400);
-  assert.equal(policyRead, false, 'the policy was evaluated for a record that cannot be stored');
+  assert.equal(
+    policyRead.reached,
+    false,
+    'the policy was evaluated for a record that cannot be stored',
+  );
   // Not a universal, and the difference matters. The seam projects and then append projects
   // again one stack frame deeper, so there is a narrow band - about seven levels wide on this
   // runtime - where the first projection fits and the second does not, and policy IS evaluated
@@ -1025,9 +1030,8 @@ test('a record well past the serialiser limit is refused before policy is evalua
   // the band is the ordering claim, not the behaviour. This fixture sits well clear of it.
 
   // The same watcher must see a storable record reach policy, or the test proves nothing.
-  policyRead = false;
   await call(handler, post(JSON.stringify(validEvidence)));
-  assert.equal(policyRead, true, 'control: a normal record does reach policy');
+  assert.equal(policyRead.reached, true, 'control: a normal record does reach policy');
 });
 
 // ------------------------------------------------------------ task 2.4: AI provenance at the seam
@@ -1035,24 +1039,32 @@ test('a record well past the serialiser limit is refused before policy is evalua
 // AC-5, AC-6. A malformed provenance claim is a contract failure: 422 'rejected', no policy named,
 // nothing stored or counted, and never the 400 a body fault gets. An assisted record with no tool
 // is the policy's to decide: 422 'needs-remediation', naming the policy. A tool on an unassisted
-// record is a relation between two fields, which the checker that reads the document cannot
-// express; ai_tool's description states it, and the seam is held to it here.
+// record is a relation between two fields, and "a letter or digit" a pattern; the checker that
+// reads the document can express neither, so ai_tool's description states both, and the seam is
+// held to them here.
 const unacceptedSchema = responseSchema('/v1/evidence', 'post', 422);
 
-for (const [name, overrides, reason] of [
+for (const [name, overrides, reason, statedInProse = false] of [
   ['ai_assisted: "yes"', { ai_assisted: 'yes' }, 'ai_assisted must be true or false'],
   ['ai_assisted: null', { ai_assisted: null }, 'ai_assisted must be true or false'],
   ['ai_tool: 42', { ai_assisted: true, ai_tool: 42 }, 'ai_tool must be a string naming a tool'],
   ['ai_tool: {}', { ai_assisted: true, ai_tool: {} }, 'ai_tool must be a string naming a tool'],
   [
+    'ai_tool: a lone zero-width space',
+    { ai_assisted: true, ai_tool: '\u200b' },
+    'ai_tool must be a string naming a tool',
+    true,
+  ],
+  [
     'ai_tool on a record that is not assisted',
     { ai_assisted: false, ai_tool: 'claude-code' },
     'ai_tool requires ai_assisted true',
+    true,
   ],
 ]) {
   test(`${name} is a contract failure at the seam: 422 rejected, nothing stored`, async () => {
     const record = { ...validEvidence, ...overrides };
-    if (reason !== 'ai_tool requires ai_assisted true')
+    if (!statedInProse)
       assert.equal(conforms(record, recordSchema).ok, false, 'the document accepts it');
     const store = createInMemoryEvidenceStore();
     const handler = seam(store);

@@ -237,8 +237,20 @@ test('ai_tool: {} is refused', () => {
   ]);
 });
 
-test('ai_tool must be a string with a non-whitespace character', () => {
-  for (const value of [[], true, null, '', '   ', '\t\n', undefined]) {
+test('ai_tool must be a string with a letter or digit', () => {
+  for (const value of [
+    [],
+    true,
+    null,
+    '',
+    '   ',
+    '\t\n',
+    undefined,
+    '-',
+    '.',
+    '\u200b',
+    ' \u2060 ',
+  ]) {
     assert.deepEqual(
       evidenceErrors({ ai_assisted: true, ai_tool: value }),
       ['ai_tool must be a string naming a tool'],
@@ -252,7 +264,7 @@ test('ai_tool must be a string with a non-whitespace character', () => {
 });
 
 test('a named tool is accepted as sent, and only on an assisted record', () => {
-  for (const ai_tool of ['claude-code', ' claude-code ', 'x'])
+  for (const ai_tool of ['claude-code', ' claude-code ', 'x', '7', 'ツール'])
     assert.deepEqual(validateEvidence({ ...evidence, ai_assisted: true, ai_tool }), {
       ok: true,
       errors: [],
@@ -294,7 +306,7 @@ const without = (object, key) => {
   delete copy[key];
   return copy;
 };
-const TEXT = 'must be a non-blank string with no leading or trailing whitespace';
+const TEXT = 'must be a string with a letter or digit and no leading or trailing whitespace';
 const TIMESTAMP = 'must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day';
 
 test('a complete guardrails/0 policy is accepted', () => {
@@ -348,7 +360,7 @@ test('policy_version must be guardrails/0', () => {
 });
 
 test('policy_id must be text with no surrounding whitespace', () => {
-  for (const policy_id of ['', '  ', ' p@1', 'p@1 ', 42, null, undefined])
+  for (const policy_id of ['', '  ', ' p@1', 'p@1 ', 42, null, undefined, '-', '@', '\u200b'])
     assert.deepEqual(
       policyErrors(guardrailPolicy({ policy_id })),
       [`policy_id ${TEXT}`],
@@ -377,6 +389,26 @@ test('AC-2: each approval text field is refused when absent, blank, padded or no
         `${key}: ${String(value)}`,
       );
     }
+  }
+});
+
+// S-3: a value with no letter or digit in any script names nothing, though /\S/ finds it non-blank.
+test('AC-2: an approval text field with no letter or digit is refused', () => {
+  for (const key of ['decision_id', 'approved_by']) {
+    for (const value of ['-', '.', '--', '\u200b', '\u2060', '-\u200b-']) {
+      const approval = { ...guardrailPolicy().approval, [key]: value };
+      assert.deepEqual(
+        policyErrors(guardrailPolicy({ approval })),
+        [`approval.${key} ${TEXT}`],
+        `${key}: ${JSON.stringify(value)}`,
+      );
+    }
+    for (const value of ['P1', 'Ωmega', '７', 'Ä.-'])
+      assert.equal(
+        validateGuardrailPolicy(guardrailPolicy({}, { [key]: value })).ok,
+        true,
+        `${key}: ${value}`,
+      );
   }
 });
 
@@ -466,13 +498,29 @@ test('AC-3: a placeholder decision reference or approver is refused', () => {
     'SAMPLE-1',
     'todo',
     'Placeholder',
+    'N/A',
+    'n/a',
+    'DEC-N/A',
+    'none',
+    'NULL',
+    'TBA',
   ])
     assert.deepEqual(
       policyErrors(guardrailPolicy({}, { decision_id })),
       ['approval.decision_id is a placeholder, not a decision reference'],
       decision_id,
     );
-  for (const approved_by of ['pending', 'TBD', '<approved_by>', 'unknown', 'changeme'])
+  for (const approved_by of [
+    'pending',
+    'TBD',
+    '<approved_by>',
+    'unknown',
+    'changeme',
+    'n/a',
+    'None',
+    'null',
+    'tba',
+  ])
     assert.deepEqual(
       policyErrors(guardrailPolicy({}, { approved_by })),
       ['approval.approved_by is a placeholder, not an approver'],
@@ -484,7 +532,12 @@ test('AC-3: the placeholder rule reads whole tokens, not substrings', () => {
   // The synthetic values every fixture uses, and real names that contain a listed word.
   for (const text of ['TEST-DECISION-1', 'test-approver', 'Atodorov', 'Exampleton', 'tbdx', 'xx'])
     assert.equal(isPlaceholderText(text), false, text);
+  for (const text of ['Nonen', 'Nullman', 'tbax', 'na', 'an/am', 'n/ab', 'zn/a', 'n-a'])
+    assert.equal(isPlaceholderText(text), false, text);
   for (const text of ['EXAMPLES', 'samples', 'dummy2', 'FIXME', 'tbc', 'awaiting', 'XXX9', '>'])
+    assert.equal(isPlaceholderText(text), true, text);
+  // n/a spans two alphanumeric runs, so it is matched as a whole, bounded the same way.
+  for (const text of ['n/a', 'N/A', 'x N/A', 'TEAM-N/A', 'n/a2', '(n/a)', 'none1', 'Null', 'TBA'])
     assert.equal(isPlaceholderText(text), true, text);
   assert.equal(validateGuardrailPolicy(guardrailPolicy({}, { approved_by: 'Atodorov' })).ok, true);
   // Known escape, stated rather than claimed away: a look-alike letter from another script.

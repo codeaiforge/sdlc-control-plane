@@ -279,10 +279,10 @@ test('a policy that cannot honour the published contract is refused at load', ()
   const { policy_id, ...withoutId } = policy;
   assert.equal(policy_id, 'test-policy@1');
   assert.deepEqual(assertUsablePolicy(withoutId), [
-    'policy_id must be a non-blank string with no leading or trailing whitespace',
+    'policy_id must be a string with a letter or digit and no leading or trailing whitespace',
   ]);
   assert.deepEqual(reasonsFor({ policy_id: '' }), [
-    'policy_id must be a non-blank string with no leading or trailing whitespace',
+    'policy_id must be a string with a letter or digit and no leading or trailing whitespace',
   ]);
   assert.deepEqual(reasonsFor({ policy_version: 'guardrails/1' }), [
     'policy_version must be guardrails/0',
@@ -330,7 +330,7 @@ test('loadGuardrailPolicy refuses an incomplete, placeholder or rule-less policy
       edited((copy) => (copy.approval = {})),
       {
         message:
-          'unusable guardrail policy: approval.decision_id must be a non-blank string with no leading or trailing whitespace; approval.approved_by must be a non-blank string with no leading or trailing whitespace; approval.approved_at must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day',
+          'unusable guardrail policy: approval.decision_id must be a string with a letter or digit and no leading or trailing whitespace; approval.approved_by must be a string with a letter or digit and no leading or trailing whitespace; approval.approved_at must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day',
       },
     );
     assert.throws(
@@ -369,6 +369,30 @@ test('a handler cannot be built with an unusable guardrail policy', () => {
       message: `createRequestHandler needs a usable guardrail policy: ${reason}`,
     });
   }
+});
+
+// Review N-3: the seam holds a deep-frozen copy of the policy it accepted, so a caller that
+// edits its own object afterwards - here into one the validator refuses - changes no decision.
+test('a policy edited after the handler is built changes no decision', async () => {
+  const mine = structuredClone(policy);
+  const handler = seam(undefined, { policy: mine });
+  mine.policy_version = 'guardrails/1';
+  mine.policy_id = 'edited@9';
+  mine.rules.require_verified_controls.push('CAF-SDLC-010:provenance');
+  const { status, body } = await call(handler, post(JSON.stringify(validEvidence)));
+  assert.equal(status, 202);
+  assert.equal(body.decision.disposition, 'accepted');
+  assert.equal(body.decision.policy_id, 'test-policy@1');
+  assert.notDeepEqual(assertUsablePolicy(mine), [], 'control: the edit made it unusable');
+});
+
+test('loadGuardrailPolicy returns a policy frozen at every level', () => {
+  const loaded = loadGuardrailPolicy();
+  for (const level of [loaded, loaded.approval, loaded.rules, loaded.rules.blocked_tiers])
+    assert.equal(Object.isFrozen(level), true);
+  assert.throws(() => {
+    loaded.rules.require_verified_controls.push('x');
+  }, TypeError);
 });
 
 // The module scope loads the shipped policy through loadGuardrailPolicy before createApp exists, so
@@ -617,33 +641,46 @@ test('a conflicting submission is answered 409 with the key, never the stored pa
   assert.equal(store.list()[0].evidence.result.pass, true, 'the first record stands');
 });
 
+// Whether a request reached policy. The seam holds a deep-frozen copy of its policy, so a getter
+// on the caller's object can no longer watch it. evaluateGuardrails's first step, validateEvidence,
+// looks the record's tier up in contracts' TIERS set, and nothing else a request runs does (the
+// policy validator does too, but only while the handler is built). A spy on that one set's lookup
+// records it; mocked on the test's context, so it is restored when the test ends.
+const watchPolicyEvaluation = (t) => {
+  const has = Set.prototype.has;
+  const isTiers = (set) =>
+    set.size === 4 && ['T0', 'T1', 'T2', 'T3'].every((tier) => has.call(set, tier));
+  const watch = { reached: false };
+  t.mock.method(Set.prototype, 'has', function (value) {
+    if (isTiers(this)) watch.reached = true;
+    return has.call(this, value);
+  });
+  return watch;
+};
+
 // AC-16. PostgreSQL cannot hold U+0000 or an unpaired surrogate; the seam refuses them as the
 // caller's fault, before policy is read, and nothing is stored.
-test('a body holding U+0000 or an unpaired surrogate is 400 before policy is evaluated', async () => {
+test('a body holding U+0000 or an unpaired surrogate is 400 before policy is evaluated', async (t) => {
   for (const raw of [
     JSON.stringify({ ...validEvidence, change_id: 'PR-\u0000' }),
     '{"schema_version":"evidence/0","change_id":"PR-\\ud800","tier":"T1"}',
     '{"schema_version":"evidence/0","change_id":"PR-1","note":{"k\\u0000":1}}',
   ]) {
-    let policyRead = false;
-    const watched = { ...policy };
-    Object.defineProperty(watched, 'policy_version', {
-      get() {
-        policyRead = true;
-        return 'guardrails/0';
-      },
-    });
     const store = createInMemoryEvidenceStore();
-    // The handler checks its policy when it is built, so the watch is armed after that and
-    // before the first request.
-    const handler = seam(store, { policy: watched });
-    policyRead = false;
+    const handler = seam(store);
+    // Armed after the handler is built, which checks the policy.
+    const policyRead = watchPolicyEvaluation(t);
     const { status, body } = await call(handler, post(raw));
     assert.equal(status, 400, raw);
     assert.deepEqual(body, { error: 'request body must be valid JSON' });
-    assert.equal(policyRead, false, `policy was evaluated for ${raw}`);
+    assert.equal(policyRead.reached, false, `policy was evaluated for ${raw}`);
     assert.equal(store.list().length, 0);
+    t.mock.restoreAll();
   }
+  const handler = seam();
+  const policyRead = watchPolicyEvaluation(t);
+  await call(handler, post(JSON.stringify(validEvidence)));
+  assert.equal(policyRead.reached, true, 'control: a storable record does reach policy');
 });
 
 // AC-8 at the seam: a redacted envelope is not a record, so the indicator does not count it.

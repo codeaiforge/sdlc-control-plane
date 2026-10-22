@@ -735,7 +735,7 @@
           "ai_tool": {
             "type": "string",
             "minLength": 1,
-            "description": "Which AI tool assisted the change, such as claude-code. Optional. When present it must be a string with at least one non-whitespace character, and it is stored as sent; any other value, and a tool on a record whose ai_assisted is false, fails the evidence/0 contract (422, 'rejected'), because naming a tool implies assistance (CAF-SDLC-010). The non-whitespace rule is stated here rather than as a pattern, which the checker that reads this document does not support. When ai_assisted is true and this field is absent the record receives needs-remediation (see ai_assisted). Like ai_assisted, it is the submitter's own claim (ADR-0004)."
+            "description": "Which AI tool assisted the change, such as claude-code. Optional. When present it must be a string with at least one letter or digit (in any script), and it is stored as sent; any other value, and a tool on a record whose ai_assisted is false, fails the evidence/0 contract (422, 'rejected'), because naming a tool implies assistance (CAF-SDLC-010). The letter-or-digit rule is stated here rather than as a pattern, which the checker that reads this document does not support. When ai_assisted is true and this field is absent the record receives needs-remediation (see ai_assisted). Like ai_assisted, it is the submitter's own claim (ADR-0004)."
           }
         }
       }

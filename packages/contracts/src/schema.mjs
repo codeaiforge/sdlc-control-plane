@@ -23,6 +23,9 @@ export const REGISTRATION_STATUSES = Object.freeze(['active', 'suspended']);
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hasString = (value, key) => typeof value?.[key] === 'string' && value[key].length > 0;
+// What a name or reference needs, in any script: "-", "." and a lone zero-width space are not
+// blank to /\S/, and name nothing.
+const HAS_LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
 
 export function validateEvidence(value) {
   const errors = [];
@@ -53,7 +56,7 @@ export function validateEvidence(value) {
   // not a contract failure: the policy decides it (needs-remediation), so FR-3.1 reads literally.
   if (typeof value.ai_assisted !== 'boolean') errors.push('ai_assisted must be true or false');
   if (Object.hasOwn(value, 'ai_tool')) {
-    if (typeof value.ai_tool !== 'string' || !/\S/.test(value.ai_tool))
+    if (typeof value.ai_tool !== 'string' || !HAS_LETTER_OR_DIGIT.test(value.ai_tool))
       errors.push('ai_tool must be a string naming a tool');
     else if (value.ai_assisted === false) errors.push('ai_tool requires ai_assisted true');
   }
@@ -163,16 +166,19 @@ export const GUARDRAIL_RULE_KEYS = Object.freeze([
   'require_verified_controls',
 ]);
 
-// A word an unfilled template or an example leaves behind. Matched against whole alphanumeric
-// runs, never substrings, so LPM-EXAMPLE-001 and TBD are refused and a surname that contains
-// "todo" is not. Look-alike letters from another script escape it, as they escape
+// A word an unfilled template or an example leaves behind, or a non-answer. Matched against whole
+// alphanumeric runs, never substrings, so LPM-EXAMPLE-001 and TBD are refused and a surname that
+// contains "todo" is not. Look-alike letters from another script escape it, as they escape
 // adr-conformance.test.mjs's outstanding-words rule.
 export const PLACEHOLDER_TOKEN =
-  /^(examples?|samples?|placeholder|dummy|changeme|todo|tbd|tbc|fixme|pending|awaiting|unknown|x{3,})\d*$/;
+  /^(examples?|samples?|placeholder|dummy|changeme|todo|tbd|tbc|tba|fixme|pending|awaiting|unknown|none|null|x{3,})\d*$/;
+// n/a spans two alphanumeric runs, so it is matched whole here: not inside a longer run on either
+// side, so "n/a" and "TEAM-N/A" are refused and "an/am" is not.
+const NOT_APPLICABLE = /(?<![A-Za-z0-9])n\/a\d*(?![A-Za-z0-9])/i;
 
 export function isPlaceholderText(value) {
   if (typeof value !== 'string') return false;
-  if (/[<>]/.test(value)) return true;
+  if (/[<>]/.test(value) || NOT_APPLICABLE.test(value)) return true;
   return (value.match(/[A-Za-z0-9]+/g) ?? []).some((token) =>
     PLACEHOLDER_TOKEN.test(token.toLowerCase()),
   );
@@ -190,7 +196,8 @@ export function isUtcTimestamp(value) {
 
 // Non-blank, with no leading or trailing whitespace: a value compared as written, never trimmed.
 const isText = (value) => typeof value === 'string' && /\S/.test(value) && value === value.trim();
-const TEXT = 'must be a non-blank string with no leading or trailing whitespace';
+const isName = (value) => isText(value) && HAS_LETTER_OR_DIGIT.test(value);
+const TEXT = 'must be a string with a letter or digit and no leading or trailing whitespace';
 const TIMESTAMP = 'must be a UTC timestamp YYYY-MM-DDTHH:MM:SSZ on a real calendar day';
 
 function unrecognised(value, known, prefix, errors) {
@@ -205,10 +212,10 @@ function validateApproval(approval, effectiveFrom, errors) {
     return;
   }
   unrecognised(approval, GUARDRAIL_APPROVAL_KEYS, 'approval.', errors);
-  if (!isText(approval.decision_id)) errors.push(`approval.decision_id ${TEXT}`);
+  if (!isName(approval.decision_id)) errors.push(`approval.decision_id ${TEXT}`);
   else if (isPlaceholderText(approval.decision_id))
     errors.push('approval.decision_id is a placeholder, not a decision reference');
-  if (!isText(approval.approved_by)) errors.push(`approval.approved_by ${TEXT}`);
+  if (!isName(approval.approved_by)) errors.push(`approval.approved_by ${TEXT}`);
   else if (isPlaceholderText(approval.approved_by))
     errors.push('approval.approved_by is a placeholder, not an approver');
   if (!isUtcTimestamp(approval.approved_at)) errors.push(`approval.approved_at ${TIMESTAMP}`);
@@ -245,7 +252,7 @@ export function validateGuardrailPolicy(value) {
   unrecognised(value, GUARDRAIL_POLICY_KEYS, '', errors);
   if (value.policy_version !== GUARDRAIL_SCHEMA_VERSION)
     errors.push(`policy_version must be ${GUARDRAIL_SCHEMA_VERSION}`);
-  if (!isText(value.policy_id)) errors.push(`policy_id ${TEXT}`);
+  if (!isName(value.policy_id)) errors.push(`policy_id ${TEXT}`);
   if (!isUtcTimestamp(value.effective_from)) errors.push(`effective_from ${TIMESTAMP}`);
   validateApproval(value.approval, value.effective_from, errors);
   validateRules(value.rules, errors);

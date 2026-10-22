@@ -40,6 +40,20 @@ export function assertUsablePolicy(candidate) {
   return validateGuardrailPolicy(candidate).errors;
 }
 
+// What a seam holds: a deep-frozen copy, and the copy is what the validator checks, so the policy
+// the validator accepted is the one every request is evaluated under, whatever a caller does with
+// its own object afterwards. A value structuredClone cannot copy throws here.
+function heldPolicy(candidate) {
+  const freeze = (value) => {
+    if (value !== null && typeof value === 'object') {
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    }
+    return value;
+  };
+  return freeze(structuredClone(candidate));
+}
+
 const SHIPPED_POLICY = new URL('../../../config/control-plane/guardrails.json', import.meta.url);
 
 // Read, parse and check, or throw. A parse failure is reported without the file's text, as every
@@ -52,9 +66,10 @@ export function loadGuardrailPolicy(url = SHIPPED_POLICY) {
     if (!(error instanceof SyntaxError)) throw error;
     throw new Error('unusable guardrail policy: not JSON');
   }
-  const errors = assertUsablePolicy(candidate);
+  const held = heldPolicy(candidate);
+  const errors = assertUsablePolicy(held);
   if (errors.length > 0) throw new Error(`unusable guardrail policy: ${errors.join('; ')}`);
-  return candidate;
+  return held;
 }
 
 // The issuer is written twice - workload-identity's ISSUER, which step 4 compares `iss` against,
@@ -344,14 +359,15 @@ export function createRequestHandler({
     throw new TypeError('createRequestHandler needs an authenticate function');
   // The same check as startup, so a test or fixture cannot build a seam around a policy the
   // service would refuse to start with.
-  const policyErrors = assertUsablePolicy(policy);
+  const held = heldPolicy(policy);
+  const policyErrors = assertUsablePolicy(held);
   if (policyErrors.length > 0)
     throw new TypeError(
       `createRequestHandler needs a usable guardrail policy: ${policyErrors.join('; ')}`,
     );
   const context = {
     registry,
-    policy,
+    policy: held,
     evidenceStore,
     authenticate,
     quota: quota ?? createSubmissionQuota({ now }),
