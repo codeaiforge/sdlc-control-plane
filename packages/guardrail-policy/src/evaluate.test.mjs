@@ -212,6 +212,22 @@ test('rules present but not an object is an unsupported policy, not accepted', (
   assert.equal(evaluateGuardrails(evidence, rest).accepted, true, 'control: absent rules accept');
 });
 
+// Phase ⑤ F-1: the gate itself, run, not only read from the source.
+test('a policy of another version is an unsupported policy, not evaluated', () => {
+  for (const version of ['guardrails/1', undefined]) {
+    assert.deepEqual(evaluateGuardrails(evidence, { ...policy, policy_version: version }), {
+      accepted: false,
+      disposition: 'rejected',
+      reasons: ['unsupported guardrail policy version'],
+    });
+  }
+  assert.equal(
+    evaluateGuardrails(evidence, policy).accepted,
+    true,
+    'control: guardrails/0 accepts',
+  );
+});
+
 test('the version gate reads the contracts constant, not a literal', () => {
   const source = readFileSync(new URL('./evaluate.mjs', import.meta.url), 'utf8');
   assert.match(source, /policy\?\.policy_version !== GUARDRAIL_SCHEMA_VERSION/);
