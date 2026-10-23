@@ -79,7 +79,10 @@ PGHOST=... PGUSER=<admin> PGPASSWORD=... PGDATABASE=postgres pnpm nx run evidenc
 #   not ALTER ROLE ... PASSWORD, which leaves the plaintext in server logs and psql history
 PGHOST=... PGUSER=evidence_owner PGPASSWORD=... PGDATABASE=sdlc_control_plane pnpm nx run evidence-store:migrate
 PGHOST=... PGUSER=evidence_app PGPASSWORD=... PGDATABASE=sdlc_control_plane pnpm start:api
+PGHOST=... PGUSER=evidence_retention PGPASSWORD=... PGDATABASE=sdlc_control_plane pnpm nx run evidence-store:expire
 ```
+
+**Retention.** `expire` removes the payload of every envelope received more than 90 days (2160 hours, on the database's clock) ago and keeps its identity, so a replay is still a duplicate; it prints the number it redacted. Nothing in this repository runs it: run it from your deployment's scheduler — daily is recommended — and a payload can outlive the 90 days by up to the time between successful runs. It is safe to re-run and to run twice at once. Noticing a run that did not happen is task 2.3's, not yet built. The database itself refuses to redact anything younger, for every role, unless its owner or a superuser alters or bypasses the trigger. After an upgrade that adds a migration, run `migrate` before restarting the service, which refuses a schema it does not bundle.
 
 Connection settings are `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` and `PGSSLROOTCERT`, and nothing else. Without `PGSSLROOTCERT` the server's certificate is checked against Node's default CAs, which `NODE_EXTRA_CA_CERTS` extends; set `PGSSLROOTCERT` to trust only your database's CA. The service refuses to start, with a message naming the reason, on an unusable guardrail policy, an unusable configuration, an unreachable server, a non-loopback host without verified TLS, a database role the startup check refuses (an elevated attribute, membership of any other role, ownership of the database or of anything in the `evidence` schema, or a grant that could change or remove a row of the envelope log or its redaction table, or set a row's `received_at` or `redacted_at`), or a schema that is not the one it bundles. A TLS failure - no TLS on the server, a missing or wrong CA, a certificate for another name - is reported as `database-unreachable`, the same line as a wrong password: the service refuses, but does not say which. What the roles may do, and what is left to whoever deploys it, is the `Access control` row of [docs/specs/stack.md](docs/specs/stack.md).
 
@@ -91,7 +94,7 @@ The HTTP surface — routes, statuses and bodies — is [packages/control-plane-
 - **An approval is checked for form, not for a person.** Startup refuses an incomplete approval and a fixed list of placeholder words; a test resolves the approval to a decision record whose rules and approval line match. Neither establishes that a person decided: the record and the policy can be written by the same person, and a policy edited on a deployed host is not checked against any record (threat model RR-9).
 - **One approver.** The project is maintained by one person, so no second approver, `CODEOWNERS` or branch protection can be required yet (RR-1).
 - **Per-process limits.** The submission quota and read timeouts are per process; a restart resets the window (RR-6).
-- **Not yet built.** The 90-day retention job (task 2.5), operator telemetry and health (2.3), the workspace-side evidence adapter (3.1), and any portfolio or ALM integration (3.2). The policy is applied, not published to workspaces: no route serves it (RR-3).
+- **Not yet built.** Operator telemetry and health, including detecting a missed retention run (2.3), the workspace-side evidence adapter (3.1), and any portfolio or ALM integration (3.2). The policy is applied, not published to workspaces: no route serves it (RR-3).
 
 Every accepted risk, with who accepted it and when it is reviewed, is in the residual-risk table of [docs/architecture/threat-model.md](docs/architecture/threat-model.md).
 
