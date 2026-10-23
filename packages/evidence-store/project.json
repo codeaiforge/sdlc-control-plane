@@ -16,6 +16,7 @@
       "command": "for f in packages/evidence-store/src/*.mjs; do node --check \"$f\" || exit 1; done"
     },
     "migrate": { "command": "node packages/evidence-store/src/migrate.mjs migrate" },
-    "bootstrap": { "command": "node packages/evidence-store/src/migrate.mjs bootstrap" }
+    "bootstrap": { "command": "node packages/evidence-store/src/migrate.mjs bootstrap" },
+    "expire": { "command": "node packages/evidence-store/src/expire.mjs" }
   }
 }
