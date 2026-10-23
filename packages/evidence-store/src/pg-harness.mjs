@@ -150,7 +150,9 @@ function testDatabase(h, name) {
     env: (role) => roleEnv(role, name),
     // The redaction the conformance suite asks for, done the way the durable store allows it:
     // evidence_audit finds the row (retention cannot read workspace_id or change_id), then
-    // evidence_retention nulls the payload and the trigger does the rest.
+    // evidence_retention nulls the payload and the trigger does the rest. The row must be past the
+    // retention window first (age() below); a younger one is refused by the trigger, and this
+    // rejects with its error.
     async redact({ workspace_id, change_id }) {
       audit ??= connectAs('evidence_audit', { max: 1 });
       retention ??= connectAs('evidence_retention', { max: 1 });
@@ -161,6 +163,22 @@ function testDatabase(h, name) {
       const result = await retention`
         UPDATE evidence.evidence_envelope SET evidence = NULL
          WHERE id = ${row.id} AND redacted_at IS NULL`;
+      return result.count === 1;
+    },
+    // Moves an envelope's receipt time back past the retention window - 2161 hours, an hour beyond
+    // it - the only way to make an aged row: received_at is the database's clock, no role but a
+    // superuser can insert it, and the trigger refuses any update to it. Done as the superuser with
+    // triggers off for this one transaction (session_replication_role = replica), so no
+    // evidence_redaction row is written. Resolves true when it moved one live envelope. A literal
+    // of its own, not expire.mjs's: an hour of margin is all it needs, and a window change that
+    // outgrew it would fail the tests that use it.
+    async age({ workspace_id, change_id }) {
+      const result = await admin.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = replica`;
+        return tx`
+          UPDATE evidence.evidence_envelope SET received_at = received_at - interval '2161 hours'
+           WHERE workspace_id = ${workspace_id} AND change_id = ${change_id} AND redacted_at IS NULL`;
+      });
       return result.count === 1;
     },
     revokeConnect: (role) =>

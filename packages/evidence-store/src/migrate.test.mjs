@@ -18,8 +18,8 @@ import {
   runsAs,
 } from './migrate.mjs';
 
-// Unit tests, no database. What the runner does on a real server - applying 0001 to an empty
-// database, refusing a non-owner and a superuser, refusing checksum drift - is
+// Unit tests, no database. What the runner does on a real server - applying the bundled files to an
+// empty database, refusing a non-owner and a superuser, refusing checksum drift - is
 // migrate.integration.mjs's, against PostgreSQL 16.
 
 const OWNER_HEADER = '-- runs as: evidence_owner\n';
@@ -37,7 +37,10 @@ test('the bundled migrations load in order, each stating that it runs as evidenc
   const migrations = loadMigrations();
   assert.deepEqual(
     migrations.map(({ version, name, runsAs: role }) => ({ version, name, role })),
-    [{ version: 1, name: 'evidence-envelope', role: 'evidence_owner' }],
+    [
+      { version: 1, name: 'evidence-envelope', role: 'evidence_owner' },
+      { version: 2, name: 'retention-window', role: 'evidence_owner' },
+    ],
   );
   const bytes = readFileSync(new URL('0001-evidence-envelope.sql', MIGRATIONS_DIR));
   assert.equal(migrations[0].checksum, createHash('sha256').update(bytes).digest('hex'));
@@ -47,6 +50,7 @@ test('the bundled migrations load in order, each stating that it runs as evidenc
 test('every SQL file in the package names the one role it runs as on its first line', () => {
   const expected = {
     'migrations/0001-evidence-envelope.sql': 'evidence_owner',
+    'migrations/0002-retention-window.sql': 'evidence_owner',
     'sql/bootstrap.sql': 'cluster admin',
     'sql/audit-queries.sql': 'evidence_audit',
   };

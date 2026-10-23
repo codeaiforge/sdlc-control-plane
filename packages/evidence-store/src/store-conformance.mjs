@@ -34,11 +34,13 @@ const evidenceRecord = (overrides = {}) => ({
 
 const WORKSPACE = 'payments-art';
 
-// The factory may be sync or async, and may return a store or a { store, dispose, redact } bundle
-// — the PostgreSQL adapter has a connection to close, and a suite that leaked one per test would
-// exhaust the pool long before it ran out of tests. `append` is the discriminator: a store has
-// one, a bundle does not. `redact({ workspace_id, change_id })` is never a store method (see the
-// MIT-14 test below): it is whatever the adapter's retention path is, performed here by the test.
+// The factory may be sync or async, and may return a store or a { store, dispose, redact, age }
+// bundle — the PostgreSQL adapter has a connection to close, and a suite that leaked one per test
+// would exhaust the pool long before it ran out of tests. `append` is the discriminator: a store
+// has one, a bundle does not. `redact({ workspace_id, change_id })` is never a store method (see
+// the MIT-14 test below): it is whatever the adapter's retention path is, performed here by the
+// test. `age(key)`, optional, makes that envelope old enough for the retention path: the
+// PostgreSQL trigger refuses to redact a younger one, and the in-memory log has no window.
 async function openLog(t, createStore) {
   const created = await createStore();
   const bundle = typeof created?.append === 'function' ? { store: created } : created;
@@ -400,7 +402,7 @@ export function describeEvidenceStore(name, createStore) {
   ];
 
   test(`${name}: a redacted envelope keeps its identity, loses its payload, and a replay is a duplicate`, async (t) => {
-    const { store, redact } = await openLog(t, createStore);
+    const { store, redact, age } = await openLog(t, createStore);
     assert.equal(typeof redact, 'function', `${name}: the factory must hand the suite a redact()`);
     const first = await store.append(evidenceRecord(), {
       workspace_id: WORKSPACE,
@@ -408,6 +410,9 @@ export function describeEvidenceStore(name, createStore) {
       submitted_by: submitter(),
     });
     await store.append(evidenceRecord({ change_id: 'PR-2' }), { workspace_id: WORKSPACE });
+    await age?.({ workspace_id: WORKSPACE, change_id: 'PR-1' });
+    // Aging moves received_at; the redaction itself must not, so it is compared with the aged row.
+    const aged = (await store.list())[0];
     assert.equal(await redact({ workspace_id: WORKSPACE, change_id: 'PR-1' }), true);
 
     const [tombstone, kept] = await store.list();
@@ -417,14 +422,9 @@ export function describeEvidenceStore(name, createStore) {
     assert.ok(Number.isFinite(Date.parse(tombstone.redacted_at)), 'redacted_at is a timestamp');
     assert.equal(kept.redacted_at, null);
     assert.equal(kept.evidence.change_id, 'PR-2');
-    for (const field of [
-      'envelope_version',
-      'workspace_id',
-      'received_at',
-      'idempotency_key',
-      'policy_id',
-    ])
+    for (const field of ['envelope_version', 'workspace_id', 'idempotency_key', 'policy_id'])
       assert.equal(tombstone[field], first.envelope[field], `${field} is kept`);
+    assert.equal(tombstone.received_at, aged.received_at, 'received_at is kept');
     // ADR-0004: the seven identifiers stay, the four names a person chose are nulled.
     assert.deepEqual(tombstone.submitted_by, {
       ...submitter(),

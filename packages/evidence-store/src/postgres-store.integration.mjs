@@ -15,12 +15,14 @@ const unhandled = [];
 process.on('unhandledRejection', (reason) => unhandled.push(reason));
 
 // AC-1: the port's suite, unedited, on the PostgreSQL adapter - logged in as the service's own
-// role, evidence_app, on a fresh database per test; redaction through the retention role.
+// role, evidence_app, on a fresh database per test; redaction through the retention role, of an
+// envelope first aged past the retention window, which the trigger requires (task 2.5).
 describeEvidenceStore('postgres', async () => {
   const db = await createTestDatabase();
   return {
     store: createPostgresEvidenceStore({ sql: db.connectAs('evidence_app') }),
     redact: (key) => db.redact(key),
+    age: (key) => db.age(key),
     dispose: () => db.dispose(),
   };
 });

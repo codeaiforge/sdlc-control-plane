@@ -27,9 +27,9 @@ async function migrated(t) {
 test('an empty database is migrated by evidence_owner, and a second run applies nothing', async (t) => {
   const db = await empty(t);
   const owner = db.connectAs('evidence_owner', { max: 1 });
-  assert.deepEqual(await status(owner), { applied: [], pending: [1] });
-  assert.deepEqual(await migrate(owner), { applied: [1], current: 1 });
-  assert.deepEqual(await migrate(owner), { applied: [], current: 1 });
+  assert.deepEqual(await status(owner), { applied: [], pending: [1, 2] });
+  assert.deepEqual(await migrate(owner), { applied: [1, 2], current: 2 });
+  assert.deepEqual(await migrate(owner), { applied: [], current: 2 });
   const { applied, pending } = await status(db.connectAs('evidence_app', { max: 1 }));
   assert.deepEqual(pending, []);
   assert.deepEqual(
@@ -39,15 +39,35 @@ test('an empty database is migrated by evidence_owner, and a second run applies 
       checksum,
       applied_by,
     })),
-    [
-      {
-        version: 1,
-        name: 'evidence-envelope',
-        checksum: loadMigrations()[0].checksum,
-        applied_by: 'evidence_owner',
-      },
-    ],
+    loadMigrations().map(({ version, name, checksum }) => ({
+      version,
+      name,
+      checksum,
+      applied_by: 'evidence_owner',
+    })),
   );
+  assert.deepEqual(
+    applied.map(({ version, name }) => `${version}:${name}`),
+    ['1:evidence-envelope', '2:retention-window'],
+  );
+});
+
+// Task 2.5 added 0002. A database migrated before it is behind the build: the service refuses it
+// until `migrate` brings it up, which applies 0002 alone.
+test('a database at 0001 is brought to 0002, and the service refuses it until then', async (t) => {
+  const db = await empty(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  const app = db.connectAs('evidence_app', { max: 1 });
+  assert.deepEqual(await migrate(owner, { migrations: loadMigrations().slice(0, 1) }), {
+    applied: [1],
+    current: 1,
+  });
+  await assert.rejects(
+    assertSchemaCurrent(app),
+    (error) => error instanceof StartupRefused && error.code === 'schema-mismatch',
+  );
+  assert.deepEqual(await migrate(owner), { applied: [2], current: 2 });
+  await assertSchemaCurrent(app);
 });
 
 test('two runners at once serialise on the advisory lock: one applies, the other finds it done', async (t) => {
@@ -56,7 +76,7 @@ test('two runners at once serialise on the advisory lock: one applies, the other
     migrate(db.connectAs('evidence_owner', { max: 1 })),
     migrate(db.connectAs('evidence_owner', { max: 1 })),
   ]);
-  assert.deepEqual(results.map((result) => result.applied).sort(), [[], [1]]);
+  assert.deepEqual(results.map((result) => result.applied).sort(), [[], [1, 2]]);
 });
 
 test('the runner refuses every role but evidence_owner, and a superuser', async (t) => {
@@ -80,8 +100,10 @@ test('an applied file whose checksum changed, or an applied version with no file
     assertSchemaCurrent(app),
     (error) => error instanceof StartupRefused && error.code === 'schema-mismatch',
   );
-  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${loadMigrations()[0].checksum}`;
-  await db.admin`INSERT INTO evidence.schema_migrations (version, name, checksum) VALUES (2, 'ghost', 'x')`;
+  // Scoped: unscoped, it would write 0001's checksum onto 0002 and the next refusal would be a
+  // checksum mismatch, not the unknown version this half is about.
+  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${loadMigrations()[0].checksum} WHERE version = 1`;
+  await db.admin`INSERT INTO evidence.schema_migrations (version, name, checksum) VALUES (3, 'ghost', 'x')`;
   await assert.rejects(migrate(owner), refused('unknown-applied'));
   await assert.rejects(assertSchemaCurrent(app), (error) => error.code === 'schema-mismatch');
 });
@@ -251,11 +273,11 @@ test('the CLI bootstraps, migrates and reports, with exit codes 0, 1 and 2', asy
   const first = await cli(['migrate'], roleEnv('evidence_owner', name));
   assert.deepEqual(first, {
     code: 0,
-    stdout: 'migrate done: applied [1], current 1\n',
+    stdout: 'migrate done: applied [1, 2], current 2\n',
     stderr: '',
   });
   const again = await cli(['migrate'], roleEnv('evidence_owner', name));
-  assert.equal(again.stdout, 'migrate done: applied [], current 1\n');
+  assert.equal(again.stdout, 'migrate done: applied [], current 2\n');
   const report = await cli(['status'], roleEnv('evidence_app', name));
   assert.equal(report.code, 0);
   assert.deepEqual(JSON.parse(report.stdout).pending, []);

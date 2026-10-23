@@ -18,6 +18,8 @@ after(() => closeHarness());
 const DENIED = '42501'; // insufficient_privilege, also "must be owner"
 const TRIGGER = 'P0001'; // the guard's own refusals
 const CHECK = '23514';
+const TOO_YOUNG =
+  'evidence_envelope: a payload is redacted only once its retention window has passed';
 
 const record = (overrides = {}) => ({
   schema_version: 'evidence/0',
@@ -50,8 +52,10 @@ const KEPT = [
 ];
 const NULLED = ['ref', 'event_name', 'workflow_ref', 'job_workflow_ref'];
 
-// A database with one envelope appended by the service role, and a client per role.
-async function setup(t, { change_id = 'PR-1' } = {}) {
+// A database with one envelope appended by the service role, and a client per role. The envelope
+// is aged past the retention window unless a test asks otherwise: the trigger refuses to redact a
+// younger one (0002), and a refusal test on a young row would pass for the wrong reason.
+async function setup(t, { change_id = 'PR-1', aged = true } = {}) {
   const db = await createTestDatabase();
   t.after(() => db.dispose());
   const as = {
@@ -66,6 +70,7 @@ async function setup(t, { change_id = 'PR-1' } = {}) {
     policy_id: 'baseline@1',
     submitted_by: submitter(),
   });
+  if (aged) assert.equal(await db.age({ workspace_id: 'payments-art', change_id }), true);
   const [{ id }] =
     await db.admin`SELECT id FROM evidence.evidence_envelope WHERE change_id = ${change_id}`;
   const row = async () =>
@@ -447,6 +452,64 @@ test('nothing deletes an envelope: the owner gave up DELETE, and even a superuse
   assert.equal(n, 2);
 });
 
+// Task 2.5 (0002): the trigger, not only the job, holds redaction to the retention window, so the
+// retention credential cannot redact a live payload early and neither can the owner or a superuser
+// short of altering or bypassing the trigger.
+test('the trigger refuses a redaction inside the retention window, the owner and a superuser included', async (t) => {
+  const { db, as, id, row } = await setup(t, { aged: false });
+  const before = await row();
+  for (const [who, sql] of [
+    ['evidence_retention', as.retention],
+    ['evidence_owner', as.owner],
+    ['superuser', db.admin],
+  ])
+    await assert.rejects(
+      sql`UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${id} AND redacted_at IS NULL`,
+      (error) => {
+        assert.equal(error.code, TRIGGER, who);
+        assert.equal(error.message, TOO_YOUNG, who);
+        return true;
+      },
+      who,
+    );
+  assert.deepEqual(await row(), before, 'the row is unchanged');
+  const [{ n }] = await db.admin`SELECT count(*)::int AS n FROM evidence.evidence_redaction`;
+  assert.equal(n, 0, 'no redaction row');
+});
+
+test('the window is 2160 hours on the database clock: a minute past it redacts, a minute short is refused', async (t) => {
+  const { db, as } = await setup(t, { aged: false });
+  // Only a superuser can choose received_at; the offset is applied on the server's own clock.
+  const insert = async (change_id, offset) =>
+    (
+      await db.admin`
+        INSERT INTO evidence.evidence_envelope
+          (envelope_version, workspace_id, change_id, received_at, evidence)
+        VALUES ('evidence-envelope/0', 'payments-art', ${change_id},
+                statement_timestamp() - interval '2160 hours' + ${offset}::interval, '{}'::jsonb)
+        RETURNING id`
+    )[0].id;
+  const old = await insert('PR-old', '-1 minute');
+  const young = await insert('PR-young', '1 minute');
+  const result = await as.retention`
+    UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${old} AND redacted_at IS NULL`;
+  assert.equal(result.count, 1);
+  await assert.rejects(
+    as.retention`
+      UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${young} AND redacted_at IS NULL`,
+    (error) => {
+      assert.equal(error.code, TRIGGER);
+      assert.equal(error.message, TOO_YOUNG);
+      return true;
+    },
+  );
+  const redactions = await db.admin`SELECT envelope_id FROM evidence.evidence_redaction`;
+  assert.deepEqual(
+    redactions.map((r) => r.envelope_id),
+    [String(old)],
+  );
+});
+
 // ---------------------------------------------------------------- AC-7: ADR-0004's extension
 
 test('a redaction that changes any of the seven kept submitted_by identifiers is refused', async (t) => {
@@ -534,12 +597,15 @@ test('the two documented audit queries run as evidence_audit and answer both eve
   const queries = auditQueries();
   assert.deepEqual(Object.keys(queries), ['envelopes-appended', 'payloads-redacted']);
   for (const query of Object.values(queries)) assert.doesNotMatch(query, /\bevidence\b(?!\.|_)/);
-  const [{ from, until }] = await db.admin`
-    SELECT statement_timestamp() - interval '1 hour' AS from, statement_timestamp() + interval '1 hour' AS until`;
+  // PR-1 was aged past the retention window by setup, so the append range reaches back beyond it;
+  // the redaction range is over redacted_at, which is now.
+  const [{ since, from, until }] = await db.admin`
+    SELECT statement_timestamp() - interval '2200 hours' AS since,
+           statement_timestamp() - interval '1 hour' AS from, statement_timestamp() + interval '1 hour' AS until`;
 
   const appended = await as.audit.unsafe(queries['envelopes-appended'], [
     'payments-art',
-    from,
+    since,
     until,
   ]);
   assert.deepEqual(
@@ -641,6 +707,7 @@ table schema_migrations | evidence_owner | SELECT
 table schema_migrations | evidence_owner | TRIGGER
 table schema_migrations | evidence_owner | TRUNCATE
 table schema_migrations | evidence_owner | UPDATE
+table schema_migrations | evidence_retention | SELECT
 `
   .trim()
   .split('\n');
