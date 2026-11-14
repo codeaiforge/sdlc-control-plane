@@ -88,13 +88,29 @@ Connection settings are `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`
 
 The HTTP surface — routes, statuses and bodies — is [packages/control-plane-api/openapi.json](packages/control-plane-api/openapi.json), and a contract test fails when it and the seam disagree. Every hop that carries the token needs TLS, and so does the database connection unless it is on loopback. The shipped `config/control-plane/workspaces.json` registers one example workspace, suspended, so out of the box no token is authorized.
 
+## Wiring a workspace
+
+A workspace submits through the reusable workflow [`.github/workflows/submit-evidence.yml`](.github/workflows/submit-evidence.yml), as its own job after the gate:
+
+```yaml
+submit-evidence:
+  needs: controls
+  if: ${{ !cancelled() }}
+  permissions:
+    id-token: write
+    contents: read
+  uses: codeaiforge/sdlc-control-plane/.github/workflows/submit-evidence.yml@<tag>
+```
+
+Call it cross-repository at a tag, not a SHA and not a local copy: a registration pins `required_job_workflow_ref`, which must end `@refs/(heads|tags)/…`, and pins the SHA separately with `required_job_workflow_sha`. The gate's tier step sets a per-run change id, `--change-id "PR-${PR}@${HEAD_SHA}/${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"`, so every gate run is its own record and indicators count gate runs, not changes ([docs/contracts.md](docs/contracts.md) › Producer). Run it on GitHub-hosted runners only (threat model RR-14). The job fails unless the record was answered 202: exit 1 is a 422, 2 a local refusal, 4 a refusal by the control plane, 5 no answer within the retry budget; a gate that wrote no record (3) passes, because the gate's own job has already failed. If the artifact cannot be downloaded, the job also reads that as "no record". Until a deployment exists the adapter has no endpoint and every run exits 2.
+
 ## The honest ceiling
 
 - **Evidence is self-attested.** The control plane proves who sent a record, not that what it says is true: a workspace's list of verified controls is its own claim ([ADR-0004](docs/adr/0004-evidence-recorded-as-identity-bound-self-attestation.md)). Whether a change was AI-assisted is likewise the submitter's word; the control plane only refuses a record that does not say.
 - **An approval is checked for form, not for a person.** Startup refuses an incomplete approval and a fixed list of placeholder words; a test resolves the approval to a decision record whose rules and approval line match. Neither establishes that a person decided: the record and the policy can be written by the same person, and a policy edited on a deployed host is not checked against any record (threat model RR-9).
 - **One approver.** The project is maintained by one person, so no second approver, `CODEOWNERS` or branch protection can be required yet (RR-1).
 - **Per-process limits.** The submission quota and read timeouts are per process; a restart resets the window (RR-6).
-- **Not yet built.** Operator telemetry and health, including detecting a missed retention run (2.3), the workspace-side evidence adapter (3.1), and any portfolio or ALM integration (3.2). The policy is applied, not published to workspaces: no route serves it (RR-3).
+- **Not yet built.** Operator telemetry and health, including detecting a missed retention run (2.3), the fork-token and Dependabot measurements and a real workspace registration (3.3), any portfolio or ALM integration (3.2), and a deployment: the evidence adapter (3.1) ships with no control-plane endpoint configured, so it submits nothing until one is chosen. The policy is applied, not published to workspaces: no route serves it (RR-3).
 
 Every accepted risk, with who accepted it and when it is reviewed, is in the residual-risk table of [docs/architecture/threat-model.md](docs/architecture/threat-model.md).
 
@@ -124,6 +140,16 @@ docker run --rm -d --name evidence-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1
 PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=postgres pnpm test:integration
 docker stop evidence-pg
 ```
+
+`pnpm test:integration` also needs the gate binary at exactly the version the gate pins, and its schema. Install it inside `.git/`, where nothing tracks it, and name both:
+
+```sh
+GOBIN=$PWD/.git/sdlc-controls go install github.com/codeaiforge/git-native-sdlc-controls/cmd/sdlc-controls@v0.2.0
+export SDLC_CONTROLS_BIN=$PWD/.git/sdlc-controls/sdlc-controls
+export SDLC_CONTROLS_SCHEMA=$(go env GOMODCACHE)/github.com/codeaiforge/git-native-sdlc-controls@v0.2.0/schemas/evidence/0/evidence.schema.json
+```
+
+The suite fails rather than skips without them, and refuses any binary whose records are not 0.2.0.
 
 The `PG*` variables name a cluster administrator; the harness creates the service's roles and a fresh database per test. Use `127.0.0.1`, not `localhost`: any host that is not a literal loopback address requires verified TLS. Point it only at a throwaway cluster, never one that serves the control plane: the roles are cluster-wide with fixed names, and the harness resets their passwords.
 
