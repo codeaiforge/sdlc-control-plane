@@ -171,7 +171,7 @@ test('the job builds no SQL text, deletes nothing, and its one UPDATE only nulls
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
-  assert.doesNotMatch(code, /\.unsafe\(/);
+  assert.doesNotMatch(code, /\.unsafe\s*\(/);
   assert.doesNotMatch(code, /\b(?:sql|tx)\(/, 'no identifier helper');
   assert.doesNotMatch(code, /\b(?:DELETE|TRUNCATE|INSERT)\b/);
   assert.equal(code.match(/\bUPDATE\s+evidence\./g).length, 1);
