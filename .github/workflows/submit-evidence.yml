@@ -1,0 +1,55 @@
+# Task 3.1: submits a workspace gate's evidence/0 record to the SDLC control plane (ADR-0003).
+# Called cross-repository at a TAG, as its own job after the gate (needs + if: !cancelled()):
+# a ref pin on this file means something only because this job checks out and runs none of the
+# caller's code and takes the gate's artifact as data (ADR-0003 › What a pin does not do).
+# No inputs and no secrets: nothing the caller's (pull-request-editable) workflow says reaches a
+# shell, the endpoint or the audience. The token is never printed (submit-evidence.mjs).
+# GitHub-hosted only; on a persistent self-hosted runner the gate job could leave behind files or
+# processes this job meets (ADR-0003 :483-485), and that cannot be detected from in here (RR-14).
+#
+# Every action is pinned by commit SHA, unlike ci.yml and sdlc-controls.yml: every step of this
+# job can read the ID-token request variables, so a moved tag would be code that can mint a
+# pinned token. tools/sdlc-controls/evidence-adapter-conformance.test.mjs holds this file's shape.
+name: submit-evidence
+on:
+  workflow_call:
+permissions: {}
+jobs:
+  submit:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # This workflow's own repository and commit (the job context), never the caller's.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: evidence-adapter
+          sparse-checkout: packages/evidence-adapter/src/submit-evidence.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+      # The gate's artifact, as data. Missing (the gate failed before uploading) is not an error
+      # here; the adapter reports "no evidence record" and submits nothing.
+      - id: record
+        continue-on-error: true
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: sdlc-controls-evidence
+          path: ${{ runner.temp }}/sdlc-controls-evidence
+      - name: Submit the evidence record (never prints the token)
+        env:
+          RECORD: ${{ runner.temp }}/sdlc-controls-evidence/evidence.json
+        run: |
+          set -u
+          status=0
+          node evidence-adapter/packages/evidence-adapter/src/submit-evidence.mjs "$RECORD" || status=$?
+          # 3 = no record: the gate exited 2 (or earlier); the gate's own job already failed.
+          if [ "$status" -eq 3 ]; then exit 0; fi
+          exit "$status"
