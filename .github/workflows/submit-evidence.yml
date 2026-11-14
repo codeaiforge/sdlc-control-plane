@@ -5,7 +5,7 @@
 # No inputs and no secrets: nothing the caller's (pull-request-editable) workflow says reaches a
 # shell, the endpoint or the audience. The token is never printed (submit-evidence.mjs).
 # GitHub-hosted only; on a persistent self-hosted runner the gate job could leave behind files or
-# processes this job meets (ADR-0003 :483-485), and that cannot be detected from in here (RR-14).
+# processes this job meets (ADR-0003 :483-485), and this job does not check its runner (RR-14).
 #
 # Every action is pinned by commit SHA, unlike ci.yml and sdlc-controls.yml: every step of this
 # job can read the ID-token request variables, so a moved tag would be code that can mint a
@@ -16,17 +16,23 @@ on:
 permissions: {}
 jobs:
   submit:
-    if: github.server_url == 'https://github.com'
+    # Explicit !cancelled(): a job if: without a status function is success() && ..., and whether
+    # success() here sees the caller's failed gate is not documented - a blocked gate (exit 1)
+    # must still publish its record. github.com only, as oidc-measure.yml: Gitea also reads
+    # .github/workflows/ and cannot mint, and GHES fills no job.workflow_* context.
+    if: ${{ !cancelled() && github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       id-token: write
       contents: read
     steps:
-      # This workflow's own repository and commit (the job context), never the caller's.
+      # This workflow's own repository, named literally, at its own commit (the job context);
+      # never the caller's. A literal cannot evaluate to '', which checkout would read as the
+      # caller's repository at the caller's ref; an empty SHA is this repository's default branch.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          repository: ${{ job.workflow_repository }}
+          repository: codeaiforge/sdlc-control-plane
           ref: ${{ job.workflow_sha }}
           path: evidence-adapter
           sparse-checkout: packages/evidence-adapter/src/submit-evidence.mjs

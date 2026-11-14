@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import * as adapter from '../../packages/evidence-adapter/src/submit-evidence.mjs';
 import { MAX_BODY_BYTES } from '../../packages/control-plane-api/src/admission.mjs';
 import * as identity from '../../packages/workload-identity/src/constants.mjs';
@@ -106,13 +107,26 @@ test('C5 no non-test module of control-plane-api imports the adapter, so the ser
 // The reusable workflow is read by this reader and nothing else, so the shape test below reads
 // what GitHub reads only for the constructs this reader understands - and it refuses every other
 // one, rather than guess: anchors, aliases, tags, directives, a second document, complex keys,
-// flow collections other than the empty mapping {}, block scalars other than `run: |`, tab
-// indentation and repeated keys all throw. Every scalar stays a string. No dependency (Q-11).
+// flow collections other than the empty mapping {}, block scalars other than `run: |`, tabs and
+// repeated keys all throw. So does any character another YAML parser could read as a line break
+// or as whitespace where this reader does not (a carriage return, U+0085, U+2028, U+2029, a BOM,
+// a no-break space, any control character), even inside a comment: a line this reader drops as a
+// comment must be one line to every parser. Outside comments only printable ASCII is read.
+// Every scalar stays a string. No dependency (Q-11).
 function readYamlSubset(text) {
   const lines = text.split('\n');
   let index = 0;
   const fail = (message, at = index) => {
     throw new Error(`yaml-subset: line ${at + 1}: ${message}`);
+  };
+  lines.forEach((line, at) => {
+    if (/[\x00-\x1F\x7F-\x9F]|[^\S ]/u.test(line))
+      fail('a control character, or whitespace other than a space', at);
+  });
+  const ascii = (content) => {
+    if (/[^\x20-\x7E]/.test(content))
+      fail('a character outside printable ASCII, outside a comment');
+    return content;
   };
 
   // A line's content with its comment removed: a # at the start or after whitespace, outside
@@ -129,11 +143,7 @@ function readYamlSubset(text) {
     }
     return line.trimEnd();
   };
-  const indentOf = (line) => {
-    const lead = /^[ \t]*/.exec(line)[0];
-    if (lead.includes('\t')) fail('tab in indentation');
-    return lead.length;
-  };
+  const indentOf = (line) => /^ */.exec(line)[0].length;
   // The next line that carries content, or null.
   const peek = () => {
     while (index < lines.length) {
@@ -141,7 +151,7 @@ function readYamlSubset(text) {
       if (content.trim() !== '') {
         if (/^(---|\.\.\.)(\s|$)/.test(content)) fail('a document marker: one document only');
         if (/^%/.test(content)) fail('a directive');
-        return { indent: indentOf(content), content: content.trim() };
+        return { indent: indentOf(content), content: ascii(content.trim()) };
       }
       index += 1;
     }
@@ -180,7 +190,7 @@ function readYamlSubset(text) {
       if (indent <= parentIndent) break;
       contentIndent ??= indent;
       if (indent < contentIndent) fail('a block scalar line indented less than its first');
-      body.push(line.slice(contentIndent));
+      body.push(ascii(line.slice(contentIndent)));
       index += 1;
     }
     while (body.length > 0 && body.at(-1) === '') body.pop();
@@ -296,6 +306,13 @@ test('C7 the YAML-subset reader reads its grammar and refuses everything else', 
     'folded scalar': 'run: >\n  x\n',
     'block scalar outside run': 'script: |\n  x\n',
     'tab indentation': 'a:\n\tb: 1\n',
+    'tab separator': 'a:\tb\n',
+    'carriage return in a comment': `a: 1 # x${String.fromCharCode(13)}b: 2\n`,
+    'U+2028 in a comment': `a: 1 # x${String.fromCharCode(0x2028)}b: 2\n`,
+    'U+0085 in a comment': `a: 1 # x${String.fromCharCode(0x85)}b: 2\n`,
+    'no-break space indentation': `a:\n${String.fromCharCode(0xa0)} b: 1\n`,
+    'byte order mark': `${String.fromCharCode(0xfeff)}a: 1\n`,
+    'non-ASCII outside a comment': `a: ${String.fromCharCode(0xe9)}\n`,
     'repeated key': 'a: 1\na: 2\n',
     'complex key': '? a\n: 1\n',
     'ambiguous plain scalar': 'a: b: c\n',
@@ -307,81 +324,118 @@ test('C7 the YAML-subset reader reads its grammar and refuses everything else', 
 
 // ------------------------------------------------------------------------- C6: the job shape
 
+// The whole file, held exactly: every key at every level, every step in order with its exact key
+// set and values, and the three actions at their reviewed commits. Anything not written here - a
+// working-directory, a shell, a step if: or continue-on-error, an env var such as NODE_OPTIONS,
+// another download path, a fourth action - can put caller code or the token within reach of the
+// token job (TB-9, ABU-17), so admitting it means editing this test. Only runs-on and
+// timeout-minutes keep the latitude AC-8 gives them.
 const WORKFLOW_TEXT = readFileSync(WORKFLOW, 'utf8');
-const workflow = readYamlSubset(WORKFLOW_TEXT);
 const RUNNERS = ['ubuntu-latest', 'ubuntu-24.04', 'ubuntu-22.04'];
-const PINNED_ACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{40}$/;
+// Literal, never ${{ job.workflow_repository }}: checkout reads an empty repository as the
+// caller's, at the caller's ref (review S-1).
+const OWN_REPOSITORY = 'codeaiforge/sdlc-control-plane';
+const ACTIONS = {
+  checkout: 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803',
+  setupNode: 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
+  download: 'actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53',
+};
+// Explicit !cancelled(): without a status function the if: is success() && ..., which might skip
+// the submit job after a blocked gate (review S-2). github.com only: Gitea cannot mint, and GHES
+// has no job.workflow_* context.
+const JOB_IF = "${{ !cancelled() && github.server_url == 'https://github.com' }}";
 const RUN = [
   'set -u',
   'status=0',
   'node evidence-adapter/packages/evidence-adapter/src/submit-evidence.mjs "$RECORD" || status=$?',
+  "# 3 = no record: the gate exited 2 (or earlier); the gate's own job already failed.",
   'if [ "$status" -eq 3 ]; then exit 0; fi',
   'exit "$status"',
+  '',
+].join('\n');
+const STEPS = [
+  {
+    uses: ACTIONS.checkout,
+    with: {
+      repository: OWN_REPOSITORY,
+      ref: '${{ job.workflow_sha }}',
+      path: 'evidence-adapter',
+      'sparse-checkout': ADAPTER,
+      'sparse-checkout-cone-mode': 'false',
+      'persist-credentials': 'false',
+    },
+  },
+  { uses: ACTIONS.setupNode, with: { 'node-version': '24' } },
+  // continue-on-error is the design's: a missing artifact is "no record" (exit 3), not a failure.
+  {
+    id: 'record',
+    'continue-on-error': 'true',
+    uses: ACTIONS.download,
+    with: { name: 'sdlc-controls-evidence', path: '${{ runner.temp }}/sdlc-controls-evidence' },
+  },
+  {
+    name: 'Submit the evidence record (never prints the token)',
+    env: { RECORD: '${{ runner.temp }}/sdlc-controls-evidence/evidence.json' },
+    run: RUN,
+  },
 ];
+const STEP_NAMES = ['checkout', 'setup-node', 'download-artifact', 'submit'];
 
-test('C6 the workflow is called only, takes nothing from its caller, and grants nothing at the top', () => {
-  assert.deepEqual(Object.keys(workflow).sort(), ['jobs', 'name', 'on', 'permissions']);
-  assert.deepEqual(
-    workflow.on,
-    { workflow_call: null },
-    'workflow_call only, with no inputs or secrets',
+const keysOf = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).sort()
+    : null;
+
+// Every way a workflow text departs from the shape, one message each; [] is conformance. A text
+// the reader refuses is a message too, so an unreadable file never passes.
+function shapeErrors(text) {
+  let workflow;
+  try {
+    workflow = readYamlSubset(text);
+  } catch (error) {
+    return [error.message];
+  }
+  const errors = [];
+  const same = (actual, expected, what) => {
+    if (!isDeepStrictEqual(actual, expected))
+      errors.push(`${what} is ${JSON.stringify(actual)}, not ${JSON.stringify(expected)}`);
+  };
+  same(keysOf(workflow), ['jobs', 'name', 'on', 'permissions'], 'the top-level key set');
+  same(workflow.name, 'submit-evidence', 'name');
+  same(workflow.on, { workflow_call: null }, 'on (workflow_call only, no inputs or secrets)');
+  same(workflow.permissions, {}, 'the top-level permissions');
+  same(keysOf(workflow.jobs), ['submit'], 'the job set');
+  const job = workflow.jobs?.submit;
+  if (keysOf(job) === null) return [...errors, 'jobs.submit is not a mapping'];
+  same(
+    keysOf(job),
+    ['if', 'permissions', 'runs-on', 'steps', 'timeout-minutes'],
+    'the job key set',
   );
-  assert.deepEqual(workflow.permissions, {});
-  assert.deepEqual(Object.keys(workflow.jobs), ['submit'], 'exactly one job');
-});
+  same(job.if, JOB_IF, "the job's if:");
+  same(job.permissions, { 'id-token': 'write', contents: 'read' }, "the job's permissions");
+  if (!RUNNERS.includes(job['runs-on']))
+    errors.push(`runs-on ${JSON.stringify(job['runs-on'])} is not a GitHub-hosted label`);
+  if (!/^[1-5]$/.test(job['timeout-minutes']))
+    errors.push(`timeout-minutes ${JSON.stringify(job['timeout-minutes'])} is not 1 to 5`);
+  if (!Array.isArray(job.steps)) return [...errors, 'steps is not a sequence'];
 
-test('C6 the one job holds id-token alone, on a GitHub-hosted runner, inside five minutes', () => {
-  const job = workflow.jobs.submit;
-  assert.deepEqual(Object.keys(job).sort(), [
-    'if',
-    'permissions',
-    'runs-on',
-    'steps',
-    'timeout-minutes',
-  ]);
-  assert.equal(job.if, "github.server_url == 'https://github.com'");
-  assert.deepEqual(job.permissions, { 'id-token': 'write', contents: 'read' });
-  assert.ok(
-    RUNNERS.includes(job['runs-on']),
-    `runs-on ${job['runs-on']} is not a GitHub-hosted label`,
-  );
-  assert.match(job['timeout-minutes'], /^[1-5]$/);
-});
-
-test("C6 every action is pinned by SHA, and the one checkout is this workflow's own source", () => {
-  const { steps } = workflow.jobs.submit;
-  const uses = steps.filter((step) => Object.hasOwn(step, 'uses')).map((step) => step.uses);
-  assert.ok(uses.length >= 3);
-  for (const action of uses)
-    assert.match(action, PINNED_ACTION, `${action} is not pinned to a commit`);
-  const checkouts = steps.filter((step) => step.uses?.startsWith('actions/checkout@'));
-  assert.equal(checkouts.length, 1, 'exactly one checkout');
-  assert.deepEqual(checkouts[0].with, {
-    repository: '${{ job.workflow_repository }}',
-    ref: '${{ job.workflow_sha }}',
-    path: 'evidence-adapter',
-    'sparse-checkout': ADAPTER,
-    'sparse-checkout-cone-mode': 'false',
-    'persist-credentials': 'false',
+  for (const step of job.steps)
+    if (Object.hasOwn(step ?? {}, 'uses') && !Object.values(ACTIONS).includes(step.uses))
+      errors.push(`uses ${JSON.stringify(step.uses)} is not one of the three pinned actions`);
+  same(job.steps.length, STEPS.length, 'the number of steps');
+  job.steps.forEach((step, at) => {
+    const label = `step ${at + 1} (${STEP_NAMES[at] ?? 'extra'})`;
+    const expected = STEPS[at];
+    if (expected === undefined) {
+      errors.push(`${label} is not in the reviewed list: ${JSON.stringify(step)}`);
+      return;
+    }
+    same(keysOf(step), keysOf(expected), `${label}'s key set`);
+    for (const key of Object.keys(expected)) same(step?.[key], expected[key], `${label}'s ${key}`);
   });
-});
 
-test('C6 the one script runs only the adapter, maps no-record to success, and interpolates nothing', () => {
-  const scripts = workflow.jobs.submit.steps.filter((step) => Object.hasOwn(step, 'run'));
-  assert.equal(scripts.length, 1);
-  const lines = scripts[0].run
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '' && !line.startsWith('#'));
-  assert.deepEqual(lines, RUN);
-  assert.equal(scripts[0].run.includes('${{'), false, 'no expression inside run:');
-  assert.deepEqual(scripts[0].env, {
-    RECORD: '${{ runner.temp }}/sdlc-controls-evidence/evidence.json',
-  });
-});
-
-test('C6 an expression appears only in with:, env: and if:, and names nothing the caller controls', () => {
-  const misplaced = [];
+  // Belt and braces over the exact shape: where an expression may appear, and what it may name.
   const walk = (value, path) => {
     if (typeof value === 'string') {
       const under = path.slice(-2);
@@ -389,15 +443,250 @@ test('C6 an expression appears only in with:, env: and if:, and names nothing th
         value.includes('${{') &&
         !(under[0] === 'with' || under[0] === 'env' || under.at(-1) === 'if')
       )
-        misplaced.push(path.join('.'));
+        errors.push(`an expression at ${path.join('.')}`);
     } else if (value !== null && typeof value === 'object')
       for (const [key, item] of Object.entries(value)) walk(item, [...path, key]);
   };
   walk(workflow, []);
-  assert.deepEqual(misplaced, []);
-  const code = WORKFLOW_TEXT.split('\n')
+  const code = text
+    .split('\n')
     .filter((line) => !line.trim().startsWith('#'))
     .join('\n');
   for (const name of ['inputs.', 'secrets.', 'github.event', 'github.head_ref'])
-    assert.equal(code.includes(name), false, `${WORKFLOW} names ${name}`);
+    if (code.includes(name)) errors.push(`${WORKFLOW} names ${name}`);
+  return errors;
+}
+
+test('C6 the workflow is exactly the reviewed shape', () => {
+  assert.deepEqual(shapeErrors(WORKFLOW_TEXT), []);
 });
+
+// One edit of the real file per row; each must be refused for the stated reason. The first four
+// are the cycle-1 review's (B-1), the S-1/S-2 rows undo those fixes, the rest are other ways in.
+const SUBMIT = '      - name: Submit the evidence record (never prints the token)\n';
+const SETUP_NODE =
+  '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0\n' +
+  '        with:\n' +
+  '          node-version: 24\n';
+const ELSEWHERE = `someone/anything@${'a'.repeat(40)}`;
+const replaceOnce = (text, from, to) => {
+  assert.equal(text.split(from).length, 2, `the edit's anchor appears once: ${from}`);
+  return text.replace(from, () => to);
+};
+const insertBefore = (text, anchor, lines) => replaceOnce(text, anchor, `${lines}${anchor}`);
+const insertAfter = (text, anchor, lines) => replaceOnce(text, anchor, `${anchor}${lines}`);
+const DOWNLOAD_PATH = '          path: ${{ runner.temp }}/sdlc-controls-evidence\n';
+const CHECKOUT =
+  '      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n';
+const JOB_IF_LINE = `    if: ${JOB_IF}\n`;
+const RECORD_LINE = '          RECORD: ${{ runner.temp }}/sdlc-controls-evidence/evidence.json\n';
+
+const EDITS = [
+  [
+    'B-1.1 the artifact downloaded over the adapter source',
+    (text) =>
+      replaceOnce(
+        text,
+        DOWNLOAD_PATH,
+        '          path: evidence-adapter/packages/evidence-adapter/src\n',
+      ),
+    /^step 3 \(download-artifact\)'s with is /,
+  ],
+  [
+    'B-1.2 working-directory on the submit step',
+    (text) =>
+      insertAfter(text, SUBMIT, '        working-directory: ../../_temp/sdlc-controls-evidence\n'),
+    /^step 4 \(submit\)'s key set is /,
+  ],
+  [
+    'B-1.3 an extra SHA-pinned action',
+    (text) => insertBefore(text, SUBMIT, `      - uses: ${ELSEWHERE}\n`),
+    /is not one of the three pinned actions/,
+  ],
+  [
+    'B-1.4 if: false on the submit step',
+    (text) => insertAfter(text, SUBMIT, '        if: false\n'),
+    /^step 4 \(submit\)'s key set is /,
+  ],
+  [
+    'S-1 the checkout repository taken from the job context again',
+    (text) =>
+      replaceOnce(
+        text,
+        `          repository: ${OWN_REPOSITORY}\n`,
+        '          repository: ${{ job.workflow_repository }}\n',
+      ),
+    /^step 1 \(checkout\)'s with is /,
+  ],
+  [
+    'S-2 the job if: without !cancelled()',
+    (text) => replaceOnce(text, JOB_IF_LINE, "    if: github.server_url == 'https://github.com'\n"),
+    /^the job's if: is /,
+  ],
+  [
+    'a job if: that never runs',
+    (text) => replaceOnce(text, JOB_IF_LINE, '    if: false\n'),
+    /^the job's if: is /,
+  ],
+  [
+    'continue-on-error on the submit step',
+    (text) => insertAfter(text, SUBMIT, '        continue-on-error: true\n'),
+    /^step 4 \(submit\)'s key set is /,
+  ],
+  [
+    'another shell for the submit step',
+    (text) => insertAfter(text, SUBMIT, '        shell: node {0}\n'),
+    /^step 4 \(submit\)'s key set is /,
+  ],
+  [
+    'NODE_OPTIONS in the submit step env',
+    (text) => insertAfter(text, RECORD_LINE, '          NODE_OPTIONS: --require ./x.cjs\n'),
+    /^step 4 \(submit\)'s env is /,
+  ],
+  [
+    'the script also runs the record',
+    (text) =>
+      replaceOnce(text, '          status=0\n', '          status=0\n          node "$RECORD"\n'),
+    /^step 4 \(submit\)'s run is /,
+  ],
+  [
+    'an expression in a script comment',
+    (text) =>
+      replaceOnce(
+        text,
+        '          status=0\n',
+        '          status=0 # ${{ github.event.pull_request.title }}\n',
+      ),
+    /^an expression at jobs\.submit\.steps\.3\.run$/,
+  ],
+  [
+    'an if: on the checkout step',
+    (text) => insertAfter(text, CHECKOUT, '        if: false\n'),
+    /^step 1 \(checkout\)'s key set is /,
+  ],
+  [
+    "a checkout of the caller's commit",
+    (text) =>
+      replaceOnce(
+        text,
+        '          ref: ${{ job.workflow_sha }}\n',
+        '          ref: ${{ github.sha }}\n',
+      ),
+    /^step 1 \(checkout\)'s with is /,
+  ],
+  [
+    'a checkout that keeps its credentials',
+    (text) =>
+      replaceOnce(
+        text,
+        '          persist-credentials: false\n',
+        '          persist-credentials: true\n',
+      ),
+    /^step 1 \(checkout\)'s with is /,
+  ],
+  [
+    'an artifact from another repository and run',
+    (text) =>
+      insertAfter(text, DOWNLOAD_PATH, '          repository: someone/else\n          run-id: 1\n'),
+    /^step 3 \(download-artifact\)'s with is /,
+  ],
+  [
+    'an allowed action at a tag',
+    (text) =>
+      replaceOnce(
+        text,
+        'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38',
+        'actions/setup-node@v6',
+      ),
+    /^uses "actions\/setup-node@v6" is not one of the three pinned actions$/,
+  ],
+  [
+    'the steps reordered',
+    (text) => insertBefore(replaceOnce(text, SETUP_NODE, ''), SUBMIT, SETUP_NODE),
+    /^step 2 \(setup-node\)'s key set is /,
+  ],
+  [
+    'a fifth step that runs a command',
+    (text) => `${text}      - run: echo more\n`,
+    /^step 5 \(extra\) is not in the reviewed list/,
+  ],
+  [
+    'job defaults with a working-directory',
+    (text) =>
+      insertAfter(
+        text,
+        '    runs-on: ubuntu-latest\n',
+        '    defaults:\n      run:\n        working-directory: x\n',
+      ),
+    /^the job key set is /,
+  ],
+  [
+    'a job container',
+    (text) => insertAfter(text, '    runs-on: ubuntu-latest\n', '    container: node:24\n'),
+    /^the job key set is /,
+  ],
+  [
+    'a top-level env',
+    (text) => insertBefore(text, 'jobs:\n', 'env:\n  NODE_OPTIONS: --require ./x.cjs\n'),
+    /^the top-level key set is /,
+  ],
+  [
+    'a top-level id-token grant',
+    (text) => replaceOnce(text, 'permissions: {}\n', 'permissions:\n  id-token: write\n'),
+    /^the top-level permissions is /,
+  ],
+  [
+    'an input',
+    (text) =>
+      insertAfter(
+        text,
+        '  workflow_call:\n',
+        '    inputs:\n      endpoint:\n        type: string\n',
+      ),
+    /^on \(workflow_call only/,
+  ],
+  [
+    'a self-hosted runner',
+    (text) => replaceOnce(text, '    runs-on: ubuntu-latest\n', '    runs-on: self-hosted\n'),
+    /is not a GitHub-hosted label$/,
+  ],
+  [
+    'a longer timeout',
+    (text) => replaceOnce(text, '    timeout-minutes: 5\n', '    timeout-minutes: 30\n'),
+    /^timeout-minutes "30" is not 1 to 5$/,
+  ],
+  [
+    'a repeated job if:',
+    (text) => insertAfter(text, JOB_IF_LINE, '    if: false\n'),
+    /^yaml-subset: .*the key if is repeated$/,
+  ],
+  [
+    'a step hidden behind a carriage return in a comment',
+    (text) =>
+      insertBefore(
+        text,
+        SUBMIT,
+        `      # note${String.fromCharCode(13)}      - uses: ${ELSEWHERE}\n`,
+      ),
+    /^yaml-subset: .*a control character, or whitespace other than a space$/,
+  ],
+  [
+    'a step hidden behind U+2028 in a comment',
+    (text) =>
+      insertBefore(
+        text,
+        SUBMIT,
+        `      # note${String.fromCharCode(0x2028)}      - uses: ${ELSEWHERE}\n`,
+      ),
+    /^yaml-subset: .*a control character, or whitespace other than a space$/,
+  ],
+];
+
+for (const [name, edit, reason] of EDITS)
+  test(`C6 refuses an edit: ${name}`, () => {
+    const errors = shapeErrors(edit(WORKFLOW_TEXT));
+    assert.ok(
+      errors.some((error) => reason.test(error)),
+      `expected an error matching ${reason}, got ${JSON.stringify(errors)}`,
+    );
+  });
