@@ -229,6 +229,8 @@ function readYamlSubset(text) {
     const result = [];
     for (let next = peek(); next !== null && next.indent === indent; next = peek()) {
       if (!/^-(\s|$)/.test(next.content)) fail('a mapping key where a sequence item belongs');
+      // One space after the dash, as GitHub's parser requires: `-   name:` reads here but not there.
+      if (!/^-( \S|$)/.test(next.content)) fail('a sequence item not written "- value"');
       const item = next.content.slice(1).trim();
       if (item === '') {
         index += 1;
@@ -317,6 +319,7 @@ test('C7 the YAML-subset reader reads its grammar and refuses everything else', 
     'complex key': '? a\n: 1\n',
     'ambiguous plain scalar': 'a: b: c\n',
     directive: '%YAML 1.2\na: 1\n',
+    'spaces after a dash': 'a:\n  -   b: 1\n',
   };
   for (const [name, text] of Object.entries(refused))
     assert.throws(() => readYamlSubset(text), /yaml-subset/, name);
