@@ -29,11 +29,12 @@ jobs:
     steps:
       # This workflow's own repository, named literally, at its own commit (the job context);
       # never the caller's. A literal cannot evaluate to '', which checkout would read as the
-      # caller's repository at the caller's ref; an empty SHA is this repository's default branch.
+      # caller's repository at the caller's ref. An empty SHA would be this repository's default
+      # branch, so a missing one becomes a ref that does not exist and the checkout fails.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: codeaiforge/sdlc-control-plane
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ job.workflow_sha || 'job-workflow-sha-missing' }}
           path: evidence-adapter
           sparse-checkout: packages/evidence-adapter/src/submit-evidence.mjs
           sparse-checkout-cone-mode: false

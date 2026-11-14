@@ -356,12 +356,15 @@ const RUN = [
   'exit "$status"',
   '',
 ].join('\n');
+// An empty job.workflow_sha would check out the default branch, not the pinned commit, so a
+// missing one names a ref that does not exist and the checkout fails (security review L-2).
+const CHECKOUT_REF = "${{ job.workflow_sha || 'job-workflow-sha-missing' }}";
 const STEPS = [
   {
     uses: ACTIONS.checkout,
     with: {
       repository: OWN_REPOSITORY,
-      ref: '${{ job.workflow_sha }}',
+      ref: CHECKOUT_REF,
       path: 'evidence-adapter',
       'sparse-checkout': ADAPTER,
       'sparse-checkout-cone-mode': 'false',
@@ -465,7 +468,8 @@ test('C6 the workflow is exactly the reviewed shape', () => {
 });
 
 // One edit of the real file per row; each must be refused for the stated reason. The first four
-// are the cycle-1 review's (B-1), the S-1/S-2 rows undo those fixes, the rest are other ways in.
+// are the cycle-1 review's (B-1), the S-1/S-2 rows undo those fixes and the L-2 row the security
+// review's, the rest are other ways in.
 const SUBMIT = '      - name: Submit the evidence record (never prints the token)\n';
 const SETUP_NODE =
   '      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0\n' +
@@ -482,6 +486,7 @@ const DOWNLOAD_PATH = '          path: ${{ runner.temp }}/sdlc-controls-evidence
 const CHECKOUT =
   '      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0\n';
 const JOB_IF_LINE = `    if: ${JOB_IF}\n`;
+const REF_LINE = `          ref: ${CHECKOUT_REF}\n`;
 const RECORD_LINE = '          RECORD: ${{ runner.temp }}/sdlc-controls-evidence/evidence.json\n';
 
 const EDITS = [
@@ -519,6 +524,11 @@ const EDITS = [
         `          repository: ${OWN_REPOSITORY}\n`,
         '          repository: ${{ job.workflow_repository }}\n',
       ),
+    /^step 1 \(checkout\)'s with is /,
+  ],
+  [
+    'L-2 the checkout ref without its fail-closed fallback',
+    (text) => replaceOnce(text, REF_LINE, '          ref: ${{ job.workflow_sha }}\n'),
     /^step 1 \(checkout\)'s with is /,
   ],
   [
@@ -569,12 +579,7 @@ const EDITS = [
   ],
   [
     "a checkout of the caller's commit",
-    (text) =>
-      replaceOnce(
-        text,
-        '          ref: ${{ job.workflow_sha }}\n',
-        '          ref: ${{ github.sha }}\n',
-      ),
+    (text) => replaceOnce(text, REF_LINE, '          ref: ${{ github.sha }}\n'),
     /^step 1 \(checkout\)'s with is /,
   ],
   [
