@@ -12,6 +12,8 @@
 --
 -- A consequence: no payload can be removed early, for an erasure or a takedown, without a
 -- reviewed migration.
+--
+-- It also adds the index the job's batches read (evidence_envelope_live_id, below).
 
 CREATE OR REPLACE FUNCTION evidence.guard_envelope_update() RETURNS trigger
   LANGUAGE plpgsql
@@ -68,3 +70,10 @@ $guard$;
 
 -- The job's schema check (src/expire.mjs) reads what is applied, as the service's does.
 GRANT SELECT ON evidence.schema_migrations TO evidence_retention;
+
+-- The job's batch takes the lowest live ids (ORDER BY id LIMIT), and for that the planner reads
+-- the primary key, not the received_at index. Tombstones are kept forever (RR-4) and hold the
+-- lowest ids, so without this index every batch walks every tombstone first. Measured on 16.15
+-- over 2 M tombstones, 500 eligible and 200,000 younger rows: 2.2 M rows removed by filter, 336 ms;
+-- with it, 200,000 and 81 ms. A batch now reads live rows only, and the window bounds those.
+CREATE INDEX evidence_envelope_live_id ON evidence.evidence_envelope (id) WHERE redacted_at IS NULL;

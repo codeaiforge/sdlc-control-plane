@@ -196,6 +196,13 @@ test('the idempotency key is a server-side unique constraint, NULLS DISTINCT, an
   const [index] = await db.admin`
     SELECT indexdef FROM pg_indexes WHERE indexname = 'evidence_envelope_received_at'`;
   assert.match(index.indexdef, /\(received_at\)$/);
+  // 0002: the expiry job's batches read live envelopes by id (review cycle 1, S-1).
+  const [live] = await db.admin`
+    SELECT indexdef FROM pg_indexes WHERE indexname = 'evidence_envelope_live_id'`;
+  assert.match(
+    live.indexdef,
+    /ON evidence\.evidence_envelope USING btree \(id\) WHERE \(redacted_at IS NULL\)$/,
+  );
 });
 
 // No role but the owner can create an object today, so a missing search_path pin changes no
