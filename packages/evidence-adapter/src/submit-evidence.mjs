@@ -62,11 +62,13 @@ export const EXIT = Object.freeze({
   NOT_ACCEPTED: 1,
   // Refused before any request: no endpoint configured, the ID-token variables missing, the
   // record not a regular file, over 1 MiB or unreadable, an endpoint that is not https (loopback
-  // excepted), or the runner refused to mint.
+  // excepted), the runner refused to mint, or Node refused to build a request (a header it will
+  // not send).
   LOCAL: 2,
   // No evidence.json: the gate did not reach a decision; nothing submitted.
   NO_RECORD: 3,
-  // 400, 401, 403, 409, 413, any 3xx (never followed), any other status.
+  // 400, 401, 403, 409, 413, any 3xx (never followed), a 202 without a decision, any other
+  // status.
   REFUSED: 4,
   // 429, 502, 503, 504, a network error or timeout, or the mint unavailable, until the attempts
   // or the budget ran out.
@@ -109,8 +111,10 @@ export function allowedTarget(value) {
 // - One deadline per request, which destroys it.
 //
 // The answer is { status, retryAfter, body } or { error } with a fixed code; nothing the network
-// sent reaches an error. `httpsRequest`/`httpRequest` are injectable so the tests can see the
-// options without a TLS server.
+// sent reaches an error. A throw from the request function itself is `request-invalid`, not
+// `network`: Node refused the request (a header it will not send) before anything left, and the
+// same request would be refused again. `httpsRequest`/`httpRequest` are injectable so the tests
+// can see the options without a TLS server.
 export function createTransport({ httpsRequest = https.request, httpRequest = http.request } = {}) {
   return (target, { method, headers, body, timeoutMs }) =>
     new Promise((resolve) => {
@@ -155,7 +159,7 @@ export function createTransport({ httpsRequest = https.request, httpRequest = ht
           onResponse,
         );
       } catch {
-        finish({ error: 'network' });
+        finish({ error: 'request-invalid' });
         return;
       }
       outgoing.on('error', () => finish({ error: 'network' }));
@@ -187,6 +191,8 @@ export async function mintToken({
   });
   if (answer.error === 'endpoint-not-https')
     return { ok: false, retryable: false, reason: 'mint-endpoint-not-https' };
+  if (answer.error === 'request-invalid')
+    return { ok: false, retryable: false, reason: 'request-invalid' };
   if (answer.error !== undefined || answer.status >= 500)
     return { ok: false, retryable: true, reason: 'mint-unavailable' };
   if (answer.status !== 200) return { ok: false, retryable: false, reason: 'mint-refused' };
@@ -232,7 +238,8 @@ const backoffMs = (attempt, random) =>
   BACKOFF_BASE_MS * 2 ** (attempt - 2) * (0.5 + 0.5 * random());
 
 // One mint and one POST. Returns { final } when the loop must stop with that outcome, or
-// { last, retryAfterMs?, stop? } when the answer was retry-safe.
+// { last, retryAfterMs?, stop? } when the answer was retry-safe; `posted` is set once a POST may
+// have reached the network.
 async function attemptOnce({ body, endpoint, env, transport }) {
   const minted = await mintToken({
     requestUrl: env.ACTIONS_ID_TOKEN_REQUEST_URL,
@@ -259,21 +266,37 @@ async function attemptOnce({ body, endpoint, env, transport }) {
   const secrets = [token, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN];
   token = undefined;
 
-  if (answer.error === 'timeout' || answer.error === 'network') return { last: answer.error };
+  if (answer.error === 'request-invalid')
+    return { final: { kind: 'local', reason: 'request-invalid' } };
+  if (answer.error === 'timeout' || answer.error === 'network')
+    return { last: answer.error, posted: true };
   if (answer.error !== undefined)
     return { final: { kind: 'refused', status: answer.status ?? null, reason: answer.error } };
   const { status } = answer;
   if (status === 202 || status === 422) {
-    const decision = redact(parseJson(answer.body)?.decision ?? null, secrets);
-    return { final: { kind: status === 202 ? 'accepted' : 'not-accepted', status, decision } };
+    const decision = parseJson(answer.body)?.decision;
+    // A 202 the adapter cannot read a disposition from is not reported as accepted: the control
+    // plane always sends one, so this answer came from something else.
+    const readable =
+      decision !== null && typeof decision === 'object' && typeof decision.disposition === 'string';
+    if (status === 202 && !readable) return { final: { kind: 'refused', status } };
+    return {
+      final: {
+        kind: status === 202 ? 'accepted' : 'not-accepted',
+        status,
+        decision: redact(decision ?? null, secrets),
+      },
+    };
   }
   if (status === 429) {
     const seconds = /^\d+$/.test(answer.retryAfter ?? '') ? Number(answer.retryAfter) : null;
-    if (seconds !== null && seconds > MAX_RETRY_AFTER_S) return { last: '429', stop: true };
-    if (seconds !== null && seconds >= 1) return { last: '429', retryAfterMs: seconds * 1000 };
-    return { last: '429' };
+    if (seconds !== null && seconds > MAX_RETRY_AFTER_S)
+      return { last: '429', stop: true, posted: true };
+    if (seconds !== null && seconds >= 1)
+      return { last: '429', retryAfterMs: seconds * 1000, posted: true };
+    return { last: '429', posted: true };
   }
-  if (RETRYABLE.has(status)) return { last: String(status) };
+  if (RETRYABLE.has(status)) return { last: String(status), posted: true };
   const refused = { kind: 'refused', status };
   if (status === 409) {
     const key = parseJson(answer.body)?.idempotency_key;
@@ -286,7 +309,8 @@ async function attemptOnce({ body, endpoint, env, transport }) {
 // token lives 300 s and must not expire mid-backoff, and a retry is the same submission only if
 // its bytes are identical - they are, because `body` is sent as given every time. Only
 // retry-safe answers are retried (429, 502-504, a lost answer: intake is idempotent, so a lost
-// 202 replays as a duplicate); a 409 is never retried.
+// 202 replays as a duplicate); a 409 is never retried. `posted` says whether any attempt got as
+// far as a POST, so an unavailable outcome can say when nothing was sent.
 export async function submitEvidence({
   body,
   endpoint,
@@ -308,6 +332,7 @@ export async function submitEvidence({
   const start = now();
   let attempts = 0;
   let last;
+  let posted = false;
   let wait = 0;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     if (attempt > 1) {
@@ -319,24 +344,26 @@ export async function submitEvidence({
     const result = await attemptOnce({ body, endpoint, env, transport });
     if (result.final) return { ...result.final, attempts };
     last = result.last;
+    if (result.posted) posted = true;
     if (result.stop) break;
     wait = result.retryAfterMs ?? backoffMs(attempt + 1, random);
   }
-  return { kind: 'unavailable', last, attempts, elapsedMs: now() - start };
+  return { kind: 'unavailable', last, attempts, posted, elapsedMs: now() - start };
 }
 
 // -------------------------------------------------------------------------------------- output
 
 // What every echoed field passes through. The record and the answers are untrusted, and the step
-// log parses a ::workflow-command:: at the start of a line, so no field may start one: C0/C1
-// controls, DEL and U+2028/2029 - every line break among them - are escaped as \uXXXX, and the
-// value is cut to 120 code points. A value that is not a string is shown as its type.
+// log parses a ::workflow-command:: at the start of a line and the legacy ##[workflow-command]
+// anywhere in one, so no field may start or hold either: C0/C1 controls, DEL and U+2028/2029 -
+// every line break among them - and every # are escaped as \uXXXX, and the value is cut to 120
+// code points. A value that is not a string is shown as its type.
 export function display(value) {
   if (typeof value !== 'string') return `(${value === null ? 'null' : typeof value})`;
   const points = [...value];
   const cut = points.length > 120 ? `${points.slice(0, 120).join('')}…` : value;
   return cut.replace(
-    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g,
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029#]/g,
     (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
   );
 }
@@ -365,6 +392,8 @@ const LOCAL_REASONS = {
   'mint-endpoint-not-https': 'the ID-token request URL is not https',
   'mint-refused': 'the runner did not issue a token; does the calling job grant id-token: write?',
   'mint-malformed': 'the runner did not issue a token; does the calling job grant id-token: write?',
+  'request-invalid':
+    'Node refused to build a request (a header it will not send); nothing was sent',
   failed: 'the adapter failed',
 };
 
@@ -409,12 +438,20 @@ function outcomeLine(result) {
         'it cannot tell whether anything was stored.'
       );
     }
-    case 'unavailable':
-      return (
+    case 'unavailable': {
+      const tried =
         `no answer after ${result.attempts} attempt(s) in ${Math.round(result.elapsedMs / 1000)} s ` +
-        `(${result.last}); the record may or may not be stored — re-running this job re-sends ` +
+        `(${result.last}); `;
+      if (!result.posted)
+        return (
+          `${tried}no attempt got as far as a POST, so nothing was sent — re-running this job ` +
+          'sends the record.'
+        );
+      return (
+        `${tried}the record may or may not be stored — re-running this job re-sends ` +
         'the same bytes and is answered as a duplicate if it was.'
       );
+    }
     default:
       return `not submitted: ${LOCAL_REASONS[result.reason] ?? LOCAL_REASONS.failed}.`;
   }

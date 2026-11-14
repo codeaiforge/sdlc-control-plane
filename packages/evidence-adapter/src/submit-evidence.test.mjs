@@ -216,6 +216,35 @@ test('U1 every status maps to its outcome after exactly one mint and one POST', 
   assert.equal(elsewhere.requests.length, 0, 'a Location target is never requested');
 });
 
+test('U1 a 202 without a decision holding a string disposition is an answer it does not handle', async (t) => {
+  for (const body of [
+    '',
+    '<html>',
+    'null',
+    '{}',
+    '{"decision":null}',
+    '{"decision":[]}',
+    '{"decision":"accepted"}',
+    '{"decision":{"policy_id":"p@1"}}',
+    '{"decision":{"disposition":7}}',
+  ]) {
+    const mint = await tokenEndpoint(t);
+    const plane = await stub(t, (request, response) => {
+      response.writeHead(202, { 'content-type': 'application/json' });
+      response.end(body);
+    });
+    const result = await run({ endpoint: `${plane.base}/v1/evidence`, mintUrl: `${mint.base}/t` });
+    assert.equal(result.code, EXIT.REFUSED, body);
+    assert.match(
+      result.stdout,
+      /refused 202 \(an answer this adapter does not handle\); it cannot tell whether anything was stored\./,
+      body,
+    );
+    assert.doesNotMatch(result.stdout, /self-attested|disposition/, body);
+    assert.equal(plane.requests.length, 1, `${body}: one POST, never retried`);
+  }
+});
+
 test('U1 the POST carries exactly one bearer token and the record bytes, nothing added', async (t) => {
   const path = recordFile('{"change_id":"PR-7", "b": [1,2] }\n');
   const result = await scene(t, [202], { run: { path } });
@@ -281,6 +310,36 @@ test('U2 four retry-safe failures end unavailable, with no claim about what was 
   );
 });
 
+test('U2 attempts that all fail at the mint end unavailable and say nothing was sent', async (t) => {
+  const mint = await stub(t, (request, response) => json(response, 503, {}));
+  const plane = await controlPlane(t, [202]);
+  const result = await run({ endpoint: `${plane.base}/v1/evidence`, mintUrl: `${mint.base}/t` });
+  assert.equal(result.code, EXIT.UNAVAILABLE);
+  assert.equal(mint.requests.length, 4);
+  assert.equal(plane.requests.length, 0);
+  assert.match(
+    result.stdout,
+    /after 4 attempt\(s\) in \d+ s \(mint-unavailable\); no attempt got as far as a POST, so nothing was sent/,
+  );
+  assert.doesNotMatch(result.stdout, /may or may not be stored/);
+
+  // One POST lost, then the mint down: something may have been stored.
+  let calls = 0;
+  const real = createTransport();
+  const transport = (target, options) =>
+    (calls += 1) === 2 ? Promise.resolve({ error: 'network' }) : real(target, options);
+  const halfway = await stub(t, (request, response, body, index) =>
+    index === 0 ? json(response, 200, { value: newToken() }) : json(response, 503, {}),
+  );
+  const mixed = await run({
+    endpoint: `${plane.base}/v1/evidence`,
+    mintUrl: `${halfway.base}/t`,
+    transport,
+  });
+  assert.equal(mixed.code, EXIT.UNAVAILABLE);
+  assert.match(mixed.stdout, /\(mint-unavailable\); the record may or may not be stored/);
+});
+
 // ----------------------------------------------------------------------------------- U3 429
 
 test('U3 429 honours retry-after inside the quota window and stops beyond it', async (t) => {
@@ -341,6 +400,7 @@ test('U4 the budget, not the attempt count, ends attempts that each time out', a
     kind: 'unavailable',
     last: 'timeout',
     attempts: 2,
+    posted: true,
     elapsedMs: 102000,
   });
   assert.deepEqual(calls, ['GET', 'POST', 'GET', 'POST']);
@@ -400,6 +460,54 @@ test('U5 a mint that is unavailable is retried as an attempt', async (t) => {
   assert.match(result.stdout, /attempt 1 of 4: mint-unavailable;/);
   assert.equal(plane.requests.length, 1);
 });
+
+test('U5 a request Node refuses to build is a local failure, not retried, and nothing is sent', async (t) => {
+  // A request token Node will not put in a header: http.request throws before any byte leaves.
+  const mint = await tokenEndpoint(t);
+  const plane = await controlPlane(t, [202]);
+  const result = await run({
+    endpoint: `${plane.base}/v1/evidence`,
+    mintUrl: `${mint.base}/t`,
+    env: { ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'x\r\ny: 1' },
+  });
+  assert.equal(result.code, EXIT.LOCAL);
+  assert.match(
+    result.stdout,
+    /not submitted: Node refused to build a request \(a header it will not send\); nothing was sent\./,
+  );
+  assert.equal(mint.requests.length + plane.requests.length, 0);
+  assert.deepEqual(result.waits, [], 'not retried');
+
+  // The transport maps the throw to its own code, whichever request function threw.
+  for (const options of [{ httpsRequest: throwing }, { httpRequest: throwing }]) {
+    const target = options.httpsRequest ? 'https://example.com/' : 'http://127.0.0.1:1/';
+    assert.deepEqual(
+      await createTransport(options)(target, { method: 'GET', headers: {}, timeoutMs: 1000 }),
+      { error: 'request-invalid' },
+    );
+  }
+
+  // The same refusal on the POST: local, after one mint and no retry.
+  let posts = 0;
+  const real = createTransport();
+  const viaPost = await run({
+    endpoint: `${plane.base}/v1/evidence`,
+    mintUrl: `${mint.base}/t`,
+    transport: (target, options) => {
+      if (options.method !== 'POST') return real(target, options);
+      posts += 1;
+      return Promise.resolve({ error: 'request-invalid' });
+    },
+  });
+  assert.equal(viaPost.code, EXIT.LOCAL);
+  assert.match(viaPost.stdout, /nothing was sent\./);
+  assert.equal(posts, 1);
+  assert.equal(mint.requests.length, 1);
+});
+
+function throwing() {
+  throw new TypeError('Invalid character in header content');
+}
 
 test('U5 a mint URL that is not https is refused with no request at all', async () => {
   for (const mintUrl of ['http://example.com/token', 'http://localhost:1/token', 'not a url']) {
@@ -669,8 +777,42 @@ test('U8 echoed fields cannot start a line, are entity-escaped in the summary, a
   assert.equal(display('a'.repeat(120)), 'a'.repeat(120));
   assert.equal(display('\u0085\u009b\u007f\u0000'), '\\u0085\\u009b\\u007f\\u0000');
   assert.equal(display(LS + String.fromCharCode(0x2029)), '\\u2028\\u2029');
+  assert.equal(display('PR#7 ##[x]'), 'PR\\u00237 \\u0023\\u0023[x]');
   assert.equal(display(null), '(null)');
   assert.equal(display({}), '(object)');
+});
+
+test('U8 a legacy ##[command] in any echoed field reaches the log escaped', async (t) => {
+  const warning = '##[warning title=x]Evidence accepted by control plane';
+  const mask = '##[add-mask]accepted';
+  const notAccepted = await scene(t, [422], {
+    run: { path: recordFile({ change_id: warning }) },
+    body: () => ({
+      decision: {
+        accepted: false,
+        disposition: mask,
+        policy_id: warning,
+        reasons: [mask, warning],
+      },
+    }),
+  });
+  const conflict = await scene(t, [409], {
+    run: { path: recordFile({ change_id: mask }) },
+    body: () => ({ error: 'conflict', idempotency_key: warning }),
+  });
+  const accepted = await scene(t, [202], {
+    body: () => ({ decision: { ...DECISION, disposition: mask, policy_id: warning } }),
+  });
+  const missing = await scene(t, [202], { run: { path: join(dir, `${warning}.json`) } });
+  for (const result of [notAccepted, conflict, accepted, missing]) {
+    assert.equal(result.stdout.includes('##['), false, result.stdout);
+    assert.equal(result.summary.includes('##['), false, result.summary);
+    assert.match(result.stdout, /\\u0023\\u0023\[(warning title=x|add-mask)\]/);
+  }
+  assert.match(notAccepted.stdout, /change_id "\\u0023\\u0023\[warning title=x\]Evidence/);
+  assert.match(notAccepted.stdout, /Reasons: \\u0023\\u0023\[add-mask\]accepted; \\u0023/);
+  assert.match(conflict.stdout, /idempotency key "\\u0023\\u0023\[warning title=x\]/);
+  assert.match(accepted.stdout, /disposition "\\u0023\\u0023\[add-mask\]accepted"/);
 });
 
 test('U8 no outcome is worded as verified, approved or compliant; accepted says self-attested', async (t) => {
