@@ -19,3 +19,17 @@ test('derives shared components from Nx fan-in while preserving declared critica
     shared: true,
   });
 });
+
+// Without this, the evidence-submission entry could be deleted with every test green, and the
+// credential-holding workflow would tier as ci-pipeline (high).
+test('the submit-evidence workflow is its own critical component', () => {
+  const component = buildComponentMap({ nodes: {} }).components.find(
+    (item) => item.id === 'evidence-submission',
+  );
+  assert.deepEqual(component, {
+    id: 'evidence-submission',
+    match: ['.github/workflows/submit-evidence.yml'],
+    criticality: 'critical',
+    shared: false,
+  });
+});

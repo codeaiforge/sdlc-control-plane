@@ -14,6 +14,15 @@ const workspaceComponents = [
     criticality: 'critical',
     shared: false,
   },
+  // The reusable workflow whose job holds id-token: write and submits evidence (task 3.1). A
+  // change to it changes what can mint a pinned token, so it tiers like workload-identity, not
+  // like the rest of ci-pipeline.
+  {
+    id: 'evidence-submission',
+    match: ['.github/workflows/submit-evidence.yml'],
+    criticality: 'critical',
+    shared: false,
+  },
   { id: 'ci-pipeline', match: ['.github/workflows/**'], criticality: 'high', shared: false },
   {
     id: 'workspace-config',
