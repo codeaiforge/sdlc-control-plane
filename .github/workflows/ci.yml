@@ -31,6 +31,9 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       PGDATABASE: postgres
+      # The gate's pin (sdlc-controls.yml). evidence-adapter.integration.mjs runs this binary over
+      # a fixture workspace and refuses a record from any other version.
+      SDLC_CONTROLS_VERSION: v0.2.0
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -44,5 +47,12 @@ jobs:
       - run: pnpm format:check
       - run: pnpm test:controls
       - run: pnpm test
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - name: Install the pinned sdlc-controls for the integration suite
+        run: |
+          GOBIN="$RUNNER_TEMP/sdlc-controls" go install "github.com/codeaiforge/git-native-sdlc-controls/cmd/sdlc-controls@${SDLC_CONTROLS_VERSION}"
+          echo "SDLC_CONTROLS_BIN=$RUNNER_TEMP/sdlc-controls/sdlc-controls" >> "$GITHUB_ENV"
+          echo "SDLC_CONTROLS_SCHEMA=$(go env GOMODCACHE)/github.com/codeaiforge/git-native-sdlc-controls@${SDLC_CONTROLS_VERSION}/schemas/evidence/0/evidence.schema.json" >> "$GITHUB_ENV"
       - run: pnpm test:integration
       - run: pnpm build
