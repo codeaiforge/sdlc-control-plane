@@ -23,7 +23,8 @@ export const AUDIENCE = 'urn:codeaiforge:sdlc-control-plane:production';
 //
 // UNMEASURED. '49699333' is the `dependabot[bot]` account ID GitHub's REST API reports
 // (ADR-0003 [S14]). That a Dependabot-triggered run's `actor_id` claim carries it is unverified;
-// the founder's gate decision Q-2 (2026-10-07) records it unmeasured, and task 3.1 measures it.
+// the founder's gate decision Q-2 (2026-10-07) records it unmeasured, and task 3.3 measures it
+// (split from 3.1 at its Phase ① gate, 2026-11-14).
 export const REFUSED_ACTOR_IDS = Object.freeze(['49699333']);
 
 // An array and Array.prototype.includes, not a Set: Object.freeze does not freeze a Set's
