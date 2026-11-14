@@ -419,7 +419,8 @@ hours on the database's clock - for every role, the owner and a superuser includ
 holds the `evidence_retention` credential can redact only payloads already past the window, which
 the expiry job would redact on its next run. What remains is the trust root above:
 `evidence_owner` can replace or disable the trigger, and a cluster superuser can also bypass it
-for a session (`session_replication_role`). The same rule means no payload can be removed early,
+for a session (`session_replication_role`); an update made either way writes no
+`evidence_redaction` row and keeps the four names unless it nulls them itself (measured). The same rule means no payload can be removed early,
 for an erasure or a takedown, without a reviewed migration.
 
 **ABU-13 — classified evidence at rest. Answered by task 2.2 for the roles it creates (MIT-16).**
