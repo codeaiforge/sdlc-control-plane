@@ -7,7 +7,8 @@
     "workspace-registry",
     "indicators",
     "workload-identity",
-    "evidence-store"
+    "evidence-store",
+    "evidence-adapter"
   ],
   "tags": ["scope:api", "criticality:high"],
   "targets": {

@@ -45,7 +45,10 @@ test('every project directory is a discoverable Nx project', () => {
 // every later change under that project; contracts sits at 2, one edge below it. ADR-0003 forbids
 // control-plane-api from importing it, and task 2.1's design keeps workload-identity a leaf for
 // the same reason. evidence-store (task 2.2) is the same kind of leaf: it imports no project,
-// and control-plane-api is its one dependent. A new edge - from source or from a test, since this scan reads every file in
+// and control-plane-api is its one dependent. evidence-adapter (task 3.1) is one too, and must
+// stay one: it runs on a workspace's runner with no install, so it imports nothing; its one
+// dependent is control-plane-api's end-to-end test (evidence-adapter.integration.mjs), a
+// test-only edge, and the service does not import it. A new edge - from source or from a test, since this scan reads every file in
 // src/ - fails here and names the threshold, before the component map retiers anything. Changing
 // this table is a reviewed decision about blast radius, not a fix-up.
 const REVIEWED_FAN_IN = {
@@ -55,6 +58,7 @@ const REVIEWED_FAN_IN = {
   indicators: 1,
   'workload-identity': 1,
   'evidence-store': 1,
+  'evidence-adapter': 1,
   'control-plane-api': 0,
 };
 

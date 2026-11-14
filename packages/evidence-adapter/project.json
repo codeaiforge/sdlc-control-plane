@@ -1,0 +1,11 @@
+{
+  "name": "evidence-adapter",
+  "sourceRoot": "packages/evidence-adapter/src",
+  "projectType": "library",
+  "tags": ["scope:adapter", "criticality:critical"],
+  "targets": {
+    "test": { "command": "node --test packages/evidence-adapter/src/*.test.mjs" },
+    "typecheck": { "command": "node --check packages/evidence-adapter/src/submit-evidence.mjs" },
+    "build": { "command": "node --check packages/evidence-adapter/src/submit-evidence.mjs" }
+  }
+}
