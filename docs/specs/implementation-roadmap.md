@@ -73,8 +73,8 @@ Sprint 1, which is the first sprint executed through the pipeline.
 | 0         | 13       | Low        | 0.1 Nx boundaries + control map (5)         | Complete. All four tasks landed and the exit gate is verified green.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 1         | 14       | Medium     | 1.4 OIDC issuer and authorization model (5) | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner, and re-estimated from 3 to 5 SP on 2026-09-29.                                                                                                                                                                                                                                                                                                                    |
 | 2         | 33       | **High**   | 2.2 durable store (10)                      | **Over capacity** — 33 SP against a ~20 SP solo sprint. 2.3 was deferred to Sprint 3 by the founder, 2026-10-22, bringing it to 28 SP. Both Musts are gated on human approval of the threat model. 2.4 was split out of 2.1 at 2.1's Phase ① gate, 2026-10-07; 2.5 out of 2.2 at 2.2's Phase ① gate, 2026-10-20; 2.2 was re-estimated from 8 to 10 SP at its Phase ② gate, the same day; 2.4 from 3 to 5 SP at its Phase ① gate, 2026-10-22; 2.5 from 3 to 5 SP at its Phase ① gate, the same day. |
-| 3         | 13       | Medium     | 3.2 portfolio/ALM integration (8)           | Depends on an external integration owner who is not yet named. Absorbs 2.3, deferred on 2026-10-22, taking the sprint to 18 SP.                                                                                                                                                                                                                                                                                                                                                                    |
-| **Total** | **73**   |            |                                             | Average 18.25 SP per sprint against ~20 SP solo capacity.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 3         | 16       | Medium     | 3.2 portfolio/ALM integration (8)           | Depends on an external integration owner who is not yet named. Absorbs 2.3, deferred on 2026-10-22, taking the sprint to 21 SP. 3.3 split out of 3.1 at 3.1's Phase ① gate, 2026-11-14 (3 SP).                                                                                                                                                                                                                                                                                                     |
+| **Total** | **76**   |            |                                             | Average 19 SP per sprint against ~20 SP solo capacity.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ### Task Priority (MoSCoW)
 
@@ -219,43 +219,49 @@ A real workspace publishes contract-valid evidence from its own gate without han
 
 **Deliverables:**
 
-| #   | Task                                               | SP  | Priority | Layer | Depends on | Trace          | Done when                                                                                                                        |
-| --- | -------------------------------------------------- | --- | -------- | ----- | ---------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| 3.1 | Build the `ai-ready-nx-workspace` evidence adapter | 5   | Must     | ci    | 2.2        | FR-2.1         | A fixture workspace publishes contract-valid evidence after its existing gate completes, minting its token as ADR-0003 requires. |
-| 3.2 | Integrate one named portfolio/ALM system           | 8   | Should   | api   | 2.1        | FR-1.2, FR-3.2 | External Epic/capability references reconcile without granting automated portfolio authority.                                    |
+| #   | Task                                                                    | SP  | Priority | Layer   | Depends on | Trace          | Done when                                                                                                                                                                                                                                                                                                                           |
+| --- | ----------------------------------------------------------------------- | --- | -------- | ------- | ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 3.1 | Build the `ai-ready-nx-workspace` evidence adapter                      | 5   | Must     | ci      | 2.2        | FR-2.1         | A fixture workspace publishes contract-valid evidence after its existing gate completes, minting its token as ADR-0003 requires.                                                                                                                                                                                                    |
+| 3.2 | Integrate one named portfolio/ALM system                                | 8   | Should   | api     | 2.1        | FR-1.2, FR-3.2 | External Epic/capability references reconcile without granting automated portfolio authority.                                                                                                                                                                                                                                       |
+| 3.3 | Measure fork and Dependabot tokens and register `ai-ready-nx-workspace` | 3   | Should   | auth+ci | 3.1        | NFR-2.1        | A fork pull request is shown unable to mint, Dependabot and human-on-Dependabot runs' `actor_id` and the cross-repository pin claims are recorded from real runs, `REFUSED_ACTOR_IDS` is set from the measured value, and the workspace is registered with its fork-token precondition confirmed and its gate wired to the adapter. |
 
-**Sprint total: 13 SP** — Medium risk. 3.2 depends on an external integration owner who is not yet named, which is an availability risk rather than a technical one.
+**Sprint total: 16 SP** — Medium risk. 3.2 depends on an external integration owner who is not yet named, which is an availability risk rather than a technical one. 3.3 was split out of 3.1 at 3.1's Phase ① gate, 2026-11-14: its measurements are paced by GitHub (a second account to open a fork pull request, Dependabot on a registered repository), not by code, and a registered workspace publishes nothing until a deploy target is selected (`stack.md` › Deploy). The goal's _real_ workspace is therefore met by 3.3 plus a deployment, not by 3.1, whose Done-when is a fixture.
 
 **Execution waves:**
 
-| Wave | Tasks    | Rationale                                                                                              |
-| ---- | -------- | ------------------------------------------------------------------------------------------------------ |
-| 1    | 3.1, 3.2 | Both depend only on completed Sprint 2 tasks and touch different systems, so they can run in parallel. |
+| Wave | Tasks    | Rationale                                                                                                           |
+| ---- | -------- | ------------------------------------------------------------------------------------------------------------------- |
+| 1    | 3.1, 3.2 | Both depend only on completed Sprint 2 tasks and touch different systems, so they can run in parallel.              |
+| 2    | 3.3      | Needs 3.1's reusable workflow merged and tagged on the GitHub mirror; its measurements need live pull-request runs. |
 
 **Risk checkpoint:**
 
 If no integration owner is named by sprint start, 3.2 drops rather than proceeding against an assumed mapping. It is a Should, and an unreviewed portfolio mapping is exactly the misrepresentation ADR-0001 exists to prevent.
+
+If the fork measurement shows a fork pull request can mint, 3.3 stops at that result: neither pull-request event is admitted on a public repository and ADR-0003 is revisited (its Consequences).
 
 **Definition of done:**
 
 - [ ] A fixture workspace publishes contract-valid evidence from its own gate
 - [ ] External Epic/capability references reconcile against registered workspaces
 - [ ] No automated portfolio authority is granted by the integration
+- [ ] Fork and Dependabot token behaviour measured on real runs, and `ai-ready-nx-workspace` registered (3.3, Should)
 
 ---
 
 ## Risk Register
 
-| Risk                                                                 | Likelihood | Impact | Mitigation                                                                                                                                                          | Checkpoint                       |
-| -------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `evidence/0` is experimental upstream and changes before v1.0        | High       | High   | Validate only the minimum stable subset; tolerate additive fields (NFR-1.1) so an upstream addition is not a breaking change.                                       | Every sprint start               |
-| Nx edges are hand-declared, so blast radius drifts from real imports | Medium     | High   | `tools/sdlc-controls/graph-fidelity.test.mjs` fails CI when a declared dependency has no matching import, or an import has no declared edge.                        | Sprint 1 start                   |
-| Evidence contract reopens once a real store is chosen                | Medium     | High   | 1.2 produces the store ADR before 2.2 writes any persistence code; a contract change found there stops Sprint 2.                                                    | Sprint 1 risk checkpoint         |
-| Sprint 2 is planned over solo capacity (33 SP vs ~20)                | High       | Medium | 2.3 is a Should and was deferred to Sprint 3 by the founder (2026-10-22) rather than being compressed, taking Sprint 2 to 28 SP.                                    | Sprint 2 mid-point (Oct 9, 2026) |
-| Single point of failure — one developer, no redundancy               | Medium     | High   | Every gate and control is written down and executable, so the work is resumable by someone else; no task depends on undocumented context.                           | Every sprint start               |
-| No named integration owner for 3.2                                   | Medium     | Medium | 3.2 drops if no owner is named at Sprint 3 start; it has no downstream dependency.                                                                                  | Sprint 3 start                   |
-| The control plane is read as portfolio governance                    | Medium     | High   | FR-3.2 is enforced by tests, and the indicator payload carries its own disclaimer field in every response.                                                          | Every decision gate              |
-| Roadmap and framework templates drift apart again                    | Medium     | Medium | The roadmap carries all eight task columns and per-sprint waves that `run-task.prompt.md` reads; a missing column breaks the pipeline visibly rather than silently. | Every sprint start               |
+| Risk                                                                               | Likelihood | Impact | Mitigation                                                                                                                                                          | Checkpoint                       |
+| ---------------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| `evidence/0` is experimental upstream and changes before v1.0                      | High       | High   | Validate only the minimum stable subset; tolerate additive fields (NFR-1.1) so an upstream addition is not a breaking change.                                       | Every sprint start               |
+| Nx edges are hand-declared, so blast radius drifts from real imports               | Medium     | High   | `tools/sdlc-controls/graph-fidelity.test.mjs` fails CI when a declared dependency has no matching import, or an import has no declared edge.                        | Sprint 1 start                   |
+| Evidence contract reopens once a real store is chosen                              | Medium     | High   | 1.2 produces the store ADR before 2.2 writes any persistence code; a contract change found there stops Sprint 2.                                                    | Sprint 1 risk checkpoint         |
+| Sprint 2 is planned over solo capacity (33 SP vs ~20)                              | High       | Medium | 2.3 is a Should and was deferred to Sprint 3 by the founder (2026-10-22) rather than being compressed, taking Sprint 2 to 28 SP.                                    | Sprint 2 mid-point (Oct 9, 2026) |
+| Single point of failure — one developer, no redundancy                             | Medium     | High   | Every gate and control is written down and executable, so the work is resumable by someone else; no task depends on undocumented context.                           | Every sprint start               |
+| No named integration owner for 3.2                                                 | Medium     | Medium | 3.2 drops if no owner is named at Sprint 3 start; it has no downstream dependency.                                                                                  | Sprint 3 start                   |
+| The control plane is read as portfolio governance                                  | Medium     | High   | FR-3.2 is enforced by tests, and the indicator payload carries its own disclaimer field in every response.                                                          | Every decision gate              |
+| Roadmap and framework templates drift apart again                                  | Medium     | Medium | The roadmap carries all eight task columns and per-sprint waves that `run-task.prompt.md` reads; a missing column breaks the pipeline visibly rather than silently. | Every sprint start               |
+| A real workspace cannot publish before ADR-0003's measurements and a deploy target | High       | Medium | 3.1 proves the path end to end against a fixture; 3.3 measures and registers; the real publish waits on the deploy-target decision (`stack.md` › Deploy).           | Sprint 3 start                   |
 
 ---
 
@@ -311,7 +317,7 @@ graph TD
     S2 --> S3["Sprint 3<br/>Federation integrations"]
 ```
 
-Every sprint is on the critical path; none is cuttable. Within Sprint 2, task 2.3 is the only deferrable item, and within Sprint 3, task 3.2.
+Every sprint is on the critical path; none is cuttable. Within Sprint 2, task 2.3 is the only deferrable item, and within Sprint 3, tasks 3.2 and 3.3.
 
 ---
 
