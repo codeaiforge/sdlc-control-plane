@@ -746,6 +746,29 @@ test('U9 the CLI refuses while no endpoint is configured, and importing it runs 
   assert.equal(imported.stdout, '');
 });
 
+test('U9 main hands on only the dependencies it names: an extra body or onAttempt does nothing', async (t) => {
+  // endpoint and env are main's own parameters, so body is the one value main checks that an
+  // unnamed dependency could otherwise replace on its way to submitEvidence.
+  const path = recordFile();
+  const forged = Buffer.from('{"schema_version":"evidence/0","change_id":"FORGED"}');
+  let called = false;
+  const result = await scene(t, [503, 202], {
+    run: {
+      path,
+      body: forged,
+      onAttempt: () => {
+        called = true;
+      },
+    },
+  });
+  assert.equal(result.code, EXIT.ACCEPTED);
+  assert.equal(result.plane.requests.length, 2);
+  for (const request of result.plane.requests)
+    assert.ok(request.body.equals(readFileSync(path)), 'the bytes sent are the file main read');
+  assert.equal(called, false, "main's own onAttempt prints the attempt line");
+  assert.match(result.stdout, /attempt 1 of 4: /);
+});
+
 // Last, over everything every test above printed or wrote: no request token, no minted token, and
 // no 12-character run of any minted token's signature segment.
 test('U6 no output of any test carries a credential or a piece of a signature', () => {

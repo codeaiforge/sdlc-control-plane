@@ -432,8 +432,18 @@ const EXIT_BY_KIND = {
 
 // argv = [recordPath]. Returns an EXIT code and never rejects. Every refusal below happens before
 // the first request; the order is the design's: endpoint, record presence, record kind, size,
-// read, endpoint scheme, ID-token variables.
-export async function main({ argv, env, endpoint = CONTROL_PLANE_ENDPOINT, stdout, ...deps }) {
+// read, endpoint scheme, ID-token variables. The injected dependencies are named one by one, so
+// none of them can replace the body, endpoint or variables main has checked.
+export async function main({
+  argv,
+  env,
+  endpoint = CONTROL_PLANE_ENDPOINT,
+  stdout,
+  transport,
+  sleep,
+  now,
+  random,
+}) {
   const lines = [];
   const print = (text) => {
     const line = `submit-evidence: ${text}`;
@@ -499,7 +509,10 @@ export async function main({ argv, env, endpoint = CONTROL_PLANE_ENDPOINT, stdou
         ACTIONS_ID_TOKEN_REQUEST_URL: env?.ACTIONS_ID_TOKEN_REQUEST_URL,
         ACTIONS_ID_TOKEN_REQUEST_TOKEN: env?.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
       },
-      ...deps,
+      transport,
+      sleep,
+      now,
+      random,
       onAttempt: ({ attempt, outcome, waitMs }) =>
         print(
           `attempt ${attempt} of ${MAX_ATTEMPTS}: ${outcome}; next attempt in ` +
