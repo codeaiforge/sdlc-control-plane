@@ -160,7 +160,7 @@ test('a row another session holds locked is skipped, not waited for, and a later
     locked();
     await held;
   });
-  await isLocked;
+  await Promise.race([isLocked, holder]);
   const started = Date.now();
   try {
     assert.deepEqual(await expire(retention, { statementTimeoutMs: 1000 }), {
@@ -283,7 +283,7 @@ test('a batch that cannot finish is cancelled by its statement timeout, and a la
     locked();
     await held;
   });
-  await isLocked;
+  await Promise.race([isLocked, holder]);
   const started = Date.now();
   try {
     await assert.rejects(expire(retention, { statementTimeoutMs: 200 }), { code: '57014' });

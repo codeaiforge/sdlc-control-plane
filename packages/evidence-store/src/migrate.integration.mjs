@@ -196,7 +196,11 @@ test('the idempotency key is a server-side unique constraint, NULLS DISTINCT, an
   const [index] = await db.admin`
     SELECT indexdef FROM pg_indexes WHERE indexname = 'evidence_envelope_received_at'`;
   assert.match(index.indexdef, /\(received_at\)$/);
-  // 0002: the expiry job's batches read live envelopes by id (review cycle 1, S-1).
+});
+
+// 0002: the expiry job's batches read live envelopes by id (review cycle 1, S-1).
+test('the live-envelope index covers id where redacted_at is null', async (t) => {
+  const db = await migrated(t);
   const [live] = await db.admin`
     SELECT indexdef FROM pg_indexes WHERE indexname = 'evidence_envelope_live_id'`;
   assert.match(
