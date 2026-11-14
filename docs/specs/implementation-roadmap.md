@@ -245,7 +245,7 @@ If the fork measurement shows a fork pull request can mint, 3.3 stops at that re
 - [ ] A fixture workspace publishes contract-valid evidence from its own gate
 - [ ] External Epic/capability references reconcile against registered workspaces
 - [ ] No automated portfolio authority is granted by the integration
-- [ ] Fork, Dependabot and runner token claims measured on real runs, a blocked gate shown to submit, and `ai-ready-nx-workspace` registered (3.3, Should)
+- [ ] Fork, Dependabot and runner token claims measured on real runs, a blocked gate shown to submit, the workflow's actions moved to v7/v8, and `ai-ready-nx-workspace` registered (3.3, Should)
 
 ---
 
