@@ -22,15 +22,15 @@ A workspace submits through the adapter this repository publishes (task 3.1): th
 
 **Answers and retries.** The limits are the module's literals (`MAX_ATTEMPTS`, `TOTAL_BUDGET_MS`, `BACKOFF_BASE_MS`, `MAX_RETRY_AFTER_S`); the table is what each answer makes the adapter do, and the process exit code it ends with.
 
-| Answer                                      | Exit | Retried                                                                                                                                         |
-| ------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| 202 `{decision}`                            | 0    | no — appended or duplicate                                                                                                                      |
-| 422 `{decision}`                            | 1    | no — the disposition, policy and reasons are printed, escaped                                                                                   |
-| 400, 401, 403, 409, 413, any 3xx, any other | 4    | never; a 409 names a gate whose `--change-id` is not unique per run                                                                             |
-| 429                                         | 5    | yes, after `retry-after` when it is 1–60 s, else the backoff; a longer `retry-after` stops the loop                                             |
-| 502, 503, 504, a lost answer, a timeout     | 5    | yes, with jittered backoff and the same bytes: intake is idempotent, so a lost 202 replays as a duplicate                                       |
-| no evidence record                          | 3    | nothing is sent; the workflow treats it as success, because the gate's own job has already failed                                               |
-| a refusal before any request                | 2    | nothing is sent: no endpoint configured, the ID-token variables missing, the record not a regular file or too large, or the runner did not mint |
+| Answer                                      | Exit | Retried                                                                                                                                                                                                                      |
+| ------------------------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 202 `{decision}`                            | 0    | no — appended or duplicate                                                                                                                                                                                                   |
+| 422 `{decision}`                            | 1    | no — the disposition, policy and reasons are printed, escaped                                                                                                                                                                |
+| 400, 401, 403, 409, 413, any 3xx, any other | 4    | never; a 409 names a gate whose `--change-id` is not unique per run; a 202 without a `decision` holding a string `disposition` is an answer the adapter does not handle, and it cannot tell whether anything was stored      |
+| 429                                         | 5    | yes, after `retry-after` when it is 1–60 s, else the backoff; a longer `retry-after` stops the loop                                                                                                                          |
+| 502, 503, 504, a lost answer, a timeout     | 5    | yes, with jittered backoff and the same bytes: intake is idempotent, so a lost 202 replays as a duplicate; if no attempt got as far as a POST (the runner's token endpoint failed each time), the line says nothing was sent |
+| no evidence record                          | 3    | nothing is sent; the workflow treats it as success, because the gate's own job has already failed                                                                                                                            |
+| a refusal before any request                | 2    | nothing is sent: no endpoint configured, the ID-token variables missing, the record not a regular file or too large, the runner did not mint, or Node refused to build the request                                           |
 
 At most four attempts run, and one starts only if its mint and submission both fit inside 150 s, so the job's five-minute timeout is never what stops it.
 
