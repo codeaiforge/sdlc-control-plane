@@ -34,7 +34,9 @@ function fakeClient({
     const text = strings.join('?');
     calls.push({ text, values });
     if (text.includes('pg_auth_members'))
-      return Promise.resolve([{ superuser: false, member: false, ...RETENTION, ...role }]);
+      return Promise.resolve([
+        { superuser: false, attributes: false, member: false, ...RETENTION, ...role },
+      ]);
     if (text.includes('to_regclass')) return Promise.resolve([{ present: true }]);
     if (text.includes('FROM evidence.schema_migrations')) {
       if (schemaError) return Promise.reject(schemaError);
@@ -56,10 +58,11 @@ function fakeClient({
 const refusedWith = (code) => (error) => error instanceof ExpiryRefused && error.code === code;
 const updates = (calls) => calls.filter(({ text }) => text.includes('UPDATE evidence.'));
 
-test('expire refuses a superuser, a member of any role, and any role but evidence_retention, before anything else', async () => {
+test('expire refuses a superuser, an elevated attribute, a member of any role, and any role but evidence_retention, before anything else', async () => {
   for (const [role, code] of [
     [{ superuser: true }, 'role-unsafe'],
     [{ name: 'postgres', session: 'postgres', superuser: true }, 'role-unsafe'],
+    [{ attributes: true }, 'role-unsafe'],
     [{ member: true }, 'role-unsafe'],
     [{ name: 'evidence_app', session: 'evidence_app' }, 'not-retention'],
     [{ name: 'evidence_owner' }, 'not-retention'],
@@ -194,4 +197,15 @@ test('the CLI takes no arguments, and a usage error exits 2 before reading any c
     assert.equal(result.stderr, `${USAGE}\n`);
     assert.equal(result.stdout, '');
   }
+});
+
+test('the CLI with no usable PG* configuration exits 1 as config-invalid, before connecting', () => {
+  const script = new URL('./expire.mjs', import.meta.url).pathname;
+  const result = spawnSync(process.execPath, [script], {
+    env: { PATH: process.env.PATH },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, 'expire refused: config-invalid\n');
+  assert.equal(result.stdout, '');
 });

@@ -37,15 +37,18 @@ export class ExpiryRefused extends Error {
 
 // The job's role is meant to find old rows by id and null their payload, and nothing more. Refused,
 // as role-unsafe, a superuser (the trigger would still hold it to the window, but nothing else
-// would) or a member of any role (a NOINHERIT member can still SET ROLE to it); as not-retention,
-// any session that did not log in as, and is not running as, evidence_retention.
+// would), a role with CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS (as the service's startup
+// check refuses), or a member of any role (a NOINHERIT member can still SET ROLE to it); as
+// not-retention, any session that did not log in as, and is not running as, evidence_retention.
 export async function assertRetentionRole(sql) {
   const [role] = await sql`
     SELECT current_user AS name, session_user AS session, r.rolsuper AS superuser,
+           r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls AS attributes,
            EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = r.oid) AS member
       FROM pg_catalog.pg_roles r
      WHERE r.rolname = current_user`;
-  if (role === undefined || role.superuser || role.member) throw new ExpiryRefused('role-unsafe');
+  if (role === undefined || role.superuser || role.attributes || role.member)
+    throw new ExpiryRefused('role-unsafe');
   if (role.name !== RETENTION_ROLE || role.session !== RETENTION_ROLE)
     throw new ExpiryRefused('not-retention');
 }
@@ -69,7 +72,8 @@ function assertBound(name, value, max) {
     throw new TypeError(`${name} must be an integer from 1 to ${max}`);
 }
 
-// Role check, schema check, then batches until one redacts nothing. The subselect and the trigger
+// Role check, schema check, then batches until one redacts nothing. Each batch reads the live ids
+// through 0002's partial index, so it never walks the tombstones. The subselect and the trigger
 // read the same statement_timestamp(), so a row selected here (`<`) is never one the trigger
 // refuses (`>=`). The outer `redacted_at IS NULL` repeats the subselect's so that no reading of the
 // statement can reach a tombstone, which the trigger would refuse. A failed batch rolls back

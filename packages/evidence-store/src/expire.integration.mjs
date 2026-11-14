@@ -4,7 +4,12 @@ import { readFileSync } from 'node:fs';
 import test, { after } from 'node:test';
 import { ExpiryRefused, RETENTION_WINDOW, expire } from './expire.mjs';
 import { loadMigrations, migrate } from './migrate.mjs';
-import { closeHarness, createEmptyDatabase, createTestDatabase } from './pg-harness.mjs';
+import {
+  closeHarness,
+  createEmptyDatabase,
+  createTestDatabase,
+  rolePassword,
+} from './pg-harness.mjs';
 import { createPostgresEvidenceStore } from './postgres-store.mjs';
 
 // The retention expiry job on a real PostgreSQL 16 server, logged in as evidence_retention, under
@@ -140,6 +145,37 @@ test('three runs at once redact every eligible envelope exactly once', async (t)
   assert.equal(await eligible(db), 0);
 });
 
+// Q-6's no-wait property (review cycle 1, S-2). Without SKIP LOCKED the batch waits on the held row
+// until its statement timeout cancels it (57014); with it, the batch takes the others at once.
+test('a row another session holds locked is skipped, not waited for, and a later run takes it', async (t) => {
+  const db = await database(t);
+  await insertAged(db, 5);
+  const retention = db.connectAs('evidence_retention', { max: 1 });
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  let locked;
+  const isLocked = new Promise((resolve) => (locked = resolve));
+  const holder = db.admin.begin(async (tx) => {
+    await tx`SELECT id FROM evidence.evidence_envelope ORDER BY id LIMIT 1 FOR UPDATE`;
+    locked();
+    await held;
+  });
+  await isLocked;
+  const started = Date.now();
+  try {
+    assert.deepEqual(await expire(retention, { statementTimeoutMs: 1000 }), {
+      redacted: 4,
+      batches: 1,
+    });
+    assert.ok(Date.now() - started < 1000, 'no batch waited for the held row');
+  } finally {
+    release();
+    await holder;
+  }
+  assert.deepEqual(await expire(retention), { redacted: 1, batches: 1 });
+  assert.equal(await eligible(db), 0);
+});
+
 // ---------------------------------------------------------------- AC-4, AC-5: tombstones
 
 test('a tombstone far past the window survives every run unchanged', async (t) => {
@@ -272,6 +308,41 @@ test('every role but evidence_retention is refused, a superuser as role-unsafe, 
       role,
     );
   await assert.rejects(expire(db.admin), refusedWith('role-unsafe'));
+  assert.notEqual(await payloadOf(db, id), null);
+  assert.equal(await count(db, 'evidence_redaction'), 0);
+});
+
+// Review cycle 1, S-3 and N-2. Membership cannot be granted to the shared evidence_retention role
+// (other test processes use it), but the job checks membership and attributes before the role's
+// name, so a disposable login role shows each refusal on a real server. As
+// database-roles.integration.mjs's serviceRoleCopy, it is dropped before the database is disposed.
+test('a member of any role, or a role with an elevated attribute, is refused as role-unsafe', async (t) => {
+  const db = await database(t);
+  const id = await insertAt(db, 'PR-old', '1 hour');
+  const name = `evidence_copy_${process.pid}_${Math.random().toString(16).slice(2, 10)}`;
+  const role = db.admin(name);
+  await db.admin.unsafe(
+    `CREATE ROLE ${name} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${rolePassword(process.env.PGPASSWORD, name)}'`,
+  );
+  const copy = db.connectAs(name, { max: 1 });
+  try {
+    await db.admin`GRANT CONNECT ON DATABASE ${db.admin(db.name)} TO ${role}`;
+    // Neither a member nor elevated: refused only because it is not evidence_retention.
+    await assert.rejects(expire(copy), refusedWith('not-retention'));
+    await db.admin`GRANT evidence_audit TO ${role}`;
+    await assert.rejects(expire(copy), refusedWith('role-unsafe'), 'member');
+    await db.admin`REVOKE evidence_audit FROM ${role}`;
+    for (const attribute of ['CREATEROLE', 'CREATEDB', 'REPLICATION', 'BYPASSRLS']) {
+      await db.admin.unsafe(`ALTER ROLE ${name} ${attribute}`);
+      await assert.rejects(expire(copy), refusedWith('role-unsafe'), attribute);
+      await db.admin.unsafe(`ALTER ROLE ${name} NO${attribute}`);
+    }
+    await assert.rejects(expire(copy), refusedWith('not-retention'));
+  } finally {
+    await copy.end({ timeout: 1 }).catch(() => {});
+    await db.admin`DROP OWNED BY ${role}`;
+    await db.admin`DROP ROLE ${role}`;
+  }
   assert.notEqual(await payloadOf(db, id), null);
   assert.equal(await count(db, 'evidence_redaction'), 0);
 });
