@@ -14,6 +14,37 @@ Each workspace posts an `evidence/0`-compatible record produced by `git-native-s
 
 The contract is rejected when its schema version is not `evidence/0`; accepting a later shape on a guess can under-report a control failure.
 
+## Producer: the evidence adapter
+
+A workspace submits through the adapter this repository publishes (task 3.1): the reusable workflow [`.github/workflows/submit-evidence.yml`](../.github/workflows/submit-evidence.yml), called cross-repository at a tag as its own job after the workspace's gate, which runs the one-file client [`packages/evidence-adapter/src/submit-evidence.mjs`](../packages/evidence-adapter/src/submit-evidence.mjs). The job that holds `id-token: write` is that separate job because a workflow pin means something only when the token-holding job runs none of the caller's code and takes the gate's output as data ([ADR-0003](adr/0003-github-actions-oidc-workload-authorization.md) › What a pin does not do); it has no inputs and no secrets, and the control plane's endpoint and audience are reviewed constants of the adapter, so nothing the caller's workflow says can send a minted token anywhere else.
+
+**The request.** For every attempt the adapter mints a fresh token from the runner's ID-token endpoint for the audience `urn:codeaiforge:sdlc-control-plane:production`, then sends `POST /v1/evidence` with exactly one `Authorization: Bearer` header, `content-type: application/json`, and the gate's `evidence.json` as the body, byte for byte. It adds nothing: `workspace_id` and `submitted_by` come from the token ([ADR-0004](adr/0004-evidence-recorded-as-identity-bound-self-attestation.md)). It sends only over HTTPS with certificate verification forced on (plain HTTP only to `127.0.0.1` or `[::1]`, for tests), follows no redirect, refuses a record over the 1 MiB body limit before minting, and never prints the token.
+
+**Answers and retries.** The limits are the module's literals (`MAX_ATTEMPTS`, `TOTAL_BUDGET_MS`, `BACKOFF_BASE_MS`, `MAX_RETRY_AFTER_S`); the table is what each answer makes the adapter do, and the process exit code it ends with.
+
+| Answer                                      | Exit | Retried                                                                                                                                         |
+| ------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 202 `{decision}`                            | 0    | no — appended or duplicate                                                                                                                      |
+| 422 `{decision}`                            | 1    | no — the disposition, policy and reasons are printed, escaped                                                                                   |
+| 400, 401, 403, 409, 413, any 3xx, any other | 4    | never; a 409 names a gate whose `--change-id` is not unique per run                                                                             |
+| 429                                         | 5    | yes, after `retry-after` when it is 1–60 s, else the backoff; a longer `retry-after` stops the loop                                             |
+| 502, 503, 504, a lost answer, a timeout     | 5    | yes, with jittered backoff and the same bytes: intake is idempotent, so a lost 202 replays as a duplicate                                       |
+| no evidence record                          | 3    | nothing is sent; the workflow treats it as success, because the gate's own job has already failed                                               |
+| a refusal before any request                | 2    | nothing is sent: no endpoint configured, the ID-token variables missing, the record not a regular file or too large, or the runner did not mint |
+
+At most four attempts run, and one starts only if its mint and submission both fit inside 150 s, so the job's five-minute timeout is never what stops it.
+
+**Change identity.** The idempotency key is `(workspace_id, change_id)` for all time ([ADR-0002](adr/0002-append-only-evidence-envelope-log.md)). A gate that recorded `PR-<n>` would have its first evaluation of a pull request stand and every later one refused 409, so a workspace wired to the adapter sets a per-run change id: `--change-id "PR-${PR}@${HEAD_SHA}/${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"`. Each gate run is then its own record, a re-run of the submit job alone re-sends the same artifact and is answered as a duplicate, and **indicators count gate runs, not changes**. That semantics is flagged for review against ADR-0002 and ADR-0003 before any real registration (threat model RR-15).
+
+**What a 202 says.** The record was received and the policy accepted it as the workspace's own claim — appended or already held; the answer does not say which. It does not say the record is true. Until a deploy target is selected (`stack.md` › Deploy) the adapter's endpoint is `null`, and it submits nothing.
+
+**Where this departs from ADR wording.** ADRs are not edited; these are recorded here and in the task record (`.ai/sprints/sprint-3/tasks/3.1.md`):
+
+1. ADR-0003 names `core.getIDToken(...)`. The adapter speaks the same runner protocol directly, with no `@actions/core` dependency in the credential path.
+2. ADR-0003 hands the fork-token measurement, the Dependabot measurement and the registration precondition to task 3.1. They moved to task 3.3 when the founder split it out of 3.1 (2026-11-14).
+3. ADR-0003's "a differing body is `conflict`, and the first record stands" still holds, but under per-run change ids a re-evaluation is a new `change_id`: a re-run of the gate appends, and only a re-run of the submit job alone is a duplicate.
+4. The endpoint is a reviewed constant of the adapter. ADR-0003 is silent on it; it follows from that ADR's own job-shape reasoning.
+
 ## Inbound: workspace registration
 
 Registration binds a repository to the ownership and value-stream context the control plane records against it; the fields are the `Workspace` schema in `openapi.json`, at `workspace-registry/1` since task 2.1. It is configuration, reviewed like any other control input. A registration is not an assertion that the control plane can query that repository.
@@ -40,6 +71,7 @@ sequenceDiagram
   H->>CP: approves policy + decision reference
   Note over CP,WS: no route distributes the binding (RR-3)
   WS->>WS: CI computes tier and evidence
+  WS->>WS: mint OIDC token (audience)
   WS->>CP: POST evidence record + OIDC token
   CP->>CP: authenticate, authorize for W, validate, evaluate
   CP-->>WS: disposition (self-attested)
