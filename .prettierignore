@@ -36,3 +36,6 @@ tools/adr/
 tools/sdlc-controls/README.md
 config/sdlc-controls/criticality-tags.md
 docs/sdlc-controls-integration.md
+
+# Vendored byte for byte from git-native-sdlc-controls; SOURCE.md records its sha256.
+packages/contracts/schemas/evidence/0/evidence.schema.json

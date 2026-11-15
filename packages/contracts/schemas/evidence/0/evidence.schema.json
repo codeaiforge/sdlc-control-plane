@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/codeaiforge/git-native-sdlc-controls/main/schemas/evidence/0/evidence.schema.json",
+  "title": "SDLC controls evidence record",
+  "description": "One record per change: the tier, why that tier, what the tier required, and what this run actually verified. Emitted by `sdlc-controls tier --format json` and by `--evidence-out`.",
+  "x-status": "experimental",
+  "x-stability": "Major version 0 while the binary is 0.x. Fields may be added in any release, and additionalProperties is left open at every extension point so a pinned copy of this schema keeps validating newer documents; a consumer must ignore fields it does not recognise. Removing a field, renaming one, or narrowing what one means bumps the major to evidence/1. Closed sets that the algorithm itself fixes (the tier scale, the exit codes) stay closed. See docs/contract.md.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "tool",
+    "change_id",
+    "binding_used",
+    "tier",
+    "affected_set",
+    "unmatched_set",
+    "reasons",
+    "controls_enforced",
+    "ai_assisted",
+    "verification",
+    "result",
+    "map_version",
+    "computed_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Shape of this document. Versioned independently of the binary and of the policy binding.",
+      "const": "evidence/0"
+    },
+    "tool": { "$ref": "#/$defs/tool" },
+    "change_id": {
+      "type": "string",
+      "description": "PR/MR identifier, or <base>..<head> when none was supplied."
+    },
+    "binding_used": {
+      "type": "string",
+      "description": "Control binding the decision was made under, e.g. git-native-baseline@2."
+    },
+    "tier": { "$ref": "#/$defs/tier" },
+    "affected_set": {
+      "description": "Component IDs the change touched, sorted.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "unmatched_set": {
+      "description": "Changed paths that matched no component, sorted. A non-empty set drives the fail-safe floor.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "reasons": {
+      "description": "Ordered decision trail; one entry per rule that fired, in the order the algorithm applied it. The order is meaningful.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "controls_enforced": {
+      "description": "The tier's entry from the active policy: what the tier required, not what was checked. What was checked is in `verification`.",
+      "$ref": "#/$defs/controls"
+    },
+    "ai_assisted": {
+      "type": "boolean",
+      "description": "CAF-SDLC-010. Whether any commit in the change declared AI assistance. A declaration, not a detection: false means nothing declared it."
+    },
+    "ai_tool": { "type": "string", "description": "CAF-SDLC-010. The tool named on the change." },
+    "ai_session": {
+      "type": "string",
+      "description": "CAF-SDLC-010. Present only when exactly one session is declared; absent when the change spans several, because there is no single session to name."
+    },
+    "prompt_ref": { "type": "string", "description": "CAF-SDLC-010. Pointer to the issue or task." },
+    "accountable_approver": {
+      "type": "string",
+      "description": "CAF-SDLC-011. The approver who satisfies segregation of duties. Absent when no approver set was available."
+    },
+    "approver_ne_author": {
+      "type": "boolean",
+      "description": "CAF-SDLC-011. Absent means NOT VERIFIED — never read an absent field as false."
+    },
+    "approver_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "CAF-SDLC-011. Distinct approvers, folded case-insensitively. Absent means not verified; 0 means verified that nobody approved."
+    },
+    "approvers_other_than_author": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "CAF-SDLC-011. `approver_count` without the author: what `min_approvers` is checked against under git-native-baseline@2 (ADR-0002). Absent means not verified, exactly as for `approver_count`."
+    },
+    "author": {
+      "type": "string",
+      "description": "The author handle the run was given. Absent when none was supplied."
+    },
+    "head": {
+      "type": "string",
+      "description": "The commit the change's head ref resolved to."
+    },
+    "self_escalated": {
+      "type": "boolean",
+      "description": "CAF-SDLC-002 map governance fired: the change touched a governed control file and was raised to the top tier. Absent in records from binaries before 0.3.0, which means not recorded, not false."
+    },
+    "verification": { "$ref": "#/$defs/verification" },
+    "result": { "$ref": "#/$defs/result" },
+    "warnings": {
+      "description": "Prose form of everything this run could not settle: cross-repo consumers, stale-map hints, unverified controls. `verification` is the structured form.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "map_version": {
+      "type": "integer",
+      "description": "`version` of the component map used. With `binding_used`, enough to reproduce the decision."
+    },
+    "computed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339, UTC."
+    }
+  },
+  "$defs": {
+    "tier": {
+      "type": "string",
+      "enum": ["T0", "T1", "T2", "T3"]
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string", "description": "Binary version (SemVer). Moves independently of schema_version." }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["min_approvers", "checks"],
+      "properties": {
+        "min_approvers": { "type": "integer", "minimum": 0 },
+        "checks": {
+          "description": "Named checks the tier requires. This tool records them; the CI jobs the policy names execute them.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "deploy_approval": { "type": "string" },
+        "require_owning_team_reviewer": { "type": "boolean" },
+        "independent_approver_required": { "type": "boolean" }
+      }
+    },
+    "verification": {
+      "description": "What this run settled versus what it only recorded. The distinction is the point of the tool: a control that was not checked is never reported as passed.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["approvers_supplied", "verified", "recorded_not_verified"],
+      "properties": {
+        "approvers_supplied": {
+          "type": "boolean",
+          "description": "Whether the run had an authoritative approver set. False means the approver controls were recorded, not checked."
+        },
+        "verified": {
+          "description": "Control identifiers this run checked itself.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/controlId" }
+        },
+        "recorded_not_verified": {
+          "description": "Control identifiers recorded as required but enforced elsewhere — by the forge, by branch protection, or by the CI jobs the policy names.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/controlId" }
+        }
+      }
+    },
+    "controlId": {
+      "description": "Identifier of a control this run either settled or recorded. The set grows as controls are added, so a consumer must tolerate an identifier it does not recognise rather than reject the document. The values below are those evidence/0 defines today; they are examples, not a closed set.",
+      "type": "string",
+      "examples": [
+        "CAF-SDLC-002:tier",
+        "CAF-SDLC-010:provenance-complete",
+        "CAF-SDLC-010:ai-authorship",
+        "CAF-SDLC-011:approver-count",
+        "CAF-SDLC-011:independent-approver",
+        "owning-team-reviewer",
+        "required-checks",
+        "deploy-approval"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["pass", "exit_code", "violations"],
+      "properties": {
+        "pass": { "type": "boolean", "description": "Whether the evidence settles every control it could check." },
+        "exit_code": {
+          "description": "The CLI's exit code alongside this record. A run that exits 2 produces no record, so only 0 and 1 appear here.",
+          "type": "integer",
+          "enum": [0, 1]
+        },
+        "violations": {
+          "description": "Controls the evidence demonstrably fails. Empty when `pass` is true.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "violated": {
+          "description": "The control identifiers behind `violations`, sorted and unique. Empty when `pass` is true. Absent in records from binaries before 0.3.0, which means not recorded.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}
