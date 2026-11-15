@@ -17,9 +17,9 @@
 
 ## Additional Work Completed (not in roadmap)
 
-| Item | Commit | Notes |
-| ---- | ------ | ----- |
-| None | —      | —     |
+| Item                           | Commit              | Notes                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Authoritative Mermaid diagrams | `fa8f0e9`…`52355f4` | Five diagrams in `docs/diagrams/` (trust boundaries, evidence submission, route authorization, evidence lifecycle, components), indexed in `docs/diagrams/index.md`; `diagrams-conformance.test.mjs` fails when a diagram names an ID, route, code, identifier or file that no longer exists, or when the component graph drifts. Founder, 2026-11-15 |
 
 ## Summary
 
