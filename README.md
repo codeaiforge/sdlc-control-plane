@@ -126,6 +126,8 @@ Every accepted risk, with who accepted it and when it is reviewed, is in the res
 | Programme               | Keeps evidence traceable to its workspace, change and policy; no MBSE integration yet    | Own solution intent or supplier management     |
 | Portfolio               | Applies one approved guardrail policy and stamps it on every decision; no indicator view | Make investment, staffing, or budget decisions |
 
+Using SAFe? See [`docs/mappings/safe.md`](docs/mappings/safe.md).
+
 ## Tests
 
 ```sh
