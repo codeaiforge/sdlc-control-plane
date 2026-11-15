@@ -32,7 +32,7 @@ const evidenceRecord = (overrides = {}) => ({
   ...overrides,
 });
 
-const WORKSPACE = 'payments-art';
+const WORKSPACE = 'payments';
 
 // The factory may be sync or async, and may return a store or a { store, dispose, redact, age }
 // bundle — the PostgreSQL adapter has a connection to close, and a suite that leaked one per test

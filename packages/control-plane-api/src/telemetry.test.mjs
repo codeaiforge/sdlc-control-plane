@@ -103,7 +103,7 @@ const registration = (workspace_id, repository_id, overrides = {}, identity = {}
 const REGISTRY_DOC = {
   registry_version: 'workspace-registry/1',
   workspaces: [
-    registration('payments-art', '74'),
+    registration('payments', '74'),
     registration('suspended-ws', '75', { status: 'suspended' }),
     registration('pinned-ref', '76', {}, { required_job_workflow_ref: PIN_REF }),
     registration(
@@ -210,7 +210,7 @@ const failing = async () => {
 const faultingStore = () => ({ append: failing, list: failing, listRecords: failing });
 const holding = (record) => {
   const store = createInMemoryEvidenceStore();
-  store.append(record, { workspace_id: 'payments-art' });
+  store.append(record, { workspace_id: 'payments' });
   return store;
 };
 const readinessOf = (answer) => ({ probe: async () => answer });
@@ -605,7 +605,7 @@ test('a route that returns without answering is answered 503 handler-fault, coun
       [[name, 'handler-fault']],
     );
     if (!['/health', '/ready'].includes(path))
-      assert.equal(events[0].principal.workspace_id, 'payments-art', path);
+      assert.equal(events[0].principal.workspace_id, 'payments', path);
   }
 });
 
@@ -701,7 +701,7 @@ test('a fault after the first write attempt is one event and one late fault, nev
 
 test('every event has exactly its closed key set', () => {
   const route = { method: 'POST', path: '/v1/evidence' };
-  const who = { principal: principal(), workspaceId: 'payments-art' };
+  const who = { principal: principal(), workspaceId: 'payments' };
   assert.deepEqual(
     Object.keys(
       acceptedEvent({ at: AT, route, status: 202, outcome: 'duplicate', durationMs: 3, ...who }),
@@ -1055,6 +1055,6 @@ test('AC-5: a canary in every field a caller writes appears in no line, and the 
     ]);
     for (const key of ['repository_owner_id', 'repository_id', 'run_id', 'run_attempt'])
       assert.match(event.principal[key], /^(0|[1-9]\d*)$/, key);
-    assert.equal(event.principal.workspace_id, 'payments-art');
+    assert.equal(event.principal.workspace_id, 'payments');
   }
 });

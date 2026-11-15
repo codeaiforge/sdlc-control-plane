@@ -133,7 +133,7 @@ const validEvidence = {
 };
 
 const workspace = {
-  workspace_id: 'payments-art',
+  workspace_id: 'payments',
   display_name: 'Payments',
   value_stream: 'payments',
   repository_url: 'https://example.invalid/r',
@@ -642,7 +642,7 @@ test('GET /v1/indicators asks the store for the caller workspace only', async ()
   const store = createInMemoryEvidenceStore();
   const spy = { ...store, list: (filter) => (filters.push(filter), store.list(filter)) };
   await call(seam(spy), get('/v1/indicators'));
-  assert.deepEqual(filters, [{ workspace_id: 'payments-art' }]);
+  assert.deepEqual(filters, [{ workspace_id: 'payments' }]);
 });
 
 // AC-12. A conflict is the caller's to resolve, and the answer names the key and nothing stored.
@@ -658,7 +658,7 @@ test('a conflicting submission is answered 409 with the key, never the stored pa
     post(JSON.stringify({ ...first, result: { pass: false } })),
   );
   assert.equal(status, 409);
-  assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments-art","PR-1"]' });
+  assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments","PR-1"]' });
   assert.doesNotMatch(JSON.stringify(body), /STORED|decision|pass/);
   assert.deepEqual(
     lines.map((event) => [event.status, event.reason]),
@@ -716,7 +716,7 @@ test('a redacted envelope is not counted by the indicator, and its replay is a d
   const handler = seam(store);
   assert.equal((await call(handler, post(JSON.stringify(validEvidence)))).status, 202);
   assert.equal((await call(handler, get('/v1/indicators'))).body.data.total_records, 1);
-  assert.equal(redact({ workspace_id: 'payments-art', change_id: 'PR-1' }), true);
+  assert.equal(redact({ workspace_id: 'payments', change_id: 'PR-1' }), true);
   assert.equal((await call(handler, get('/v1/indicators'))).body.data.total_records, 0);
   const replay = await call(
     handler,

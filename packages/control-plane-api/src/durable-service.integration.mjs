@@ -64,7 +64,7 @@ const REGISTRY = {
   registry_version: 'workspace-registry/1',
   workspaces: [
     {
-      workspace_id: 'payments-art',
+      workspace_id: 'payments',
       display_name: 'Payments',
       value_stream: 'payments',
       repository_url: 'https://example.invalid/r',
@@ -175,7 +175,7 @@ function call(port, { method = 'GET', path, body, auth = true, headers = {} }) {
 async function rows(db, change = 'PR-1') {
   const [{ n }] = await db.connectAs('evidence_audit', { max: 1 })`
     SELECT count(*)::int AS n FROM evidence.evidence_envelope
-     WHERE workspace_id = 'payments-art' AND change_id = ${change}`;
+     WHERE workspace_id = 'payments' AND change_id = ${change}`;
   return n;
 }
 
@@ -214,7 +214,7 @@ test('an accepted record survives SIGKILL; the next process counts it once and a
   assert.deepEqual(
     { ...stored },
     {
-      workspace_id: 'payments-art',
+      workspace_id: 'payments',
       policy_id: 'test-policy@1',
       run_id: '39384901065',
     },

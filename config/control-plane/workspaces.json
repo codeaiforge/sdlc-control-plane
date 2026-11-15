@@ -2,11 +2,11 @@
   "registry_version": "workspace-registry/1",
   "workspaces": [
     {
-      "workspace_id": "payments-art",
+      "workspace_id": "payments",
       "display_name": "Payments engineering workspace",
       "value_stream": "payment-services",
       "solution": "digital-payments",
-      "repository_url": "https://example.invalid/platform/payments-art",
+      "repository_url": "https://example.invalid/platform/payments",
       "evidence_endpoint": "https://control-plane.example.invalid/v1/evidence",
       "owners": ["payments-platform"],
       "status": "suspended",

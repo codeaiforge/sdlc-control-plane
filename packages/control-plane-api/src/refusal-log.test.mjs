@@ -142,7 +142,7 @@ const registration = (workspace_id, repository_id, overrides = {}, identity = {}
 const REGISTRY_DOC = {
   registry_version: 'workspace-registry/1',
   workspaces: [
-    registration('payments-art', '74'),
+    registration('payments', '74'),
     registration('suspended-ws', '75', { status: 'suspended' }),
     registration('pinned-ref', '76', {}, { required_job_workflow_ref: PIN_REF }),
     registration(
@@ -280,7 +280,7 @@ function scenarios() {
   // change_id is not a canary; every other body field still is, and none of them may appear.
   const conflicting = evidence({ change_id: 'PR-conflict', access_token: 'CANARY-BODY-token' });
   const held = createInMemoryEvidenceStore();
-  held.append({ ...conflicting, result: { pass: false } }, { workspace_id: 'payments-art' });
+  held.append({ ...conflicting, result: { pass: false } }, { workspace_id: 'payments' });
   add('conflict', 409, good, { body: JSON.stringify(conflicting), store: held });
   add('store-unavailable', 503, good, {
     store: {

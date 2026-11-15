@@ -149,7 +149,7 @@ const validEvidence = {
 };
 
 const workspace = {
-  workspace_id: 'payments-art',
+  workspace_id: 'payments',
   display_name: 'Payments',
   value_stream: 'payments',
   repository_url: 'https://example.invalid/r',
@@ -391,12 +391,12 @@ const scenarios = [
     status: 409,
     seam: () => {
       const store = createInMemoryEvidenceStore();
-      store.append({ ...validEvidence, result: { pass: false } }, { workspace_id: 'payments-art' });
+      store.append({ ...validEvidence, result: { pass: false } }, { workspace_id: 'payments' });
       return seam(store);
     },
     request: () => post(JSON.stringify(validEvidence)),
     claim: (body) =>
-      assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments-art","PR-1"]' }),
+      assert.deepEqual(body, { error: 'conflict', idempotency_key: '["payments","PR-1"]' }),
   },
   {
     name: 'POST /v1/evidence -> 429 a principal over its submission quota',
@@ -819,7 +819,7 @@ test('divergence: the 202 is synchronous, so it promises nothing about later wor
 // accepted under another policy.
 test('divergence 6: a replay is answered with the decision computed for the replay', async () => {
   const store = createInMemoryEvidenceStore();
-  store.append(validEvidence, { workspace_id: 'payments-art', policy_id: 'earlier-policy@0' });
+  store.append(validEvidence, { workspace_id: 'payments', policy_id: 'earlier-policy@0' });
   const { status, body } = await call(seam(store), post(JSON.stringify(validEvidence)));
   assert.equal(status, 202);
   assert.equal(body.decision.policy_id, 'test-policy@1', "the decision is the replay's own");
@@ -858,10 +858,7 @@ test('the 409 body is closed, carries the key, and never the stored payload or a
     false,
   );
   const store = createInMemoryEvidenceStore();
-  store.append(
-    { ...validEvidence, binding_used: 'STORED-binding' },
-    { workspace_id: 'payments-art' },
-  );
+  store.append({ ...validEvidence, binding_used: 'STORED-binding' }, { workspace_id: 'payments' });
   const { status, body } = await call(seam(store), post(JSON.stringify(validEvidence)));
   assert.equal(status, 409);
   assert.doesNotMatch(JSON.stringify(body), /STORED|binding|decision/);
@@ -915,7 +912,7 @@ test('a fault on GET /ready is a 503 the document declares, with the not-ready b
 test('a fault anywhere in an authenticated route is a 503 the document declares', async () => {
   const handler = seam(undefined, {
     registry: {
-      bindingFor: () => 'payments-art',
+      bindingFor: () => 'payments',
       get: () => {
         throw new Error('registry fault');
       },

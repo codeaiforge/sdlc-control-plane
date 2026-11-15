@@ -56,7 +56,7 @@ test('a record that is not a non-null, non-array object is refused before anythi
 });
 
 test('the exported key encodes the pair rather than joining it', () => {
-  assert.equal(idempotencyKey('payments-art', 'PR-1'), '["payments-art","PR-1"]');
+  assert.equal(idempotencyKey('payments', 'PR-1'), '["payments","PR-1"]');
   assert.notEqual(idempotencyKey('a|b', 'c'), idempotencyKey('a', 'b|c'));
   assert.equal(['a|b', 'c'].join('|'), ['a', 'b|c'].join('|'));
 });
@@ -92,8 +92,8 @@ test('a duplicate hands back the stored envelope, not one minted for the replay'
     now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString(),
   });
   const record = { schema_version: 'evidence/0', change_id: 'PR-1' };
-  const first = store.append(record, { workspace_id: 'payments-art' });
-  const replay = store.append(record, { workspace_id: 'payments-art' });
+  const first = store.append(record, { workspace_id: 'payments' });
+  const replay = store.append(record, { workspace_id: 'payments' });
   assert.equal(first.outcome, 'appended');
   assert.equal(replay.outcome, 'duplicate');
   assert.equal(replay.envelope.received_at, first.envelope.received_at);
@@ -109,8 +109,8 @@ test('the in-memory redaction takes its time from the injected clock and freezes
   const { store, redact } = createInMemoryEvidenceLog({
     now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, tick++)).toISOString(),
   });
-  store.append({ change_id: 'PR-1' }, { workspace_id: 'payments-art' });
-  assert.equal(redact({ workspace_id: 'payments-art', change_id: 'PR-1' }), true);
+  store.append({ change_id: 'PR-1' }, { workspace_id: 'payments' });
+  assert.equal(redact({ workspace_id: 'payments', change_id: 'PR-1' }), true);
   const [tombstone] = store.list();
   assert.equal(tombstone.received_at, '2026-01-01T00:00:00.000Z');
   assert.equal(tombstone.redacted_at, '2026-01-01T00:00:01.000Z');
@@ -122,8 +122,8 @@ test('the in-memory redaction takes its time from the injected clock and freezes
 test('redaction is not reachable through the store, and two logs share nothing', () => {
   const first = createInMemoryEvidenceLog();
   const second = createInMemoryEvidenceLog();
-  first.store.append({ change_id: 'PR-1' }, { workspace_id: 'payments-art' });
-  assert.equal(second.redact({ workspace_id: 'payments-art', change_id: 'PR-1' }), false);
+  first.store.append({ change_id: 'PR-1' }, { workspace_id: 'payments' });
+  assert.equal(second.redact({ workspace_id: 'payments', change_id: 'PR-1' }), false);
   assert.equal(first.store.list()[0].evidence.change_id, 'PR-1');
   assert.equal(Object.hasOwn(first.store, 'redact'), false);
   assert.deepEqual(Object.keys(createInMemoryEvidenceStore()).sort(), [

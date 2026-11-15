@@ -72,7 +72,8 @@ to name the framework, and carries the owner's trademark notice.
 - "Value stream" is not renamed by this record. FR-1.2 and the registry's `value_stream` field
   use it as a neutral reference to a business area, and renaming a contract field is a separate
   decision.
-- The sample registry keeps the workspace id `payments-art`; only its display name changes. The
-  id is an identifier that tests and demo setups reference, not vocabulary.
+- The sample registry's workspace is renamed `payments` (id, display name and repository URL), and
+  every test and fixture that names it follows. An identifier carries vocabulary too, and a demo
+  setup that references the old id must use the new one.
 - Reviewers have one more thing to check: a framework term outside `docs/mappings/` and accepted
   ADRs is a defect against this record.

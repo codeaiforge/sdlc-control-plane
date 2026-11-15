@@ -56,7 +56,7 @@ const record = (overrides = {}) => ({
 const at = new Date('2026-10-20T10:00:00.123Z');
 const row = (overrides = {}) => ({
   envelope_version: 'evidence-envelope/0',
-  workspace_id: 'payments-art',
+  workspace_id: 'payments',
   change_id: 'PR-1',
   received_at: at,
   policy_id: 'p@1',
@@ -115,7 +115,7 @@ test('a record fault is a TypeError, decided before any statement is sent', () =
     record({ note: 'nul\u0000' }),
     record({ ['k\ud800']: 1 }),
   ])
-    assert.throws(() => store.append(bad, { workspace_id: 'payments-art' }), TypeError);
+    assert.throws(() => store.append(bad, { workspace_id: 'payments' }), TypeError);
   assert.deepEqual(calls, []);
 });
 
@@ -133,7 +133,7 @@ test("an envelope-option fault is the control plane's, decided before any statem
     { received_at: '2026-09-22T10:30:00.000Z' },
   ])
     assert.throws(
-      () => store.append(record(), { workspace_id: 'payments-art', ...options }),
+      () => store.append(record(), { workspace_id: 'payments', ...options }),
       (error) => error.name === 'EvidenceStoreFault',
       JSON.stringify(options),
     );
@@ -164,7 +164,7 @@ test('an append is one INSERT; nothing is read before it, so there is no select-
   const { sql, calls } = fakeSql(() => [row()]);
   const store = createPostgresEvidenceStore({ sql });
   const result = await store.append(record({ extra: { b: 1, a: 2 } }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
     policy_id: 'p@1',
     submitted_by: { run_id: '1' },
   });
@@ -177,7 +177,7 @@ test('an append is one INSERT; nothing is read before it, so there is no select-
   assert.doesNotMatch(calls[0].text, /received_at[^]*VALUES/);
   assert.deepEqual(calls[0].values, [
     'evidence-envelope/0',
-    'payments-art',
+    'payments',
     'PR-1',
     'p@1',
     '{"run_id":"1"}',
@@ -196,7 +196,7 @@ test('a key that exists is looked up after the INSERT and answered from the stor
       text.startsWith('INSERT') ? [] : [row({ submitted_by: { run_id: 'first' }, same })],
     );
     const result = await createPostgresEvidenceStore({ sql }).append(record(), {
-      workspace_id: 'payments-art',
+      workspace_id: 'payments',
       submitted_by: { run_id: 'second' },
     });
     assert.equal(result.outcome, outcome);
@@ -210,14 +210,14 @@ test('a key that exists is looked up after the INSERT and answered from the stor
       calls.map((call) => call.text.split(' ')[0]),
       ['INSERT', 'SELECT'],
     );
-    assert.deepEqual(calls[1].values, [JSON.stringify(record()), 'payments-art', 'PR-1']);
+    assert.deepEqual(calls[1].values, [JSON.stringify(record()), 'payments', 'PR-1']);
   }
 });
 
 test('a lookup that finds no row after DO NOTHING is a fault, not a guess', async () => {
   const { sql } = fakeSql(() => []);
   await assert.rejects(
-    createPostgresEvidenceStore({ sql }).append(record(), { workspace_id: 'payments-art' }),
+    createPostgresEvidenceStore({ sql }).append(record(), { workspace_id: 'payments' }),
     { name: 'EvidenceStoreFault' },
   );
 });
@@ -229,9 +229,9 @@ test('a driver rejection becomes an EvidenceStoreFault that keeps the cause out 
   const { sql } = fakeSql(() => Promise.reject(driverError));
   const store = createPostgresEvidenceStore({ sql });
   for (const call of [
-    () => store.append(record(), { workspace_id: 'payments-art' }),
+    () => store.append(record(), { workspace_id: 'payments' }),
     () => store.list(),
-    () => store.list({ workspace_id: 'payments-art' }),
+    () => store.list({ workspace_id: 'payments' }),
     () => store.listRecords(),
   ]) {
     const error = await call().then(
@@ -249,7 +249,7 @@ test('a statement with no answer in STORE_QUERY_TIMEOUT_MS is cancelled and beco
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { sql, calls } = fakeSql(() => 'hang');
   const pending = createPostgresEvidenceStore({ sql }).append(record(), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
   });
   let settled = false;
   pending.then(
@@ -287,7 +287,7 @@ test('rows are read back in the port key order, timestamps as ISO strings, deep-
     'redacted_at',
   ]);
   assert.equal(first.received_at, '2026-10-20T10:00:00.123Z');
-  assert.equal(first.idempotency_key, '["payments-art","PR-1"]');
+  assert.equal(first.idempotency_key, '["payments","PR-1"]');
   assert.equal(first.redacted_at, null);
   assert.equal(second.idempotency_key, null);
   assert.equal(second.redacted_at, '2026-10-21T00:00:00.000Z');
@@ -305,8 +305,8 @@ test('list() binds its workspace filter, refuses a non-string one before any sta
   for (const filter of [null, 7, { $ne: 'x' }])
     assert.throws(() => store.list({ workspace_id: filter }), TypeError);
   assert.deepEqual(calls, []);
-  await store.list({ workspace_id: "payments-art' OR '1'='1" });
-  assert.deepEqual(calls[0].values, ["payments-art' OR '1'='1"]);
+  await store.list({ workspace_id: "payments' OR '1'='1" });
+  assert.deepEqual(calls[0].values, ["payments' OR '1'='1"]);
   assert.match(calls[0].text, /WHERE workspace_id = \$\? ORDER BY id$/);
   await store.list();
   assert.match(calls[1].text, /ORDER BY id$/);

@@ -153,7 +153,7 @@ const registration = (workspace_id, repository_id, overrides = {}, identity = {}
 const REGISTRY_DOC = {
   registry_version: 'workspace-registry/1',
   workspaces: [
-    registration('payments-art', '74'),
+    registration('payments', '74'),
     registration('billing', '78'),
     registration('suspended-ws', '75', { status: 'suspended' }),
     registration('pinned-ref', '76', {}, { required_job_workflow_ref: PIN_REF }),
@@ -480,7 +480,7 @@ test('the predicate reads the registration through registry.get', async () => {
     },
   };
   assert.equal((await call(seam({ registry: watched }), getAs('/v1/indicators'))).status, 200);
-  assert.deepEqual(looked, ['payments-art']);
+  assert.deepEqual(looked, ['payments']);
   // And it is the registration get() returns that decides: suspended there is 403 here, though
   // the binding resolved.
   const suspendedView = { ...watched, get: (id) => ({ ...real.get(id), status: 'suspended' }) };
@@ -496,7 +496,7 @@ test('GET /v1/workspaces returns exactly [registration W]', async () => {
   const { status, body } = await call(seam(), getAs('/v1/workspaces'));
   assert.equal(status, 200);
   assert.equal(body.data.length, 1);
-  assert.equal(body.data[0].workspace_id, 'payments-art');
+  assert.equal(body.data[0].workspace_id, 'payments');
   assert.deepEqual(body.data[0], JSON.parse(JSON.stringify(REGISTRY_DOC.workspaces[0])));
   const other = await call(seam(), getAs('/v1/workspaces', { repository_id: '78' }));
   assert.deepEqual(
@@ -510,9 +510,9 @@ test("GET /v1/indicators summarises only W's envelopes and skips redacted ones",
   const fakeStore = {
     append: () => assert.fail('no append on a read'),
     list: async () => [
-      envelope('payments-art', { tier: 'T1', result: { pass: true } }),
-      envelope('payments-art', { tier: 'T2', result: { pass: false } }),
-      envelope('payments-art', null),
+      envelope('payments', { tier: 'T1', result: { pass: true } }),
+      envelope('payments', { tier: 'T2', result: { pass: false } }),
+      envelope('payments', null),
       envelope('billing', { tier: 'T3', result: { pass: true } }),
       envelope('billing', { tier: 'T3', result: { pass: true } }),
       envelope(null, { tier: 'T0', result: { pass: true } }),
@@ -533,7 +533,7 @@ test('POST writes workspace_id W from the principal even when the body names ano
   const record = { ...validEvidence, workspace_id: 'billing', submitted_by: { run_id: '1' } };
   assert.equal((await call(handler, postAs(record))).status, 202);
   const [stored] = store.list();
-  assert.equal(stored.workspace_id, 'payments-art');
+  assert.equal(stored.workspace_id, 'payments');
   assert.equal(stored.evidence.workspace_id, 'billing', 'the field stays payload, never identity');
   assert.notEqual(stored.idempotency_key, null, 'a principal-bound submission claims uniqueness');
 });

@@ -66,11 +66,11 @@ async function setup(t, { change_id = 'PR-1', aged = true } = {}) {
   };
   const store = createPostgresEvidenceStore({ sql: as.app, requireWorkspace: true });
   await store.append(record({ change_id }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
     policy_id: 'baseline@1',
     submitted_by: submitter(),
   });
-  if (aged) assert.equal(await db.age({ workspace_id: 'payments-art', change_id }), true);
+  if (aged) assert.equal(await db.age({ workspace_id: 'payments', change_id }), true);
   const [{ id }] =
     await db.admin`SELECT id FROM evidence.evidence_envelope WHERE change_id = ${change_id}`;
   const row = async () =>
@@ -126,13 +126,13 @@ test('evidence_app owns no object, and cannot insert a pre-redacted tombstone', 
     as.app`
       INSERT INTO evidence.evidence_envelope
         (envelope_version, workspace_id, change_id, evidence, redacted_at)
-      VALUES ('evidence-envelope/0', 'payments-art', 'PR-forged', NULL, now())`,
+      VALUES ('evidence-envelope/0', 'payments', 'PR-forged', NULL, now())`,
     refusedWith(DENIED),
   );
   await assert.rejects(
     as.app`
       INSERT INTO evidence.evidence_envelope (envelope_version, workspace_id, change_id, evidence)
-      VALUES ('evidence-envelope/0', 'payments-art', 'PR-forged', NULL)`,
+      VALUES ('evidence-envelope/0', 'payments', 'PR-forged', NULL)`,
     refusedWith(CHECK),
   );
 });
@@ -145,7 +145,7 @@ test('evidence_app cannot choose received_at: the database clock stamps every ro
       as.app`
         INSERT INTO evidence.evidence_envelope
           (envelope_version, workspace_id, change_id, received_at, evidence)
-        VALUES ('evidence-envelope/0', 'payments-art', ${'PR-' + at}, ${at}::timestamptz, '{}'::jsonb)`,
+        VALUES ('evidence-envelope/0', 'payments', ${'PR-' + at}, ${at}::timestamptz, '{}'::jsonb)`,
       refusedWith(DENIED),
       at,
     );
@@ -153,14 +153,14 @@ test('evidence_app cannot choose received_at: the database clock stamps every ro
   assert.throws(
     () =>
       store.append(record({ change_id: 'PR-2' }), {
-        workspace_id: 'payments-art',
+        workspace_id: 'payments',
         received_at: '1970-01-01T00:00:00Z',
       }),
     { name: 'EvidenceStoreFault' },
   );
   const [{ low }] = await db.admin`SELECT statement_timestamp() AS low`;
   const { envelope } = await store.append(record({ change_id: 'PR-3' }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
   });
   const [{ high }] = await db.admin`SELECT statement_timestamp() AS high`;
   const stamped = Date.parse(envelope.received_at);
@@ -426,7 +426,7 @@ test('the retention role cannot forge a redaction row, read a payload, or delete
 // evidence_redaction (measured on 16.15).
 test('nothing deletes an envelope: the owner gave up DELETE, and even a superuser is refused', async (t) => {
   const { db, as, store, id } = await setup(t);
-  await store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments-art' });
+  await store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments' });
   await as.retention`UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${id}`;
   await assert.rejects(
     as.owner`DELETE FROM evidence.evidence_envelope WHERE id = ${id}`,
@@ -485,7 +485,7 @@ test('the window is 2160 hours on the database clock: a minute past it redacts, 
       await db.admin`
         INSERT INTO evidence.evidence_envelope
           (envelope_version, workspace_id, change_id, received_at, evidence)
-        VALUES ('evidence-envelope/0', 'payments-art', ${change_id},
+        VALUES ('evidence-envelope/0', 'payments', ${change_id},
                 statement_timestamp() - interval '2160 hours' + ${offset}::interval, '{}'::jsonb)
         RETURNING id`
     )[0].id;
@@ -569,7 +569,7 @@ test('a replay of a redacted record through the service role is a duplicate, and
   const { db, as, store, id } = await setup(t);
   await as.retention`UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${id}`;
   const replay = await store.append(record({ result: { pass: false } }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
   });
   assert.equal(replay.outcome, 'duplicate');
   assert.equal(replay.envelope.evidence, null);
@@ -591,7 +591,7 @@ function auditQueries() {
 
 test('the two documented audit queries run as evidence_audit and answer both events', async (t) => {
   const { db, as, store, id } = await setup(t);
-  await store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments-art' });
+  await store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments' });
   await store.append(record({ change_id: 'PR-3' }), { workspace_id: 'another-workspace' });
   await as.retention`UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${id}`;
   const queries = auditQueries();
@@ -603,11 +603,7 @@ test('the two documented audit queries run as evidence_audit and answer both eve
     SELECT statement_timestamp() - interval '2200 hours' AS since,
            statement_timestamp() - interval '1 hour' AS from, statement_timestamp() + interval '1 hour' AS until`;
 
-  const appended = await as.audit.unsafe(queries['envelopes-appended'], [
-    'payments-art',
-    since,
-    until,
-  ]);
+  const appended = await as.audit.unsafe(queries['envelopes-appended'], ['payments', since, until]);
   assert.deepEqual(
     appended.map((r) => [r.change_id, r.redacted_at === null]),
     [
@@ -617,13 +613,13 @@ test('the two documented audit queries run as evidence_audit and answer both eve
   );
   assert.equal(appended[0].policy_id, 'baseline@1');
   assert.equal(appended[0].submitted_by.repository_id, '74');
-  const none = await as.audit.unsafe(queries['envelopes-appended'], ['payments-art', until, until]);
+  const none = await as.audit.unsafe(queries['envelopes-appended'], ['payments', until, until]);
   assert.deepEqual([...none], [], 'the range is half-open');
 
   const redacted = await as.audit.unsafe(queries['payloads-redacted'], [from, until]);
   assert.equal(redacted.length, 1);
   assert.equal(redacted[0].change_id, 'PR-1');
-  assert.equal(redacted[0].workspace_id, 'payments-art');
+  assert.equal(redacted[0].workspace_id, 'payments');
   assert.equal(redacted[0].redacted_by, 'evidence_retention');
   assert.equal(redacted[0].envelope_id, String(id));
 });

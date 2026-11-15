@@ -19,7 +19,7 @@ import { createPostgresEvidenceStore } from './postgres-store.mjs';
 
 after(() => closeHarness());
 
-const WORKSPACE = 'payments-art';
+const WORKSPACE = 'payments';
 
 async function database(t) {
   const db = await createTestDatabase();

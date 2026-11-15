@@ -69,12 +69,12 @@ test('concurrent appends of one key over two pools produce one row and one appen
   const reordered = Object.fromEntries(Object.entries(record()).reverse());
   const results = await Promise.all(
     Array.from({ length: 40 }, (_, i) =>
-      stores[i % 2].append(i % 3 === 0 ? reordered : record(), { workspace_id: 'payments-art' }),
+      stores[i % 2].append(i % 3 === 0 ? reordered : record(), { workspace_id: 'payments' }),
     ),
   );
   const outcomes = results.map((result) => result.outcome).sort();
   assert.deepEqual(outcomes, ['appended', ...Array(39).fill('duplicate')]);
-  assert.equal(await rowsFor(db, 'payments-art', 'PR-1'), 1);
+  assert.equal(await rowsFor(db, 'payments', 'PR-1'), 1);
   const stored = results.find((result) => result.outcome === 'appended').envelope;
   for (const result of results)
     assert.deepEqual(result.envelope, stored, 'every answer is the row');
@@ -89,11 +89,11 @@ test('concurrent conflicting bodies still leave one row, and every loser is told
   const bodies = [record(), record({ result: { pass: false } })];
   const results = await Promise.all(
     Array.from({ length: 20 }, (_, i) =>
-      stores[i % 2].append(bodies[i % 2], { workspace_id: 'payments-art' }),
+      stores[i % 2].append(bodies[i % 2], { workspace_id: 'payments' }),
     ),
   );
   assert.equal(results.filter((result) => result.outcome === 'appended').length, 1);
-  assert.equal(await rowsFor(db, 'payments-art', 'PR-1'), 1);
+  assert.equal(await rowsFor(db, 'payments', 'PR-1'), 1);
   const winner = results.find((result) => result.outcome === 'appended');
   for (const [i, result] of results.entries()) {
     if (result === winner) continue;
@@ -120,7 +120,7 @@ test('the payload and the submitter are stored as jsonb objects, not as string s
   const db = await database(t);
   const store = createPostgresEvidenceStore({ sql: db.connectAs('evidence_app') });
   await store.append(record({ upstream: { added: [1, { deeper: true }] } }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
     submitted_by: { issuer: 'https://token.actions.githubusercontent.com', run_id: '1' },
   });
   const [row] = await db.admin`
@@ -134,14 +134,14 @@ test('the receipt time is the database clock, and the control plane cannot pass 
   const db = await database(t);
   const store = createPostgresEvidenceStore({ sql: db.connectAs('evidence_app') });
   const [{ before }] = await db.admin`SELECT statement_timestamp() AS before`;
-  const { envelope } = await store.append(record(), { workspace_id: 'payments-art' });
+  const { envelope } = await store.append(record(), { workspace_id: 'payments' });
   const [{ afterwards }] = await db.admin`SELECT statement_timestamp() AS afterwards`;
   const stamped = Date.parse(envelope.received_at);
   assert.ok(stamped >= before.getTime() - 1 && stamped <= afterwards.getTime());
   assert.throws(
     () =>
       store.append(record({ change_id: 'PR-2' }), {
-        workspace_id: 'payments-art',
+        workspace_id: 'payments',
         received_at: '2026-09-22T10:30:00.000Z',
       }),
     { name: 'EvidenceStoreFault' },
@@ -167,7 +167,7 @@ test('a statement blocked past STORE_QUERY_TIMEOUT_MS becomes a fault, and the s
   });
   await isLocked;
   const started = Date.now();
-  await assert.rejects(store.append(record(), { workspace_id: 'payments-art' }), (error) => {
+  await assert.rejects(store.append(record(), { workspace_id: 'payments' }), (error) => {
     assert.equal(error.name, 'EvidenceStoreFault');
     assert.match(error.message, /in time/);
     return true;
@@ -177,7 +177,7 @@ test('a statement blocked past STORE_QUERY_TIMEOUT_MS becomes a fault, and the s
   assert.ok(waited < STORE_QUERY_TIMEOUT_MS + 3000, `waited ${waited} ms`);
   release();
   await holder;
-  const { outcome } = await store.append(record(), { workspace_id: 'payments-art' });
+  const { outcome } = await store.append(record(), { workspace_id: 'payments' });
   assert.equal(outcome, 'appended', 'the cancelled insert did not commit');
 });
 
@@ -186,11 +186,11 @@ test('a statement blocked past STORE_QUERY_TIMEOUT_MS becomes a fault, and the s
 test('a terminated backend fails at most one statement, quickly, and the store recovers', async (t) => {
   const db = await database(t);
   const store = createPostgresEvidenceStore({ sql: db.connectAs('evidence_app', { max: 1 }) });
-  await store.append(record(), { workspace_id: 'payments-art' });
+  await store.append(record(), { workspace_id: 'payments' });
   await db.terminate('evidence_app');
   const started = Date.now();
   const first = await store
-    .append(record({ change_id: 'PR-2' }), { workspace_id: 'payments-art' })
+    .append(record({ change_id: 'PR-2' }), { workspace_id: 'payments' })
     .then(
       (result) => result.outcome,
       (error) => error.name,
@@ -198,7 +198,7 @@ test('a terminated backend fails at most one statement, quickly, and the store r
   assert.ok(['appended', 'EvidenceStoreFault'].includes(first), first);
   assert.ok(Date.now() - started < 1000, 'the fault is immediate, not a timeout');
   const second = await store.append(record({ change_id: 'PR-2' }), {
-    workspace_id: 'payments-art',
+    workspace_id: 'payments',
   });
   assert.equal(second.outcome, first === 'appended' ? 'duplicate' : 'appended');
 });
@@ -206,12 +206,12 @@ test('a terminated backend fails at most one statement, quickly, and the store r
 test('a server that refuses the role is a fault on every method, and the process stays up', async (t) => {
   const db = await database(t);
   const store = createPostgresEvidenceStore({ sql: db.connectAs('evidence_app') });
-  await store.append(record(), { workspace_id: 'payments-art' });
+  await store.append(record(), { workspace_id: 'payments' });
   await db.revokeConnect('evidence_app');
   await db.terminate('evidence_app');
   for (const call of [
-    () => store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments-art' }),
-    () => store.list({ workspace_id: 'payments-art' }),
+    () => store.append(record({ change_id: 'PR-2' }), { workspace_id: 'payments' }),
+    () => store.list({ workspace_id: 'payments' }),
     () => store.listRecords(),
   ])
     await assert.rejects(call(), { name: 'EvidenceStoreFault' });
