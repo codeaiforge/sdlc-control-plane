@@ -4,6 +4,8 @@
 
 Accepted — 2026-09-18
 
+> Terminology superseded by ADR-0006 (framework-neutral layer vocabulary); the architecture decision is unchanged.
+
 ## Context
 
 `ai-ready-nx-workspace` gives an individual engineering workspace an architecture-of-record and executable SDLC controls. SAFe Portfolio and Large Solution layers span many workspaces and include human strategy, investment, and solution decisions.
