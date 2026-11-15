@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { constants, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,11 +11,16 @@ import { ISSUER as VERIFIER_ISSUER } from '../../workload-identity/src/constants
 import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { ACCEPTED_ISSUERS, createRegistry } from '../../workspace-registry/src/registry.mjs';
 import {
+  SHUTDOWN_SIGNALS,
+  announceStartup,
   assertIssuerAgreement,
   assertUsablePolicy,
   createRequestHandler,
+  installShutdownSnapshot,
   loadGuardrailPolicy,
 } from './main.mjs';
+import { createReadiness } from './readiness.mjs';
+import { createTelemetry } from './telemetry.mjs';
 import {
   EvidenceStoreFault,
   createInMemoryEvidenceLog,
@@ -253,6 +259,7 @@ test('an unknown path is a 404, not a silent success', async () => {
 // handler's promise, and terminated the process under Node's default unhandled-rejection
 // behaviour. Driving the throw through the iterator reproduces the rejection without a socket.
 test('a body stream that aborts mid-read is answered, not left to reject', async () => {
+  const lines = [];
   const aborting = authed({
     method: 'POST',
     url: '/v1/evidence',
@@ -262,9 +269,18 @@ test('a body stream that aborts mid-read is answered, not left to reject', async
       throw Object.assign(new Error('aborted'), { code: 'ECONNRESET' });
     },
   });
-  const { status, body } = await call(seam(), aborting);
+  const { status, body } = await call(
+    seam(undefined, { log: (event) => lines.push(event) }),
+    aborting,
+  );
   assert.equal(status, 400);
   assert.deepEqual(body, { error: 'request body must be valid JSON' });
+  // Task 2.3: a body nobody finished sending is not a body that is not JSON (measured: Node's own
+  // requestTimeout makes the read throw exactly like this, after answering 408 itself).
+  assert.deepEqual(
+    lines.map((event) => event.reason),
+    ['body-read-failed'],
+  );
 });
 
 // Regression — Phase 4 cycle 2 found the guardrail policy was the one configuration loaded
@@ -707,4 +723,189 @@ test('a redacted envelope is not counted by the indicator, and its replay is a d
   );
   assert.equal(replay.status, 202, 'there is no body left to conflict with');
   assert.equal(store.list().length, 1);
+});
+
+// ------------------------------------------------------ task 2.3: probes, startup and shutdown
+
+const readinessOf = (answer) => ({ probe: async () => answer });
+
+const anon = (url) => ({ method: 'GET', url, rawHeaders: [], headers: {} });
+
+// The raw harness: status, headers and what was destroyed, without parsing the body.
+async function wire(handler, request) {
+  const events = [];
+  let status;
+  let headers;
+  let body;
+  request.destroy = () => events.push('destroy');
+  await handler(request, {
+    writeHead: (value, written) => {
+      status = value;
+      headers = written;
+      events.push('writeHead');
+    },
+    end: (value, done) => {
+      body = JSON.parse(value);
+      events.push('end');
+      done?.();
+    },
+  });
+  return { status, headers, body, events };
+}
+
+test('GET /ready answers 200 ready or 503 not-ready, a status and nothing else, and closes on 503', async () => {
+  const ready = await wire(
+    seam(undefined, { readiness: readinessOf({ ready: true, reason: 'ready' }) }),
+    anon('/ready'),
+  );
+  assert.deepEqual([ready.status, ready.body], [200, { status: 'ready' }]);
+  assert.equal(ready.headers.connection, undefined);
+  for (const reason of [
+    'database-unreachable',
+    'role-refused',
+    'schema-mismatch',
+    'check-timeout',
+    'check-fault',
+  ]) {
+    const answer = await wire(
+      seam(undefined, { readiness: readinessOf({ ready: false, reason }) }),
+      anon('/ready'),
+    );
+    assert.deepEqual([answer.status, answer.body], [503, { status: 'not-ready' }], reason);
+    assert.equal(answer.headers.connection, 'close');
+    assert.deepEqual(answer.events, ['writeHead', 'end', 'destroy']);
+    assert.doesNotMatch(JSON.stringify(answer), new RegExp(reason));
+  }
+});
+
+test('a handler built without a readiness check answers GET /ready 503, logged not-configured', async () => {
+  const lines = [];
+  const handler = seam(undefined, { log: (event) => lines.push(event) });
+  const answer = await wire(handler, anon('/ready'));
+  assert.deepEqual([answer.status, answer.body], [503, { status: 'not-ready' }]);
+  assert.deepEqual(
+    lines.map(({ event, ready, reason }) => ({ event, ready, reason })),
+    [{ event: 'readiness', ready: false, reason: 'not-configured' }],
+  );
+});
+
+test('100 concurrent GET /ready over the seam run one check', async () => {
+  let checks = 0;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const readiness = createReadiness({
+    check: async () => {
+      checks += 1;
+      await gate;
+      return { ready: true, reason: 'ready' };
+    },
+  });
+  const handler = seam(undefined, { readiness });
+  const answers = Array.from({ length: 100 }, () => wire(handler, anon('/ready')));
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  const settled = await Promise.all(answers);
+  assert.equal(checks, 1);
+  assert.ok(settled.every(({ status }) => status === 200));
+});
+
+test('a probe that rejects is answered 503 handler-fault, and the handler resolves', async () => {
+  const lines = [];
+  const handler = seam(undefined, {
+    readiness: {
+      probe: async () => {
+        throw new Error('CANARY probe defect');
+      },
+    },
+    log: (event) => lines.push(event),
+  });
+  const answer = await wire(handler, anon('/ready'));
+  assert.deepEqual([answer.status, answer.body], [503, { error: 'service unavailable' }]);
+  assert.deepEqual(
+    lines.map(({ event, route, reason }) => [event, route, reason]),
+    [['refusal', 'GET /ready', 'handler-fault']],
+  );
+  assert.doesNotMatch(JSON.stringify(lines), /CANARY/);
+});
+
+test('GET /health is unchanged: 200 ok, no I/O, counted and never lined', async () => {
+  const lines = [];
+  const telemetry = createTelemetry({ log: (event) => lines.push(event) });
+  const handler = seam(undefined, { telemetry });
+  for (let index = 0; index < 3; index += 1) {
+    const answer = await wire(handler, anon('/health'));
+    assert.deepEqual([answer.status, answer.body], [200, { status: 'ok' }]);
+  }
+  assert.deepEqual(lines, []);
+  assert.deepEqual(telemetry.snapshot().counts, [
+    { route: 'GET /health', status: 200, outcome: 'live', n: 3 },
+  ]);
+});
+
+// AC-6: which policy is in force is in the process's own log from its start.
+test('announceStartup writes one startup line: the policy, its decision, the schema version and the registrations, and nothing else', () => {
+  const lines = [];
+  const telemetry = createTelemetry({ log: (event) => lines.push(event), now: () => NOW_MS });
+  const registry = createRegistry({
+    registry_version: 'workspace-registry/1',
+    workspaces: [
+      workspace,
+      {
+        ...workspace,
+        workspace_id: 'suspended-ws',
+        status: 'suspended',
+        workload_identity: { ...workspace.workload_identity, repository_id: '75' },
+      },
+    ],
+  });
+  announceStartup({ telemetry, policy: loadGuardrailPolicy(), registry, schemaVersion: 2 });
+  const shipped = loadGuardrailPolicy();
+  assert.deepEqual(lines, [
+    {
+      event: 'startup',
+      at: '2026-10-07T12:00:00.000Z',
+      policy_id: shipped.policy_id,
+      decision_id: shipped.approval.decision_id,
+      schema_version: 2,
+      workspaces: 2,
+    },
+  ]);
+  assert.deepEqual(Object.keys(lines[0]), [
+    'event',
+    'at',
+    'policy_id',
+    'decision_id',
+    'schema_version',
+    'workspaces',
+  ]);
+});
+
+// The shutdown snapshot on a stand-in for process: the handler writes one telemetry line of kind
+// shutdown, removes both its listeners and re-raises the same signal, so the process still dies
+// of it. The real process and its exit status are durable-service.integration.mjs's.
+test('the shutdown snapshot is written once, then the same signal is re-raised with no listener left', () => {
+  assert.deepEqual(SHUTDOWN_SIGNALS, ['SIGTERM', 'SIGINT']);
+  for (const signal of SHUTDOWN_SIGNALS) {
+    const lines = [];
+    const telemetry = createTelemetry({ log: (event) => lines.push(event) });
+    telemetry.startInterval();
+    const target = new EventEmitter();
+    target.pid = 4242;
+    const kills = [];
+    target.kill = (pid, raised) => {
+      kills.push([pid, raised, target.listenerCount('SIGTERM'), target.listenerCount('SIGINT')]);
+    };
+    installShutdownSnapshot({ telemetry, target });
+    assert.equal(target.listenerCount('SIGTERM'), 1);
+    assert.equal(target.listenerCount('SIGINT'), 1);
+    target.emit(signal);
+    assert.deepEqual(kills, [[4242, signal, 0, 0]]);
+    assert.deepEqual(
+      lines.map(({ event, kind }) => [event, kind]),
+      [['telemetry', 'shutdown']],
+    );
+    target.emit(signal === 'SIGTERM' ? 'SIGINT' : 'SIGTERM');
+    assert.equal(kills.length, 1, 'the twin was removed with it');
+    telemetry.stop();
+  }
 });

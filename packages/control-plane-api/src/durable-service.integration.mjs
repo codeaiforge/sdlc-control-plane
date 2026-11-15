@@ -5,7 +5,13 @@ import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import test, { after } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { closeHarness, createTestDatabase, roleEnv } from '../../evidence-store/src/pg-harness.mjs';
+import {
+  adminEnv,
+  clientFor,
+  closeHarness,
+  createTestDatabase,
+  roleEnv,
+} from '../../evidence-store/src/pg-harness.mjs';
 
 // Across a real process boundary, against a real PostgreSQL 16 server: the service accepts a
 // record, is killed with SIGKILL, and a new process on the same database still has it, counts it
@@ -23,7 +29,7 @@ const JWKS = {
   keys: [{ ...signing.publicKey.export({ format: 'jwk' }), kid: 'k1', use: 'sig', alg: 'RS256' }],
 };
 const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-function token() {
+function token(overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
   const input = `${b64({ alg: 'RS256', kid: 'k1', typ: 'JWT' })}.${b64({
     iss: ISSUER,
@@ -45,6 +51,7 @@ function token() {
     workflow_ref: 'owner/payments/.github/workflows/gate.yml@refs/heads/main',
     job_workflow_ref: 'owner/payments/.github/workflows/gate.yml@refs/heads/main',
     job_workflow_sha: 'b'.repeat(40),
+    ...overrides,
   })}`;
   const signature = rsaSign('sha256', Buffer.from(input), {
     key: signing.privateKey,
@@ -137,7 +144,7 @@ async function service(t, env) {
   return { ...started, port: await started.ready };
 }
 
-function call(port, { method = 'GET', path, body, auth = true }) {
+function call(port, { method = 'GET', path, body, auth = true, headers = {} }) {
   return new Promise((resolve, reject) => {
     const outgoing = httpRequest(
       {
@@ -147,7 +154,9 @@ function call(port, { method = 'GET', path, body, auth = true }) {
         path,
         agent: false,
         headers: {
-          ...(auth ? { authorization: `Bearer ${token()}` } : {}),
+          ...headers,
+          ...(auth === true ? { authorization: `Bearer ${token()}` } : {}),
+          ...(typeof auth === 'string' ? { authorization: auth } : {}),
           ...(body === undefined ? {} : { 'content-length': Buffer.byteLength(body) }),
         },
       },
@@ -298,4 +307,230 @@ test('the service refuses to start on a wrong password, an unsafe role, or a hos
   const printed = `${running.output.stdout}${running.output.stderr}`;
   assert.match(printed, /"reason":"body-not-json"/);
   assert.equal(printed.includes(roleEnv('evidence_app', db.name).PGPASSWORD), false);
+});
+
+// ---------------------------------------------------------------- task 2.3: operating the service
+
+const eventLines = (output) =>
+  output.stderr
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line));
+const readinessReasons = (output) =>
+  eventLines(output)
+    .filter((event) => event.event === 'readiness')
+    .map((event) => event.reason);
+
+// Polls GET /ready until it answers `status`, within `withinMs`, and records the slowest probe.
+async function readyBecomes(port, status, withinMs = 6000) {
+  const deadline = Date.now() + withinMs;
+  let slowest = 0;
+  for (;;) {
+    const started = Date.now();
+    const answer = await call(port, { path: '/ready', auth: false });
+    slowest = Math.max(slowest, Date.now() - started);
+    if (answer.status === status) return { answer, slowest };
+    if (Date.now() > deadline)
+      assert.fail(`GET /ready did not answer ${status} within ${withinMs} ms`);
+    await delay(100);
+  }
+}
+
+// An administrator on another database, for what cannot be done from inside the test database.
+async function clusterAdmin(t) {
+  const sql = clientFor({ ...(await adminEnv()), PGDATABASE: 'postgres' }, { max: 1 });
+  t.after(() => sql.end({ timeout: 1 }));
+  return sql;
+}
+
+// AC-6 and C-9: the stdout contract is unchanged, and stderr names the policy in force first.
+test('the service prints {"port"} on stdout and one startup line naming the policy, its decision, the schema and the registrations', async (t) => {
+  const db = await database(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  assert.equal(running.output.stdout, `${JSON.stringify({ port: running.port })}\n`);
+  const startup = eventLines(running.output).filter((event) => event.event === 'startup');
+  assert.equal(startup.length, 1);
+  assert.deepEqual(
+    { ...startup[0], at: undefined },
+    {
+      event: 'startup',
+      at: undefined,
+      policy_id: 'test-policy@1',
+      decision_id: 'TEST-DECISION-1',
+      schema_version: 2,
+      workspaces: 1,
+    },
+  );
+  assert.deepEqual(await call(running.port, { path: '/ready', auth: false }), {
+    status: 200,
+    body: { status: 'ready' },
+  });
+  assert.deepEqual(await call(running.port, { path: '/health', auth: false }), {
+    status: 200,
+    body: { status: 'ok' },
+  });
+});
+
+// AC-3 over a real process boundary: the database is taken away under a running service.
+test('GET /ready turns 503 within 6 s when the database stops accepting connections, and 200 again without a restart', async (t) => {
+  const db = await database(t);
+  const admin = await clusterAdmin(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  const pid = running.child.pid;
+  await readyBecomes(running.port, 200);
+
+  await admin`ALTER DATABASE ${admin(db.name)} WITH ALLOW_CONNECTIONS false`;
+  try {
+    await db.terminate('evidence_app');
+    const down = await readyBecomes(running.port, 503);
+    assert.deepEqual(down.answer.body, { status: 'not-ready' });
+    assert.ok(down.slowest < 2500, `a probe took ${down.slowest} ms`);
+    assert.deepEqual(await call(running.port, { path: '/health', auth: false }), {
+      status: 200,
+      body: { status: 'ok' },
+    });
+    const post = await call(running.port, {
+      method: 'POST',
+      path: '/v1/evidence',
+      body: JSON.stringify(evidence({ change_id: 'PR-down' })),
+    });
+    assert.deepEqual(post, { status: 503, body: { error: 'evidence store unavailable' } });
+  } finally {
+    await admin`ALTER DATABASE ${admin(db.name)} WITH ALLOW_CONNECTIONS true`;
+  }
+  const up = await readyBecomes(running.port, 200);
+  assert.ok(up.slowest < 2500, `a probe took ${up.slowest} ms`);
+  assert.equal(running.child.pid, pid);
+  assert.equal(running.child.exitCode, null, 'the same process, never restarted');
+  assert.deepEqual(readinessReasons(running.output), ['ready', 'database-unreachable', 'ready']);
+  assert.doesNotMatch(running.output.stderr, /PostgresError|not currently accepting|ECONNREFUSED/i);
+});
+
+test('GET /ready reads role-refused while CONNECT is revoked from the service role, and recovers on re-grant', async (t) => {
+  const db = await database(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  await readyBecomes(running.port, 200);
+  await db.revokeConnect('evidence_app');
+  await db.terminate('evidence_app');
+  await readyBecomes(running.port, 503);
+  await db.grantConnect('evidence_app');
+  await readyBecomes(running.port, 200);
+  assert.deepEqual(readinessReasons(running.output), ['ready', 'role-refused', 'ready']);
+  assert.doesNotMatch(running.output.stderr, /permission denied/i);
+});
+
+test('GET /ready reads schema-mismatch while the applied schema is not the bundled one, and recovers', async (t) => {
+  const db = await database(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  await readyBecomes(running.port, 200);
+  const [{ checksum }] =
+    await db.admin`SELECT checksum FROM evidence.schema_migrations WHERE version = 2`;
+  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${'0'.repeat(64)} WHERE version = 2`;
+  await readyBecomes(running.port, 503);
+  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${checksum} WHERE version = 2`;
+  await readyBecomes(running.port, 200);
+  assert.deepEqual(readinessReasons(running.output), ['ready', 'schema-mismatch', 'ready']);
+});
+
+// The supervisor's view: SIGTERM still kills the process with SIGTERM, and the last line it wrote
+// holds exactly the responses it sent, by route, status and outcome.
+test('on SIGTERM the service writes one shutdown snapshot of exactly what it answered, and still dies of the signal', async (t) => {
+  const db = await database(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  const body = JSON.stringify(evidence({ change_id: 'PR-shutdown' }));
+  const sent = [
+    await call(running.port, { path: '/health', auth: false }),
+    await call(running.port, { path: '/health', auth: false }),
+    await call(running.port, { path: '/ready', auth: false }),
+    await call(running.port, { method: 'POST', path: '/v1/evidence', body }),
+    await call(running.port, { method: 'POST', path: '/v1/evidence', body }),
+    await call(running.port, { path: '/v1/indicators', auth: 'Bearer not-a-token' }),
+    await call(running.port, { path: '/v1/nope', auth: false }),
+  ];
+  assert.deepEqual(
+    sent.map(({ status }) => status),
+    [200, 200, 200, 202, 202, 401, 404],
+  );
+  running.child.kill('SIGTERM');
+  assert.deepEqual(await running.exited, { code: null, signal: 'SIGTERM' });
+  const events = eventLines(running.output);
+  const last = events.at(-1);
+  assert.equal(last.event, 'telemetry');
+  assert.equal(last.kind, 'shutdown');
+  assert.deepEqual(last.counts, [
+    { route: 'GET /health', status: 200, outcome: 'live', n: 2 },
+    { route: 'GET /ready', status: 200, outcome: 'ready', n: 1 },
+    { route: 'GET /v1/indicators', status: 401, outcome: 'credential-malformed', n: 1 },
+    { route: 'POST /v1/evidence', status: 202, outcome: 'appended', n: 1 },
+    { route: 'POST /v1/evidence', status: 202, outcome: 'duplicate', n: 1 },
+    { route: 'unmatched', status: 404, outcome: 'unmatched-route', n: 1 },
+  ]);
+  assert.equal(last.ready, true);
+  assert.equal(events.filter((event) => event.kind === 'shutdown').length, 1);
+  assert.deepEqual(
+    events.filter((event) => event.event === 'accepted').map((event) => event.outcome),
+    ['appended', 'duplicate'],
+  );
+});
+
+// AC-5 across the process boundary: the raw bytes the child wrote. Header values must be Latin-1
+// on the wire, so the bidi characters ride in the body and the token's claims.
+const CANARY = 'zq7canary\u202E\u2066\u200B';
+const DANGEROUS =
+  /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/;
+
+test('a canary in every field a caller writes reaches none of the bytes the service writes', async (t) => {
+  const db = await database(t);
+  const running = await service(t, roleEnv('evidence_app', db.name));
+  const noisy = {
+    'user-agent': 'zq7canary-agent',
+    'x-forwarded-for': 'zq7canary-xff',
+    cookie: 'zq7canary=1',
+  };
+  const canaryToken = token({
+    ref: `refs/heads/${CANARY}`,
+    workflow_ref: `owner/payments/.github/workflows/${CANARY}.yml@refs/heads/main`,
+    actor: CANARY,
+    sub: `repo:owner/payments:ref:refs/heads/${CANARY}`,
+  });
+  const record = (overrides = {}) =>
+    JSON.stringify(
+      evidence({
+        change_id: `PR-${CANARY}`,
+        computed_at: CANARY,
+        affected_set: [`packages/${CANARY}`],
+        ai_assisted: true,
+        ai_tool: CANARY,
+        ...overrides,
+      }),
+    );
+  const statuses = [];
+  for (const attempt of [
+    { method: 'POST', path: '/v1/evidence', body: record(), auth: `Bearer ${canaryToken}` },
+    { method: 'POST', path: '/v1/evidence', body: record() },
+    { method: 'POST', path: '/v1/evidence', body: record({ result: { pass: false } }) },
+    {
+      method: 'POST',
+      path: '/v1/evidence',
+      body: record({ change_id: `PR2-${CANARY}`, verification: { verified: [CANARY] } }),
+    },
+    {
+      method: 'POST',
+      path: '/v1/evidence',
+      auth: `Bearer ${token({ event_name: 'workflow_dispatch', actor: CANARY, ref: CANARY })}`,
+      body: record(),
+    },
+    { path: `/v1/${encodeURIComponent(CANARY)}?access_token=zq7canary`, auth: false },
+    { path: '/v1/workspaces', auth: 'Bearer zq7canary.not.a.token' },
+  ]) {
+    const answer = await call(running.port, { ...attempt, headers: noisy });
+    statuses.push(answer.status);
+  }
+  assert.deepEqual(statuses, [202, 202, 409, 422, 403, 404, 401]);
+  running.child.kill('SIGTERM');
+  await running.exited;
+  const written = `${running.output.stdout}${running.output.stderr}`;
+  assert.ok(written.includes('"kind":"shutdown"'), 'the shutdown snapshot was written');
+  assert.equal(written.includes('zq7canary'), false);
+  assert.doesNotMatch(written, DANGEROUS);
 });

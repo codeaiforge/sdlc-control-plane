@@ -21,12 +21,11 @@ import {
   createSubmissionQuota,
   readBodyCapped,
 } from './admission.mjs';
-import {
-  StartupRefused,
-  openDurableEvidenceStore,
-} from '../../evidence-store/src/database-config.mjs';
+import { StartupRefused, openDurableService } from '../../evidence-store/src/database-config.mjs';
 import { project } from '../../evidence-store/src/evidence-store.mjs';
-import { refusalEvent, stderrLog } from './refusal-log.mjs';
+import { createReadiness } from './readiness.mjs';
+import { stderrLog } from './refusal-log.mjs';
+import { createTelemetry } from './telemetry.mjs';
 
 // createRegistry validates every registration at load and throws; the policy is held to
 // validateGuardrailPolicy (guardrails/0, closed at every level) the same way. It checks form: a
@@ -123,16 +122,45 @@ function bodyUnread(request) {
   return headers['transfer-encoding'] !== undefined || Number(headers['content-length']) > 0;
 }
 
+// One exchange per request, registered as the handler's first statement, before routing: the
+// telemetry it records to, the matched route once the table is searched, and when it started.
+// Module-private, and send() is its only reader, so no route handler can forget it or change it.
+const exchanges = new WeakMap();
+
 // Every response goes through here, and every call site passes its status as a literal, so
 // openapi.contract.test.mjs can read the complete set of statuses this seam sends out of this
-// file's source. It is also the one place a connection is closed: a refusal, or any response sent
+// file's source. Every call site also names its outcome - a literal, or one of four expressions
+// whose values telemetry.test.mjs pins - so the complete set of (status, outcome) pairs can be read
+// out of it too, and the response is recorded here, before it is written: one send() is one event
+// (task 2.3, MIT-18), and a write that throws on a destroyed socket still has its event. A second
+// send() for the same request - a fault after the first write attempt - is counted as a late fault,
+// never as a second event. Telemetry is decided before the write and cannot change it.
+//
+// It is also the one place a connection is closed: a refusal, or any response sent
 // while the body is still unread, is respond-then-destroy - written and flushed with
 // `connection: close`, and only then is the request destroyed - so the caller reads the status and
 // the unread body is never drained, which would hand the peer the transfer it was refused (threat
 // model › Ingress body limit, Disposition). For any other response the seam closes nothing; whether
 // the connection then stays open is Node's decision (Connection: close, HTTP/1.0, an unanswered
 // Expect: 100-continue all close it), so no keep-alive is promised.
-function send(response, status, body, request, { headers = {} } = {}) {
+function send(response, status, body, request, { headers = {}, outcome, caller } = {}) {
+  try {
+    const exchange = exchanges.get(request);
+    if (exchange.recorded) exchange.telemetry.recordLateFault();
+    else {
+      exchange.recorded = true;
+      exchange.telemetry.record({
+        route: exchange.route,
+        status,
+        outcome,
+        durationMs: exchange.telemetry.elapsed(exchange.started),
+        principal: caller?.principal,
+        workspaceId: caller?.workspaceId,
+      });
+    }
+  } catch {
+    // Telemetry is best-effort; the response goes out regardless.
+  }
   const payload = JSON.stringify(body);
   const close = REFUSED_UNREAD.has(status) || bodyUnread(request);
   response.writeHead(status, {
@@ -144,25 +172,6 @@ function send(response, status, body, request, { headers = {} } = {}) {
   else response.end(payload);
 }
 
-// MIT-17. The event is built from the matched route entry and the reason code, never from the
-// request; a throwing sink or a defective event never reaches the response.
-function logRefusal({ log, now }, route, status, reason, caller) {
-  try {
-    log(
-      refusalEvent({
-        at: new Date(now()).toISOString(),
-        route,
-        status,
-        reason,
-        principal: caller?.principal,
-        workspaceId: caller?.workspaceId,
-      }),
-    );
-  } catch {
-    // Logging is best-effort; the refusal has been decided and is answered regardless.
-  }
-}
-
 const INVALID_TOKEN = { error: 'invalid token' };
 const WWW_AUTHENTICATE = { 'www-authenticate': 'Bearer error="invalid_token"' };
 const FORBIDDEN = { error: 'forbidden' };
@@ -172,9 +181,15 @@ const KEY_SET_UNAVAILABLE = { error: 'key set unavailable' };
 // replays as a duplicate. No driver message ever reaches a body or a log line.
 const STORE_UNAVAILABLE = { error: 'evidence store unavailable' };
 const SERVICE_UNAVAILABLE = { error: 'service unavailable' };
+const BODY_NOT_JSON = { error: 'request body must be valid JSON' };
+// The probes' bodies: a status and nothing else. The reason a probe is not ready is logged, never
+// answered (ADR-0005).
+const LIVE = { status: 'ok' };
+const READY = { status: 'ready' };
+const NOT_READY = { status: 'not-ready' };
 
-// Step 6, the one "authorized for W" predicate every route but GET /health applies (ADR-0003 ›
-// Route authorization): the verified triple binds to W, read back through registry.get; W is
+// Step 6, the one "authorized for W" predicate every route but the two probes applies (ADR-0003 ›
+// Route authorization; ADR-0005 for the probe routes): the verified triple binds to W, read back through registry.get; W is
 // active, admits the token's event and its pins match; and the actor is not refused. Every
 // failure is the same 403 on the wire; only the log tells them apart.
 function authorizeFor({ registry }, principal) {
@@ -191,22 +206,25 @@ function authorizeFor({ registry }, principal) {
 
 // Steps 1-6, from the request line and headers alone: no body byte is read before a caller is
 // authorized, and every refusal here is respond-then-destroy. Returns the caller, or null once it
-// has answered.
+// has answered. Before step 5 there is no principal to name; a 403 names the verified one.
 async function authorizeRequest(context, route, request, response) {
   const result = await context.authenticate(request);
   if (!result.ok) {
-    logRefusal(context, route, result.status, result.reason);
-    if (result.status === 503) send(response, 503, KEY_SET_UNAVAILABLE, request);
-    else send(response, 401, INVALID_TOKEN, request, { headers: WWW_AUTHENTICATE });
+    if (result.status === 503)
+      send(response, 503, KEY_SET_UNAVAILABLE, request, { outcome: result.reason });
+    else
+      send(response, 401, INVALID_TOKEN, request, {
+        headers: WWW_AUTHENTICATE,
+        outcome: result.reason,
+      });
     return null;
   }
   const decision = authorizeFor(context, result.principal);
   if (!decision.ok) {
-    logRefusal(context, route, 403, decision.reason, {
-      principal: result.principal,
-      workspaceId: decision.workspaceId,
+    send(response, 403, FORBIDDEN, request, {
+      outcome: decision.reason,
+      caller: { principal: result.principal, workspaceId: decision.workspaceId },
     });
-    send(response, 403, FORBIDDEN, request);
     return null;
   }
   const { issuer, repository_owner_id, repository_id } = result.principal;
@@ -222,13 +240,29 @@ async function authorizeRequest(context, route, request, response) {
 // claims a set of routes, statuses and security requirements, and openapi.contract.test.mjs
 // compares that claim against this table rather than against a description of it. `auth` is
 // 'none' or 'workload'; anything but 'none' is authenticated, so a route that forgets the field
-// fails closed.
+// fails closed. `probe: true` marks the two probe routes (ADR-0005): no credential, a status-only
+// body, and counted rather than logged line by line.
 export const routes = [
   {
     method: 'GET',
     path: '/health',
     auth: 'none',
-    handle: (context, request, response) => send(response, 200, { status: 'ok' }, request),
+    probe: true,
+    // Liveness: no I/O, no dependency checked.
+    handle: (context, request, response) => send(response, 200, LIVE, request, { outcome: 'live' }),
+  },
+  {
+    method: 'GET',
+    path: '/ready',
+    auth: 'none',
+    probe: true,
+    // Readiness: one bounded, single-flight, cached database check (readiness.mjs, MIT-22). The
+    // 503 closes the connection, as every 503 does.
+    handle: async ({ readiness }, request, response) => {
+      const answer = await readiness.probe();
+      if (answer.ready) return send(response, 200, READY, request, { outcome: 'ready' });
+      return send(response, 503, NOT_READY, request, { outcome: 'not-ready' });
+    },
   },
   {
     method: 'GET',
@@ -236,7 +270,10 @@ export const routes = [
     auth: 'workload',
     // Exactly the caller's own registration; no other is disclosed (MIT-3).
     handle: ({ registry }, request, response, caller) =>
-      send(response, 200, { data: [registry.get(caller.workspaceId)] }, request),
+      send(response, 200, { data: [registry.get(caller.workspaceId)] }, request, {
+        outcome: 'served',
+        caller,
+      }),
   },
   {
     method: 'GET',
@@ -250,14 +287,19 @@ export const routes = [
       try {
         envelopes = await context.evidenceStore.list({ workspace_id: caller.workspaceId });
       } catch {
-        logRefusal(context, caller.route, 503, 'store-unavailable', caller);
-        return send(response, 503, STORE_UNAVAILABLE, request);
+        return send(response, 503, STORE_UNAVAILABLE, request, {
+          outcome: 'store-unavailable',
+          caller,
+        });
       }
       const records = envelopes
         .filter((envelope) => envelope.workspace_id === caller.workspaceId)
         .filter((envelope) => envelope.evidence !== null)
         .map((envelope) => envelope.evidence);
-      return send(response, 200, { data: summarizeEvidence(records) }, request);
+      return send(response, 200, { data: summarizeEvidence(records) }, request, {
+        outcome: 'served',
+        caller,
+      });
     },
   },
   {
@@ -266,33 +308,47 @@ export const routes = [
     auth: 'workload',
     handle: async (context, request, response, caller) => {
       const { policy, evidenceStore, quota } = context;
-      const { route } = caller;
       // Counted before the body is read, so a 413, 400 or 422 still costs a submission: each of
       // them has already cost a read. Per process - see admission.mjs.
       const allowance = quota.take(caller.bindingKey);
       if (!allowance.ok) {
-        logRefusal(context, route, 429, 'quota-exceeded', caller);
         return send(response, 429, { error: 'submission quota exceeded' }, request, {
           headers: { 'retry-after': String(allowance.retryAfterS) },
+          outcome: 'quota-exceeded',
+          caller,
         });
       }
       // The try spans the body read, the parse, the evaluation and the append. A throw inside it
       // is answered with the documented 400 envelope - a body the caller got wrong - except a
       // store failure, which the append's own catch answers 503 first. The body read is inside
       // for a reason beyond tidiness: a client that opens a POST and drops the socket makes the
-      // read throw. Anything that still escapes is the request handler's catch-all's (503).
+      // read throw, and so does Node's own requestTimeout, which answers 408 itself and destroys
+      // the socket mid-body (measured, task 2.3). That throw has its own catch and its own reason,
+      // body-read-failed: before 2.3 it was logged body-not-json, which blamed a body nobody had
+      // finished sending. The 400 written to the destroyed socket is unchanged. Anything that
+      // still escapes is the request handler's catch-all's (503).
       try {
         // The cap is a returned value, never a throw: this catch would answer a thrown 413 as
         // 400. Enforced before JSON.parse and before project(), from inside the read loop.
         // `Expect: 100-continue` is answered here and nowhere else: after authentication,
         // authorization, the quota and the content-length fast path, so a request refused by any
         // of them is never invited to send its body (createSeamServer stops Node's automatic 100).
-        const read = await readBodyCapped(request, {
-          beforeRead: caller.awaitsContinue ? () => response.writeContinue() : undefined,
-        });
+        let read;
+        try {
+          read = await readBodyCapped(request, {
+            beforeRead: caller.awaitsContinue ? () => response.writeContinue() : undefined,
+          });
+        } catch {
+          return send(response, 400, BODY_NOT_JSON, request, {
+            outcome: 'body-read-failed',
+            caller,
+          });
+        }
         if (!read.ok) {
-          logRefusal(context, route, 413, 'body-too-large', caller);
-          return send(response, 413, { error: 'request body too large' }, request);
+          return send(response, 413, { error: 'request body too large' }, request, {
+            outcome: 'body-too-large',
+            caller,
+          });
         }
         // Decoded once, after the concat: a multi-byte character straddling a chunk boundary
         // would otherwise become U+FFFD - silent corruption of the change_id that ties evidence
@@ -307,8 +363,10 @@ export const routes = [
         // Every disposition says what it rests on: the workload's own claims (ADR-0004).
         const decision = { ...evaluated, evidence_attestation: EVIDENCE_ATTESTATION };
         if (!decision.accepted) {
-          logRefusal(context, route, 422, decision.disposition, caller);
-          return send(response, 422, { decision }, request);
+          return send(response, 422, { decision }, request, {
+            outcome: decision.disposition,
+            caller,
+          });
         }
         // workspace_id and submitted_by come from the verified principal, never from the body.
         // The write completes before the 202 is written: nothing is queued (ADR-0002 "The 202").
@@ -325,33 +383,48 @@ export const routes = [
           // else - unreachable, refused, timed out, an envelope option the seam built wrongly -
           // is the control plane's.
           if (error instanceof TypeError) throw error;
-          logRefusal(context, route, 503, 'store-unavailable', caller);
-          return send(response, 503, STORE_UNAVAILABLE, request);
+          return send(response, 503, STORE_UNAVAILABLE, request, {
+            outcome: 'store-unavailable',
+            caller,
+          });
         }
         // A different body under a key already held (ADR-0002): nothing was appended and the
         // first record stands. The answer names the key - the caller's own workspace and change -
         // and never carries the stored payload, which the caller may not have sent.
         if (appended.outcome === 'conflict') {
-          logRefusal(context, route, 409, 'conflict', caller);
-          return send(response, 409, { error: 'conflict', idempotency_key: appended.key }, request);
+          return send(
+            response,
+            409,
+            { error: 'conflict', idempotency_key: appended.key },
+            request,
+            {
+              outcome: 'conflict',
+              caller,
+            },
+          );
         }
         // `appended` or `duplicate`: a replay is answered with the decision computed for the
-        // replay (openapi.json divergence 6).
-        return send(response, 202, { decision }, request);
+        // replay (openapi.json divergence 6), and logged as which it was - a duplicate leaves no
+        // trace in the store, so this line is the only one (gate decision Q-7 on task 2.3).
+        return send(response, 202, { decision }, request, { outcome: appended.outcome, caller });
       } catch {
-        logRefusal(context, route, 400, 'body-not-json', caller);
-        return send(response, 400, { error: 'request body must be valid JSON' }, request);
+        return send(response, 400, BODY_NOT_JSON, request, { outcome: 'body-not-json', caller });
       }
     },
   },
 ];
 
+// `telemetry` defaults to one of the handler's own around `log`, so a caller that only captures
+// `log` sees every line. `readiness` defaults to one that fails closed - a handler that was never
+// given a database check answers GET /ready 503, never 200.
 export function createRequestHandler({
   registry,
   policy,
   evidenceStore,
   authenticate,
   quota,
+  readiness,
+  telemetry,
   log = stderrLog,
   now = Date.now,
 }) {
@@ -367,18 +440,21 @@ export function createRequestHandler({
     throw new TypeError(
       `createRequestHandler needs a usable guardrail policy: ${policyErrors.join('; ')}`,
     );
+  const recorder = telemetry ?? createTelemetry({ log, now });
   const context = {
     registry,
     policy: held,
     evidenceStore,
     authenticate,
     quota: quota ?? createSubmissionQuota({ now }),
-    log,
-    now,
+    readiness:
+      readiness ?? createReadiness({ onChange: (answer) => recorder.readinessChanged(answer) }),
   };
   // `awaitsContinue` is set only by createSeamServer's 'checkContinue' route: the client sent
   // `Expect: 100-continue` and Node has not answered it.
   return async (request, response, { awaitsContinue = false } = {}) => {
+    const exchange = { telemetry: recorder, route: null, started: recorder.mark() };
+    exchanges.set(request, exchange);
     // .find() over the table performs the same two === comparisons, in the same order, as the
     // if-chain it replaced. Routing comes first: a request that matches no entry is answered
     // 404 before any credential is read, and a query string - access_token included - makes a
@@ -386,26 +462,31 @@ export function createRequestHandler({
     const route = routes.find(
       (candidate) => candidate.method === request.method && candidate.path === request.url,
     );
-    if (!route) {
-      logRefusal(context, null, 404, 'unmatched-route');
-      return send(response, 404, { error: 'not found' }, request);
-    }
-    // GET /health reads no credential, even when one is sent. It does no I/O and cannot reject.
-    if (route.auth === 'none') return route.handle(context, request, response);
-    // The catch-all (2.1 SEC-6): a rejection anywhere in an authenticated route is answered 503
-    // and logged, and the promise this returns never rejects - an unhandled rejection terminates
-    // the process under Node's default, which `nx serve` runs with. If a response is already on
-    // the wire, all that is left to do is close it.
+    if (!route)
+      return send(response, 404, { error: 'not found' }, request, { outcome: 'unmatched-route' });
+    exchange.route = route;
+    // The catch-all (2.1 SEC-6): a rejection anywhere in a route - a probe's included, since task
+    // 2.3 gave GET /ready I/O - is answered 503 handler-fault, and the promise this returns never
+    // rejects: an unhandled rejection terminates the process under Node's default, which `nx serve`
+    // runs with. If a response is already on the wire, all that is left to do is close it; that
+    // response has its event already, so the fault is counted as late, not as a second response.
     let caller = null;
     try {
+      // The probes read no credential, even when one is sent. GET /health does no I/O.
+      if (route.auth === 'none') return await route.handle(context, request, response);
       caller = await authorizeRequest(context, route, request, response);
       if (caller === null) return;
       return await route.handle(context, request, response, { ...caller, awaitsContinue });
     } catch {
-      logRefusal(context, route, 503, 'handler-fault', caller ?? undefined);
       try {
-        if (response.headersSent) request.destroy?.();
-        else send(response, 503, SERVICE_UNAVAILABLE, request);
+        if (response.headersSent) {
+          recorder.recordLateFault();
+          request.destroy?.();
+        } else
+          send(response, 503, SERVICE_UNAVAILABLE, request, {
+            outcome: 'handler-fault',
+            caller: caller ?? undefined,
+          });
       } catch {
         request.destroy?.();
       }
@@ -420,31 +501,57 @@ export function createRequestHandler({
 // same for any other Expect value: without it Node answers 417 itself, bypassing send(), and then
 // reads and discards the body until requestTimeout. The handler ignores the expectation, as
 // RFC 9110 permits, so the request is refused or admitted exactly like one without the header.
-export function createSeamServer(handler) {
+//
+// Given `telemetry` (gate decision Q-13 on task 2.3), it also counts each connection that closes
+// without ever producing a request: one Node answered itself - a malformed request (400), headers
+// that stalled past headersTimeout (408) or grew past maxHeaderSize (431) - or one that sent
+// nothing, a port scan or a TCP health check among them. It reads only the 'connection' event and
+// the requests the handler is given, and changes nothing Node writes. The count has no reason.
+export function createSeamServer(handler, { telemetry } = {}) {
+  const served = new WeakSet();
+  const handle = (request, response, options) => {
+    served.add(request.socket);
+    return handler(request, response, options);
+  };
   const server = createServer(
     {
       headersTimeout: HEADERS_TIMEOUT_MS,
       requestTimeout: REQUEST_TIMEOUT_MS,
       connectionsCheckingInterval: CONNECTIONS_CHECKING_INTERVAL_MS,
     },
-    handler,
+    (request, response) => handle(request, response),
   );
   server.on('checkContinue', (request, response) =>
-    handler(request, response, { awaitsContinue: true }),
+    handle(request, response, { awaitsContinue: true }),
   );
-  server.on('checkExpectation', (request, response) => handler(request, response));
+  server.on('checkExpectation', (request, response) => handle(request, response));
+  if (telemetry)
+    server.on('connection', (socket) =>
+      socket.once('close', () => {
+        if (!served.has(socket)) telemetry.connectionWithoutRequest();
+      }),
+    );
   return server;
 }
 
 // No default store, exactly as createRequestHandler has no default authenticator: a service built
-// without one must not exist, rather than exist and quietly keep evidence in memory.
+// without one must not exist, rather than exist and quietly keep evidence in memory. Without
+// `checkReadiness` GET /ready fails closed (not-configured). One telemetry serves the handler, the
+// readiness changes and the server's connection count.
 export function createApp({
   evidenceStore,
   authenticate = defaultAuthenticate,
+  checkReadiness,
+  telemetry,
   log = stderrLog,
 } = {}) {
   if (evidenceStore === undefined || evidenceStore === null)
     throw new TypeError('createApp needs an evidence store');
+  const recorder = telemetry ?? createTelemetry({ log });
+  const readiness = createReadiness({
+    ...(checkReadiness === undefined ? {} : { check: checkReadiness }),
+    onChange: (answer) => recorder.readinessChanged(answer),
+  });
   return createSeamServer(
     createRequestHandler({
       registry,
@@ -452,22 +559,69 @@ export function createApp({
       evidenceStore,
       authenticate,
       quota: defaultQuota,
+      readiness,
+      telemetry: recorder,
       log,
     }),
+    { telemetry: recorder },
   );
 }
 
-// The service: the durable store or nothing. openDurableEvidenceStore() reads the PG* variables
+// AC-6: the one startup line, naming the policy the seam holds - loaded, accepted by the validator
+// and deep-frozen - its approving decision, the schema version the startup check found, and the
+// number of registrations whatever their status. Written once, after the store opened and before
+// the service listens. Nothing else is in it.
+export function announceStartup({
+  telemetry,
+  policy: loaded,
+  registry: registrations,
+  schemaVersion,
+}) {
+  telemetry.startup({
+    policyId: loaded.policy_id,
+    decisionId: loaded.approval.decision_id,
+    schemaVersion,
+    workspaces: registrations.list().length,
+  });
+}
+
+// One last telemetry line when the supervisor stops the process. The handler writes the snapshot
+// synchronously, removes itself and its twin, and re-raises the signal, so the process still dies
+// of it and the exit status a supervisor sees is unchanged. stderr writes to a file or a pipe are
+// synchronous on Linux (Node, "A note on process I/O"); elsewhere the line can be lost. SIGKILL and
+// an out-of-memory kill write nothing (RR-12).
+export const SHUTDOWN_SIGNALS = Object.freeze(['SIGTERM', 'SIGINT']);
+export function installShutdownSnapshot({ telemetry, target = process }) {
+  const handlers = new Map();
+  for (const signal of SHUTDOWN_SIGNALS) {
+    const handler = () => {
+      for (const [name, installed] of handlers) target.off(name, installed);
+      telemetry.stop();
+      telemetry.snapshot('shutdown');
+      target.kill(target.pid, signal);
+    };
+    handlers.set(signal, handler);
+    target.once(signal, handler);
+  }
+}
+
+// The service: the durable store or nothing. openDurableService() reads the PG* variables
 // (database-config.mjs, not here) and refuses - an unusable configuration, an unreachable server,
 // unverified TLS to a non-loopback host, a role its startup role check refuses, a schema that is
-// not the bundled one - and the process exits 1 with one fixed line, never a driver message.
+// not the bundled one - and the process exits 1 with one fixed line, never a driver message. Then,
+// in order: the startup line, the interval snapshot, the shutdown snapshot, and the listener.
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   const port = Number(process.env.PORT ?? 3000);
-  openDurableEvidenceStore().then(
-    (evidenceStore) =>
-      createApp({ evidenceStore }).listen(port, () =>
+  openDurableService().then(
+    ({ evidenceStore, checkReadiness, schemaVersion }) => {
+      const telemetry = createTelemetry({ log: stderrLog });
+      announceStartup({ telemetry, policy, registry, schemaVersion });
+      telemetry.startInterval();
+      installShutdownSnapshot({ telemetry });
+      createApp({ evidenceStore, checkReadiness, telemetry }).listen(port, () =>
         console.log(`control plane listening on :${port}`),
-      ),
+      );
+    },
     (error) => {
       const line =
         error instanceof StartupRefused ? error.message : 'control plane refused to start: failed';

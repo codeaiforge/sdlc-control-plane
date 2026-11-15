@@ -174,7 +174,14 @@ function seam({ fetchKeySet = okFetch, keySet, log, quota, store } = {}) {
 
 // One request per scenario. The token rides in the Authorization header (unless the scenario
 // replaces it), and again in a cookie and in the body, so a leak from any of the three shows.
-function request({ method = 'POST', url = '/v1/evidence', authorization, compact, body }) {
+function request({
+  method = 'POST',
+  url = '/v1/evidence',
+  authorization,
+  compact,
+  body,
+  bodyFails,
+}) {
   const rawHeaders = [];
   if (authorization !== undefined) {
     for (const value of [].concat(authorization)) rawHeaders.push('Authorization', value);
@@ -189,6 +196,9 @@ function request({ method = 'POST', url = '/v1/evidence', authorization, compact
     destroy: () => {},
     async *[Symbol.asyncIterator]() {
       yield text;
+      // The client hangs up mid-body, or Node's requestTimeout destroys the socket (task 2.3).
+      if (bodyFails)
+        throw Object.assign(new Error(`CANARY-ERROR-aborted ${compact}`), { code: 'ECONNRESET' });
     },
   };
 }
@@ -259,6 +269,7 @@ function scenarios() {
   add('refused-actor', 403, make({ actor_id: '49699333' }));
   add('quota-exceeded', 429, good, { quota: { take: () => ({ ok: false, retryAfterS: 7 }) } });
   add('body-too-large', 413, good, { body: `"CANARY-BODY-${'x'.repeat(1048576)}"` });
+  add('body-read-failed', 400, good, { body: '{"CANARY-BODY-partial":', bodyFails: true });
   add('body-not-json', 400, good, { body: '{ CANARY-BODY not json' });
   add('rejected', 422, good, { body: JSON.stringify(evidence({ tier: 'CANARY-BODY-tier' })) });
   add('needs-remediation', 422, good, {
@@ -289,7 +300,7 @@ function scenarios() {
   return list;
 }
 
-const ALLOWED_KEYS = ['event', 'at', 'route', 'status', 'reason', 'principal'];
+const ALLOWED_KEYS = ['event', 'at', 'route', 'status', 'reason', 'duration_ms', 'principal'];
 const PRINCIPAL_KEYS = [...FOUR_IDS, 'workspace_id'];
 // Keyed by reason, not status: 503 is answered both before step 5 (no key set) and after it (a
 // store or handler fault), and only the second has a verified principal to log.
@@ -342,6 +353,7 @@ test('every refusal writes one JSON line with route, status and a known reason',
     assert.equal(event.reason, scenario.reason);
     assert.equal(event.status, scenario.status);
     assert.equal(event.at, '2026-10-07T12:00:00.000Z');
+    assert.ok(Number.isInteger(event.duration_ms) && event.duration_ms >= 0, scenario.reason);
     assert.equal(
       event.route,
       scenario.reason === 'unmatched-route' ? 'unmatched' : 'POST /v1/evidence',
@@ -435,10 +447,29 @@ test('a sink that throws does not break the response', async () => {
   assert.deepEqual(JSON.parse(payload), { error: 'invalid token' });
 });
 
-test('an unknown reason is refused when the event is built', () => {
+test('an unknown reason, or a duration that is not whole milliseconds, is refused when the event is built', () => {
   assert.throws(
-    () => refusalEvent({ at: 'x', route: null, status: 401, reason: 'free text' }),
+    () => refusalEvent({ at: 'x', route: null, status: 401, reason: 'free text', durationMs: 0 }),
     TypeError,
+  );
+  for (const durationMs of [undefined, -1, 1.5, '3', Number.NaN])
+    assert.throws(
+      () =>
+        refusalEvent({
+          at: 'x',
+          route: null,
+          status: 401,
+          reason: 'credential-missing',
+          durationMs,
+        }),
+      TypeError,
+      String(durationMs),
+    );
+  assert.deepEqual(
+    Object.keys(
+      refusalEvent({ at: 'x', route: null, status: 404, reason: 'unmatched-route', durationMs: 0 }),
+    ),
+    ['event', 'at', 'route', 'status', 'reason', 'duration_ms'],
   );
   assert.equal(Object.isFrozen(REFUSAL_REASONS), true);
 });

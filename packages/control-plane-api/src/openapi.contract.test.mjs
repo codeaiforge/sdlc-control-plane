@@ -258,6 +258,10 @@ const authenticatedRefusals = (method, path, request) => [
   },
 ];
 
+// GET /ready answers from the readiness it is given; the seam's own check is readiness.test.mjs's
+// and the real database's is durable-service.integration.mjs's.
+const readinessOf = (ready, reason) => ({ probe: async () => ({ ready, reason }) });
+
 const scenarios = [
   {
     name: 'GET /health -> 200 liveness',
@@ -266,6 +270,24 @@ const scenarios = [
     status: 200,
     request: () => anonymous('/health'),
     claim: (body) => assert.deepEqual(body, { status: 'ok' }),
+  },
+  {
+    name: 'GET /ready -> 200 ready',
+    method: 'GET',
+    path: '/ready',
+    status: 200,
+    seam: () => seam(undefined, { readiness: readinessOf(true, 'ready') }),
+    request: () => anonymous('/ready'),
+    claim: (body) => assert.deepEqual(body, { status: 'ready' }),
+  },
+  {
+    name: 'GET /ready -> 503 not-ready',
+    method: 'GET',
+    path: '/ready',
+    status: 503,
+    seam: () => seam(undefined, { readiness: readinessOf(false, 'database-unreachable') }),
+    request: () => anonymous('/ready'),
+    claim: (body) => assert.deepEqual(body, { status: 'not-ready' }),
   },
   {
     name: "GET /v1/workspaces -> 200 the caller's own registration",
@@ -494,6 +516,11 @@ test('x-unmatched-request and the refusals close the connection after the respon
     ['403', seam(), declared(post('{}', undefined, credential({ repository_id: '99' })))],
     ['503', seam(undefined, { fetchKeySet: outage }), declared(post('{}'))],
     ['429', seam(undefined, { quota: exhausted }), declared(post('{}'))],
+    [
+      '503',
+      seam(undefined, { readiness: readinessOf(false, 'check-timeout') }),
+      anonymous('/ready'),
+    ],
   ];
   for (const [status, handler, request] of cases)
     assert.deepEqual(await disposition(handler, request), CLOSED, `${status} ${request.url}`);
@@ -548,11 +575,16 @@ test('security is declared on exactly the routes that require a workload', () =>
   assert.deepEqual(sorted(secured), sorted(workload));
 });
 
-test('every operation but GET /health declares 401, 403 and 503, and the POST 409, 413 and 429', () => {
+test('every operation but the probes declares 401, 403 and 503, and the POST 409, 413 and 429', () => {
   for (const { path, method, operation } of operations) {
     const statuses = Object.keys(operation.responses);
     if (path === '/health') {
       assert.deepEqual(statuses, ['200']);
+      continue;
+    }
+    // ADR-0005: the readiness probe answers ready or not-ready, and nothing else.
+    if (path === '/ready') {
+      assert.deepEqual(statuses, ['200', '503']);
       continue;
     }
     for (const status of ['401', '403', '503'])
@@ -562,13 +594,31 @@ test('every operation but GET /health declares 401, 403 and 503, and the POST 40
   for (const status of ['409', '413', '429']) assert.ok(post.includes(status));
 });
 
-test('info.version is 0.4.0', () => {
+test('info.version is 0.5.0', () => {
   // Bumped once by task 2.1 (0.2.0: the authentication statuses, the 413, the 429, Workspace /1
   // and evidence_attestation), once by task 2.2 (0.3.0: the 409, the store's 503, unstorable
-  // strings in divergence 5, divergence 6 replaced, and the durable 202 caveat), and once by task
+  // strings in divergence 5, divergence 6 replaced, and the durable 202 caveat), once by task
   // 2.4 (0.4.0: ai_assisted required, ai_tool held to a named tool, 'rejected' a contract failure
-  // only).
-  assert.equal(document.info.version, '0.4.0');
+  // only), and once by task 2.3 (0.5.0: GET /ready).
+  assert.equal(document.info.version, '0.5.0');
+});
+
+test('the readiness bodies are closed and carry a status and nothing else', () => {
+  for (const [name, value] of [
+    ['ReadyResponse', 'ready'],
+    ['NotReadyResponse', 'not-ready'],
+  ]) {
+    const schema = document.components.schemas[name];
+    assert.equal(schema.additionalProperties, false, name);
+    assert.deepEqual(schema.required, ['status'], name);
+    assert.deepEqual(Object.keys(schema.properties), ['status'], name);
+    assert.deepEqual(schema.properties.status.enum, [value], name);
+    assert.equal(conforms({ status: value, reason: 'database-unreachable' }, schema).ok, false);
+  }
+  assert.match(
+    document.info.description,
+    /every operation except GET \/health and GET \/ready requires/,
+  );
 });
 
 test('evidence_attestation is required and single-valued on the three schemas ADR-0004 names', () => {

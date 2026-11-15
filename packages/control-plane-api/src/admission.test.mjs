@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { constants, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,6 +20,7 @@ import {
 } from './admission.mjs';
 import { createInMemoryEvidenceStore } from '../../evidence-store/src/evidence-store.mjs';
 import { createApp, createRequestHandler, createSeamServer, routes } from './main.mjs';
+import { createTelemetry } from './telemetry.mjs';
 
 // Claim shapes from AC-20's measured token (GitHub Actions run 39384901065, 2026-10-20), recorded in
 // .ai/sprints/sprint-2/tasks/2.1.md; swap the values here and nowhere else.
@@ -171,6 +173,8 @@ function seam({
   keySetFetch,
   authenticate,
   quota,
+  readiness,
+  telemetry,
   log = () => {},
 } = {}) {
   const keySet = createKeySet({
@@ -185,6 +189,8 @@ function seam({
     evidenceStore: store,
     authenticate: authenticate ?? createAuthenticator({ keySet, now: () => clock.ms }),
     quota: quota ?? createSubmissionQuota({ now: () => clock.ms }),
+    readiness,
+    telemetry,
     log,
     now: () => clock.ms,
   });
@@ -245,17 +251,28 @@ async function call(handler, req) {
 
 // -------------------------------------------------------------------------------- AC-1, AC-7
 
-test('every route except GET /health declares auth workload', () => {
+// ADR-0005: exactly two probe routes, GET /health and GET /ready; every other route is workload.
+const PROBES = ['GET /health', 'GET /ready'];
+
+test('every route except the probe routes GET /health and GET /ready declares auth workload', () => {
   for (const route of routes) {
-    const expected = route.method === 'GET' && route.path === '/health' ? 'none' : 'workload';
-    assert.equal(route.auth, expected, `${route.method} ${route.path}`);
+    const name = `${route.method} ${route.path}`;
+    const probe = PROBES.includes(name);
+    assert.equal(route.auth, probe ? 'none' : 'workload', name);
+    assert.equal(route.probe === true, probe, `${name}: probe flag`);
   }
+  assert.deepEqual(
+    routes.filter((route) => route.auth === 'none').map((route) => `${route.method} ${route.path}`),
+    PROBES,
+  );
 });
 
 test('a route with no auth field fails closed', async () => {
   // The dispatcher reads only `auth === 'none'` as unauthenticated; anything else authenticates.
+  // Since task 2.3 the probe dispatch sits inside the catch-all, awaited, so a probe that rejects
+  // is answered 503 rather than left to reject.
   const source = readFileSync(new URL('./main.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(route\.auth === 'none'\) return route\.handle/);
+  assert.match(source, /if \(route\.auth === 'none'\) return await route\.handle/);
   assert.doesNotMatch(source, /route\.auth === 'workload'/);
 });
 
@@ -301,6 +318,27 @@ test('GET /health reads no credential even when one is sent', async () => {
     reads.filter((read) => !FRAMING_READS.includes(read)),
     [],
   );
+});
+
+test('GET /ready reads no credential even when one is sent', async () => {
+  for (const [readiness, expected] of [
+    [{ probe: async () => ({ ready: true, reason: 'ready' }) }, [200, { status: 'ready' }]],
+    [
+      { probe: async () => ({ ready: false, reason: 'role-refused' }) },
+      [503, { status: 'not-ready' }],
+    ],
+  ]) {
+    const { req, reads } = spyingRequest({ method: 'GET', url: '/ready' });
+    const { status, body } = await call(
+      seam({ authenticate: throwingAuthenticate, readiness }),
+      req,
+    );
+    assert.deepEqual([status, body], expected);
+    assert.deepEqual(
+      reads.filter((read) => !FRAMING_READS.includes(read)),
+      [],
+    );
+  }
 });
 
 test('an unmatched request is 404 before any credential read', async () => {
@@ -866,6 +904,84 @@ test('an unknown Expect value is ignored: refusals close unread, an admitted POS
     await delay(50);
     assert.equal(client.closed, false, 'the server closed an admitted request it had read');
   });
+});
+
+// Gate decision Q-13 on task 2.3. Node answers some requests itself, before the seam is handed
+// one - a malformed request (400), headers past maxHeaderSize (431), headers that stall past
+// headersTimeout (408) - so no send() records them. The seam server counts each connection that
+// closes without producing a request, and changes nothing Node writes: the bytes on the wire are
+// compared with a plain node:http server's, byte for byte.
+const NODE_ANSWERS = {
+  'malformed request line': 'NOT-HTTP \x00\r\n\r\n',
+  'oversized headers': `GET /health HTTP/1.1\r\nHost: x\r\nX-Pad: ${'a'.repeat(20000)}\r\n\r\n`,
+};
+
+async function answeredBy(server, bytes) {
+  const client = await rawClient(server);
+  client.socket.write(bytes);
+  await until(() => client.closed, 'the server to close the connection');
+  return client.text;
+}
+
+const withoutRequest = (telemetry) => telemetry.snapshot().connections_without_request;
+
+test("a connection Node answers itself is counted once, and Node's own response is unchanged", async () => {
+  const plain = createServer(() => assert.fail('no request reaches a handler'));
+  plain.listen(0, '127.0.0.1');
+  await once(plain, 'listening');
+  try {
+    for (const [name, bytes] of Object.entries(NODE_ANSWERS)) {
+      const telemetry = createTelemetry({ log: () => {} });
+      const server = createSeamServer(seam({ telemetry }), { telemetry });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      try {
+        const expected = await answeredBy(plain, bytes);
+        assert.match(expected, /^HTTP\/1\.1 4(00|31) /, `${name}: control`);
+        assert.equal(await answeredBy(server, bytes), expected, name);
+        await until(() => withoutRequest(telemetry) === 1, `${name}: the count`);
+        await delay(20);
+        assert.equal(withoutRequest(telemetry), 1, `${name}: counted exactly once`);
+        assert.deepEqual(telemetry.snapshot().counts, [], `${name}: no response was recorded`);
+      } finally {
+        server.closeAllConnections();
+        server.close();
+      }
+    }
+  } finally {
+    plain.closeAllConnections();
+    plain.close();
+  }
+});
+
+test('a keep-alive connection that served requests is not counted; one that sent nothing is', async () => {
+  const telemetry = createTelemetry({ log: () => {} });
+  const server = createSeamServer(seam({ telemetry }), { telemetry });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const client = await rawClient(server);
+    for (const index of [1, 2]) {
+      client.socket.write('GET /health HTTP/1.1\r\nHost: x\r\n\r\n');
+      await until(() => statusLines(client.text).length === index, `response ${index}`);
+    }
+    client.socket.end();
+    await until(() => client.closed, 'the served connection to close');
+    const silent = await rawClient(server);
+    silent.socket.end();
+    await until(() => silent.closed, 'the silent connection to close');
+    await until(() => withoutRequest(telemetry) === 1, 'the silent connection to be counted');
+    await delay(20);
+    assert.equal(withoutRequest(telemetry), 1);
+    assert.deepEqual(telemetry.snapshot().counts, [
+      { route: 'GET /health', status: 200, outcome: 'live', n: 2 },
+    ]);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+  // Without telemetry the server counts nothing and still serves.
+  assert.equal(typeof createSeamServer(seam()).listen, 'function');
 });
 
 // ------------------------------------------------------------------------- AC-11 envelope side

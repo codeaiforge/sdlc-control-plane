@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SDLC Control Plane API",
-    "version": "0.4.0",
-    "description": "The HTTP surface of the SDLC control plane. This document is the source of truth for the routes, the statuses each one can answer with, and the body shapes on either side of them; packages/control-plane-api/src/openapi.contract.test.mjs fails when it and the seam in packages/control-plane-api/src/main.mjs disagree - in both directions. A claim this document makes that the seam does not honour fails there, and so does a constraint this document drops that the seam still enforces: the required fields, the non-empty-string constraints and the enums on an evidence record are read out of this document and asserted against the running seam, so relaxing one here does not quietly widen the published contract.\n\nThe contract version above is the version of this document, not of the package and not of any evidence or policy schema.\n\nDivergences between this document and the running seam are recorded rather than hidden, because a contract that quietly overstates its implementation is worse than one that states its own limits. They come in two kinds. Six are behavioural and are listed below. The others are field-level: a handful of properties are documented from the upstream contract rather than enforced by this seam, and each one says so in its own description - affected_set and verification.verified element types, and on a workspace, owners element types and solution. Read a constraint's own description before relying on it.\n\n1. Query strings are not ignored. Routing compares the raw request target, so GET /health?x=1 does not match the documented GET /health; it is answered by x-unmatched-request.\n\n2. There is no 405. A documented path addressed with an undeclared method - GET /v1/evidence, POST /health - is answered by x-unmatched-request, and no Allow header is sent.\n\n3. There is no 415. The request content-type is never inspected: a JSON body labelled text/plain is parsed and accepted exactly like one labelled application/json.\n\n4. Timestamps are not parsed. computed_at is documented as a non-empty string rather than a date-time, because the validator only checks that it is a non-empty string. No schema in this document carries a format keyword, and the checker that reads it rejects one as unsupported - so this document cannot silently acquire a constraint of a kind nothing here can check. That guarantee is about keywords the checker does not implement; it is not a claim that every constraint written in a supported keyword is enforced by the seam, which is what the field-level divergences above are about.\n\n5. A record nested deeper than the serialiser's recursion limit is refused, not stored. JSON.parse is iterative in V8 while JSON.stringify is recursive, so the seam can parse a body it cannot project into the append-only store. Such a record is refused with the 400 above and nothing is stored, but the caller is told its body is at fault for JSON that parsed. No acceptance escapes: past the limit the wire outcome is a 400 with an empty store at every depth. The ordering behind that is narrower than it looks. The seam projects the record before evaluating policy, so well past the limit it is refused before policy is read at all; but the store projects again one stack frame deeper, so in a one-level band at the limit the seam's projection fits and the store's does not, and there policy is evaluated for a record that is then refused. evaluateGuardrails is pure, so nothing observable follows from that. The threshold is a property of the runtime, not of this contract, and it moves with the host's stack size. The same 400, with the same ordering, refuses a record holding U+0000 or a string or key that is not well-formed UTF-16 (an unpaired surrogate) anywhere in it: JSON.parse accepts both, and the durable evidence store can hold neither unchanged, so the record is refused before policy is evaluated and nothing is stored. A body over the 1 MiB ingress cap never reaches this point: it is answered 413 before it is parsed, so this band is reachable only by a deep record inside the cap.\n\n6. A replay is answered with the decision computed for the replay. A second submission from the same workspace with the same change_id and the same body is a duplicate: nothing is appended, the first record stands, and the answer is a 202 carrying the decision computed for this submission, not the stored one. The same body means the same JSON value - key order is not significant, so two bodies differing only in the order their keys were written are the same submission - and once a record's payload has been redacted, any body under its key is a duplicate. The policy is loaded at startup, so after a restart under a changed policy a replay's decision may name a different policy_id than the stored record does, or be a 422 for a record the store holds as accepted; the stored record is the first acceptance. A different body under the same key is a conflict, answered 409.\n\nAuthentication: every operation except GET /health requires a GitHub Actions OIDC workload token (securitySchemes.githubActionsOidc, ADR-0003), and every disposition and indicator is labelled self-attested (ADR-0004): it rests on the submitting workload's own claims, bound to its verified run identity, and the control plane verifies none of them.\n\n202 caveat: the 202 on POST /v1/evidence is not a promise of deferred work. The policy decision in the body is final, and the record is in the durable evidence store before the response is written: the statement that stored it - for a replay, the earlier one - completed and committed first. Nothing is queued. What a committed write then survives - disk flushes, replication, backups - is the database deployment's configuration, which this service does not control."
+    "version": "0.5.0",
+    "description": "The HTTP surface of the SDLC control plane. This document is the source of truth for the routes, the statuses each one can answer with, and the body shapes on either side of them; packages/control-plane-api/src/openapi.contract.test.mjs fails when it and the seam in packages/control-plane-api/src/main.mjs disagree - in both directions. A claim this document makes that the seam does not honour fails there, and so does a constraint this document drops that the seam still enforces: the required fields, the non-empty-string constraints and the enums on an evidence record are read out of this document and asserted against the running seam, so relaxing one here does not quietly widen the published contract.\n\nThe contract version above is the version of this document, not of the package and not of any evidence or policy schema.\n\nDivergences between this document and the running seam are recorded rather than hidden, because a contract that quietly overstates its implementation is worse than one that states its own limits. They come in two kinds. Six are behavioural and are listed below. The others are field-level: a handful of properties are documented from the upstream contract rather than enforced by this seam, and each one says so in its own description - affected_set and verification.verified element types, and on a workspace, owners element types and solution. Read a constraint's own description before relying on it.\n\n1. Query strings are not ignored. Routing compares the raw request target, so GET /health?x=1 does not match the documented GET /health; it is answered by x-unmatched-request.\n\n2. There is no 405. A documented path addressed with an undeclared method - GET /v1/evidence, POST /health - is answered by x-unmatched-request, and no Allow header is sent.\n\n3. There is no 415. The request content-type is never inspected: a JSON body labelled text/plain is parsed and accepted exactly like one labelled application/json.\n\n4. Timestamps are not parsed. computed_at is documented as a non-empty string rather than a date-time, because the validator only checks that it is a non-empty string. No schema in this document carries a format keyword, and the checker that reads it rejects one as unsupported - so this document cannot silently acquire a constraint of a kind nothing here can check. That guarantee is about keywords the checker does not implement; it is not a claim that every constraint written in a supported keyword is enforced by the seam, which is what the field-level divergences above are about.\n\n5. A record nested deeper than the serialiser's recursion limit is refused, not stored. JSON.parse is iterative in V8 while JSON.stringify is recursive, so the seam can parse a body it cannot project into the append-only store. Such a record is refused with the 400 above and nothing is stored, but the caller is told its body is at fault for JSON that parsed. No acceptance escapes: past the limit the wire outcome is a 400 with an empty store at every depth. The ordering behind that is narrower than it looks. The seam projects the record before evaluating policy, so well past the limit it is refused before policy is read at all; but the store projects again one stack frame deeper, so in a one-level band at the limit the seam's projection fits and the store's does not, and there policy is evaluated for a record that is then refused. evaluateGuardrails is pure, so nothing observable follows from that. The threshold is a property of the runtime, not of this contract, and it moves with the host's stack size. The same 400, with the same ordering, refuses a record holding U+0000 or a string or key that is not well-formed UTF-16 (an unpaired surrogate) anywhere in it: JSON.parse accepts both, and the durable evidence store can hold neither unchanged, so the record is refused before policy is evaluated and nothing is stored. A body over the 1 MiB ingress cap never reaches this point: it is answered 413 before it is parsed, so this band is reachable only by a deep record inside the cap.\n\n6. A replay is answered with the decision computed for the replay. A second submission from the same workspace with the same change_id and the same body is a duplicate: nothing is appended, the first record stands, and the answer is a 202 carrying the decision computed for this submission, not the stored one. The same body means the same JSON value - key order is not significant, so two bodies differing only in the order their keys were written are the same submission - and once a record's payload has been redacted, any body under its key is a duplicate. The policy is loaded at startup, so after a restart under a changed policy a replay's decision may name a different policy_id than the stored record does, or be a 422 for a record the store holds as accepted; the stored record is the first acceptance. A different body under the same key is a conflict, answered 409.\n\nAuthentication: every operation except GET /health and GET /ready requires a GitHub Actions OIDC workload token (securitySchemes.githubActionsOidc, ADR-0003), and every disposition and indicator is labelled self-attested (ADR-0004): it rests on the submitting workload's own claims, bound to its verified run identity, and the control plane verifies none of them.\n\n202 caveat: the 202 on POST /v1/evidence is not a promise of deferred work. The policy decision in the body is final, and the record is in the durable evidence store before the response is written: the statement that stored it - for a replay, the earlier one - completed and committed first. Nothing is queued. What a committed write then survives - disk flushes, replication, backups - is the database deployment's configuration, which this service does not control."
   },
   "servers": [
     {
@@ -37,6 +37,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "summary": "Readiness of the control plane to serve the evidence routes.",
+      "get": {
+        "operationId": "getReady",
+        "summary": "Report whether the control plane can serve the evidence routes.",
+        "description": "Checks that the database answers the service's own connection, as the service's own role, within 2 seconds, and holds exactly the schema this build bundles. Answers 200 ready or 503 not-ready and nothing else; the reason goes only to the control plane's own log. However many callers probe, at most one check runs at a time and a result is reused for 2 seconds, so an answer can be up to 2 seconds old. It recovers without a restart. It says nothing about the key set, the workspace registry or any workspace, and nothing about the role's grants, which are checked when the service starts. GET /health is the liveness signal; this is not one.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The database answered the service's own connection and holds exactly the schema this build bundles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The check did not find the database ready: it did not answer within 2 seconds, refused the service's role, or holds a schema this build does not bundle. Which one is logged, never answered. The connection is closed after the response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotReadyResponse"
                 }
               }
             }
@@ -330,6 +361,32 @@
             "type": "string",
             "enum": ["ok"],
             "description": "The only value this seam can produce. A degraded process does not answer at all rather than answering with another value."
+          }
+        }
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself, so an unexpected property is a defect rather than an upstream addition.",
+        "required": ["status"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["ready"],
+            "description": "The only value a ready answer carries. Why a check passed or failed is never part of the body."
+          }
+        }
+      },
+      "NotReadyResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself, so an unexpected property is a defect rather than an upstream addition.",
+        "required": ["status"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["not-ready"],
+            "description": "The only value a not-ready answer carries. The reason is written to the control plane's log and nowhere else."
           }
         }
       },
