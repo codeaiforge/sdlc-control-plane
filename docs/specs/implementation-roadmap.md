@@ -183,7 +183,7 @@ An authenticated workload from a registered workspace can submit evidence that s
 | --- | ------------------------------------------------------------------ | --- | -------- | -------- | ---------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2.1 | Implement OIDC workload authentication and workspace authorization | 8   | Must     | auth     | 1.4        | NFR-2.1          | An identity can submit only to authorized registered workspace boundaries, per ADR-0003 and ADR-0004.                                                                                           |
 | 2.2 | Implement durable evidence store and idempotent intake             | 10  | Must     | database | 1.2, 2.1   | NFR-3.1          | A replay is safe, durable records survive restart, and audit events are queryable; `submitted_by` and its redaction follow ADR-0004.                                                            |
-| 2.3 | Add telemetry, health, and retention verification                  | 5   | Should   | infra    | 2.5        | NFR-3.1, NFR-6.1 | Operators can detect failed ingestion, delayed processing, and retention-policy violations. Deferred to Sprint 3 by the founder, 2026-10-22.                                                    |
+| 2.3 | Add telemetry, health, and retention verification                  | 5   | Should   | infra    | 2.5        | NFR-3.1, NFR-6.1 | Operators can detect failed ingestion, delayed processing, and retention-policy violations. Deferred to Sprint 3 by the founder, 2026-10-22; done there, 2026-11-15.                            |
 | 2.4 | Harden policy approval and AI provenance rules                     | 5   | Must     | api      | 2.1        | NFR-6.1          | A policy without a complete, real approval refuses to start, `ai_assisted` is a required boolean with a non-empty `ai_tool` when true, and `guardrails/0` has a contract test (MIT-11, MIT-12). |
 | 2.5 | Implement the 90-day retention expiry job                          | 5   | Must     | database | 2.2        | NFR-3.1, NFR-6.1 | A job running as the retention role redacts, never deletes, every envelope whose `received_at` is older than 90 days, is idempotent on re-run, and keeps tombstones indefinitely (ADR-0002).    |
 
@@ -207,7 +207,7 @@ If 2.1 and 2.2 together exceed the sprint, 2.3 defers to Sprint 3 rather than be
 - [ ] A replayed submission is idempotent and creates no duplicate record
 - [ ] Accepted evidence survives a process restart
 - [ ] Policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides (reworded at Gate 2, 2026-10-01: no API surface is built)
-- [ ] Failed ingestion, delayed processing and retention violations are detectable by an operator
+- [x] Failed ingestion, delayed processing and retention violations are detectable by an operator — task 2.3, in Sprint 3: per process on stderr and through `GET /ready` and `retention-check`; no collector or alerting until a deploy target is chosen
 
 ---
 
