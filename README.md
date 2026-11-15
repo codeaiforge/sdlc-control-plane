@@ -119,12 +119,12 @@ Every accepted risk, with who accepted it and when it is reviewed, is in the res
 
 ## Scope: what is here, and what deliberately is not
 
-| Concern              | This control plane does                                                                  | It does not do                                 |
-| -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Team / ART execution | Receives SDLC gate evidence and provenance from registered workspaces                    | Replace the workspace CI/CD pipeline           |
-| ART coordination     | Registers workspaces; cross-workspace indicators are not served in the MVP (ADR-0003)    | Plan work or resolve dependencies for teams    |
-| Large Solution       | Keeps evidence traceable to its workspace, change and policy; no MBSE integration yet    | Own solution intent or supplier management     |
-| Portfolio            | Applies one approved guardrail policy and stamps it on every decision; no indicator view | Make investment, staffing, or budget decisions |
+| Concern                 | This control plane does                                                                  | It does not do                                 |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Team execution          | Receives SDLC gate evidence and provenance from registered workspaces                    | Replace the workspace CI/CD pipeline           |
+| Multi-team coordination | Registers workspaces; cross-workspace indicators are not served in the MVP (ADR-0003)    | Plan work or resolve dependencies for teams    |
+| Programme               | Keeps evidence traceable to its workspace, change and policy; no MBSE integration yet    | Own solution intent or supplier management     |
+| Portfolio               | Applies one approved guardrail policy and stamps it on every decision; no indicator view | Make investment, staffing, or budget decisions |
 
 ## Tests
 

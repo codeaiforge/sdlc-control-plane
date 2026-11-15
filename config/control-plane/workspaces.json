@@ -3,7 +3,7 @@
   "workspaces": [
     {
       "workspace_id": "payments-art",
-      "display_name": "Payments ART engineering workspace",
+      "display_name": "Payments engineering workspace",
       "value_stream": "payment-services",
       "solution": "digital-payments",
       "repository_url": "https://example.invalid/platform/payments-art",

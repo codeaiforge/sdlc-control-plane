@@ -4,10 +4,10 @@
 
 ```mermaid
 flowchart TB
-  subgraph Organizational[Human-owned SAFe decision plane]
-    P[Portfolio / LPM\nstrategy, lean budgets, guardrails]
-    S[Large Solution\nsolution intent, suppliers, compliance]
-    A[ART coordination\nPI objectives, dependencies, flow]
+  subgraph Organizational[Human-owned decision plane]
+    P[Portfolio\nstrategy, budgets, guardrails]
+    S[Programme\nsolution intent, suppliers, compliance]
+    A[Multi-team coordination\nplanning-period objectives, dependencies, flow]
     P --> S --> A
   end
 
@@ -25,7 +25,7 @@ flowchart TB
   subgraph Engineering[Replicated engineering control planes — one per workspace]
     N[Nx project graph\narchitecture of record]
     C[git-native SDLC controls\ntier, provenance, evidence/0]
-    W[Team / ART delivery pipeline]
+    W[Team delivery pipeline]
     N --> C --> W
   end
 
