@@ -203,10 +203,10 @@ If 2.1 and 2.2 together exceed the sprint, 2.3 defers to Sprint 3 rather than be
 
 **Definition of done:**
 
-- [ ] An unauthenticated or unauthorized submission is refused
-- [ ] A replayed submission is idempotent and creates no duplicate record
-- [ ] Accepted evidence survives a process restart
-- [ ] Policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides (reworded at Gate 2, 2026-10-01: no API surface is built)
+- [x] An unauthenticated or unauthorized submission is refused — task 2.1
+- [x] A replayed submission is idempotent and creates no duplicate record — task 2.2
+- [x] Accepted evidence survives a process restart — task 2.2
+- [x] Policy changes are queryable from the git history of `config/control-plane/**`, the audit trail ADR-0002 decides (reworded at Gate 2, 2026-10-01: no API surface is built) — task 2.4
 - [x] Failed ingestion, delayed processing and retention violations are detectable by an operator — task 2.3, in Sprint 3: per process on stderr and through `GET /ready` and `retention-check`; no collector or alerting until a deploy target is chosen
 
 ---
@@ -242,7 +242,7 @@ If the fork measurement shows a fork pull request can mint, 3.3 stops at that re
 
 **Definition of done:**
 
-- [ ] A fixture workspace publishes contract-valid evidence from its own gate
+- [x] A fixture workspace publishes contract-valid evidence from its own gate — task 3.1
 - [ ] External Epic/capability references reconcile against registered workspaces
 - [ ] No automated portfolio authority is granted by the integration
 - [ ] Fork, Dependabot and runner token claims measured on real runs, a blocked gate shown to submit, the workflow's actions moved to v7/v8, and `ai-ready-nx-workspace` registered (3.3, Should)
