@@ -18,6 +18,7 @@ import {
   createRequestHandler,
   installShutdownSnapshot,
   loadGuardrailPolicy,
+  routes,
 } from './main.mjs';
 import { createReadiness } from './readiness.mjs';
 import { createTelemetry } from './telemetry.mjs';
@@ -826,6 +827,30 @@ test('a probe that rejects is answered 503 not-ready as handler-fault, and the h
   assert.deepEqual(
     lines.map(({ event, route, reason }) => [event, route, reason]),
     [['refusal', 'GET /ready', 'handler-fault']],
+  );
+  assert.doesNotMatch(JSON.stringify(lines), /CANARY/);
+});
+
+// Review N2-2: ADR-0005 holds a probe to a status-only body, so a fault on GET /health - which
+// nothing it does can cause today - is answered with the closed unavailable status, never the
+// error envelope. The handler is swapped for one that throws, for this one call.
+test('a fault on GET /health is answered 503 unavailable as handler-fault, lined, and the handler resolves', async (t) => {
+  const route = routes.find((candidate) => candidate.path === '/health');
+  const { handle } = route;
+  t.after(() => {
+    route.handle = handle;
+  });
+  route.handle = () => {
+    throw new Error('CANARY health defect');
+  };
+  const lines = [];
+  const handler = seam(undefined, { log: (event) => lines.push(event) });
+  const answer = await wire(handler, anon('/health'));
+  route.handle = handle;
+  assert.deepEqual([answer.status, answer.body], [503, { status: 'unavailable' }]);
+  assert.deepEqual(
+    lines.map(({ event, route: lined, reason }) => [event, lined, reason]),
+    [['refusal', 'GET /health', 'handler-fault']],
   );
   assert.doesNotMatch(JSON.stringify(lines), /CANARY/);
 });

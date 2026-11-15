@@ -40,6 +40,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The route faulted while answering, which nothing it does can cause today: it does no I/O. The body is the status-only unavailable status, the fault is logged, never answered, and the connection is closed after the response.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthUnavailableResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -360,7 +370,20 @@
           "status": {
             "type": "string",
             "enum": ["ok"],
-            "description": "The only value this seam can produce. A degraded process does not answer at all rather than answering with another value."
+            "description": "The only value a 200 carries. A process that cannot run the seam does not answer at all; one whose route faults while answering answers 503 with HealthUnavailableResponse."
+          }
+        }
+      },
+      "HealthUnavailableResponse": {
+        "type": "object",
+        "description": "Closed: the control plane constructs this body itself, so an unexpected property is a defect rather than an upstream addition.",
+        "required": ["status"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["unavailable"],
+            "description": "The only value a faulted liveness answer carries. The fault is written to the control plane's log and nowhere else."
           }
         }
       },

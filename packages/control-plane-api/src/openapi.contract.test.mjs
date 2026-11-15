@@ -262,6 +262,24 @@ const authenticatedRefusals = (method, path, request) => [
 // and the real database's is durable-service.integration.mjs's.
 const readinessOf = (ready, reason) => ({ probe: async () => ({ ready, reason }) });
 
+// GET /health does no I/O, so nothing can make it fault; the route's handler is swapped for one
+// that throws, for the one call, as telemetry.test.mjs's backstop test does (review N2-2).
+const faultingHealth = () => {
+  const handler = seam();
+  const route = routes.find((candidate) => candidate.path === '/health');
+  return async (request, response) => {
+    const { handle } = route;
+    route.handle = () => {
+      throw new Error('health fault');
+    };
+    try {
+      return await handler(request, response);
+    } finally {
+      route.handle = handle;
+    }
+  };
+};
+
 const scenarios = [
   {
     name: 'GET /health -> 200 liveness',
@@ -270,6 +288,15 @@ const scenarios = [
     status: 200,
     request: () => anonymous('/health'),
     claim: (body) => assert.deepEqual(body, { status: 'ok' }),
+  },
+  {
+    name: 'GET /health -> 503 unavailable when the route faults',
+    method: 'GET',
+    path: '/health',
+    status: 503,
+    seam: faultingHealth,
+    request: () => anonymous('/health'),
+    claim: (body) => assert.deepEqual(body, { status: 'unavailable' }),
   },
   {
     name: 'GET /ready -> 200 ready',
@@ -578,12 +605,9 @@ test('security is declared on exactly the routes that require a workload', () =>
 test('every operation but the probes declares 401, 403 and 503, and the POST 409, 413 and 429', () => {
   for (const { path, method, operation } of operations) {
     const statuses = Object.keys(operation.responses);
-    if (path === '/health') {
-      assert.deepEqual(statuses, ['200']);
-      continue;
-    }
-    // ADR-0005: the readiness probe answers ready or not-ready, and nothing else.
-    if (path === '/ready') {
+    // ADR-0005: a probe answers a status-only body, and nothing else; /health's 503 is a fault
+    // (review N2-2), /ready's is not-ready.
+    if (path === '/health' || path === '/ready') {
       assert.deepEqual(statuses, ['200', '503']);
       continue;
     }
@@ -603,8 +627,10 @@ test('info.version is 0.5.0', () => {
   assert.equal(document.info.version, '0.5.0');
 });
 
-test('the readiness bodies are closed and carry a status and nothing else', () => {
+test('the probe bodies are closed and carry a status and nothing else', () => {
   for (const [name, value] of [
+    ['HealthResponse', 'ok'],
+    ['HealthUnavailableResponse', 'unavailable'],
     ['ReadyResponse', 'ready'],
     ['NotReadyResponse', 'not-ready'],
   ]) {

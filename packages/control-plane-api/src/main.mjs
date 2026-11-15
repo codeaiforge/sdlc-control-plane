@@ -193,6 +193,7 @@ const BODY_NOT_JSON = { error: 'request body must be valid JSON' };
 const LIVE = { status: 'ok' };
 const READY = { status: 'ready' };
 const NOT_READY = { status: 'not-ready' };
+const UNAVAILABLE = { status: 'unavailable' };
 
 // Step 6, the one "authorized for W" predicate every route but the two probes applies (ADR-0003 ›
 // Route authorization; ADR-0005 for the probe routes): the verified triple binds to W, read back
@@ -254,7 +255,10 @@ export const routes = [
     path: '/health',
     auth: 'none',
     probe: true,
-    // Liveness: no I/O, no dependency checked.
+    // Liveness: no I/O, no dependency checked. Nothing here can fault today; if it ever does, the
+    // catch-all and the backstop answer the status-only body ADR-0005 holds a probe to (review
+    // N2-2), declared as this route's 503, never the error envelope.
+    fault: UNAVAILABLE,
     handle: (context, request, response) => send(response, 200, LIVE, request, { outcome: 'live' }),
   },
   {

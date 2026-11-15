@@ -575,9 +575,10 @@ test('AC-1 driven: a sink that throws, or a record that throws, changes no respo
 
 // Review S-1 b: a path that returns without a send() - an early `return;` a handler gains later -
 // is invisible to the source scan and to the drivers. The backstop answers it 503 handler-fault,
-// counted once and lined once; on GET /ready with the not-ready body the contract declares.
+// counted once and lined once; on a probe with the status-only body the contract declares.
 test('a route that returns without answering is answered 503 handler-fault, counted and lined', async (t) => {
   for (const [path, req, body] of [
+    ['/health', () => request({ url: '/health' }), { status: 'unavailable' }],
     ['/ready', () => request({ url: '/ready' }), { status: 'not-ready' }],
     ['/v1/workspaces', () => request({ url: '/v1/workspaces' }), { error: 'service unavailable' }],
     ['/v1/evidence', () => post(validEvidence), { error: 'service unavailable' }],
@@ -603,7 +604,8 @@ test('a route that returns without answering is answered 503 handler-fault, coun
       events.map(({ route: lined, reason }) => [lined, reason]),
       [[name, 'handler-fault']],
     );
-    if (path !== '/ready') assert.equal(events[0].principal.workspace_id, 'payments-art', path);
+    if (!['/health', '/ready'].includes(path))
+      assert.equal(events[0].principal.workspace_id, 'payments-art', path);
   }
 });
 
