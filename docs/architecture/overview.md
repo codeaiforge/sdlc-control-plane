@@ -41,6 +41,8 @@ flowchart TB
 
 Three packages reach an external system: `workload-identity` fetches GitHub's published key set from a pinned URL, `evidence-store` connects to PostgreSQL, the durable evidence store, and `evidence-adapter` calls the runner's ID-token endpoint and the control plane. No package depends on a portfolio or finance provider. Those integrations are ports represented by documented contracts until a specific customer system and credentials are selected.
 
+The projects, their tags and the project graph's edges are drawn in [components](../diagrams/components.md). How the seam admits a request, the two probe routes (ADR-0005) and ADR-0003's predicate on every other route, is drawn in [route authorization](../diagrams/route-authorization.md).
+
 ## Non-goals
 
 - Autonomous approval, prioritisation, budgeting, staffing, or release authority
