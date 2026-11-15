@@ -248,7 +248,7 @@ async function authorizeRequest(context, route, request, response) {
 // compares that claim against this table rather than against a description of it. `auth` is
 // 'none' or 'workload'; anything but 'none' is authenticated, so a route that forgets the field
 // fails closed. `probe: true` marks the two probe routes (ADR-0005): no credential, a status-only
-// body, and counted rather than logged line by line.
+// body, and counted rather than logged line by line unless it faults.
 export const routes = [
   {
     method: 'GET',
