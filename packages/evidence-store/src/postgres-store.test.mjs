@@ -8,6 +8,7 @@ import {
   assertSchemaCurrent,
   assertServiceRole,
   createPostgresEvidenceStore,
+  createReadinessCheck,
 } from './postgres-store.mjs';
 
 // Unit tests, no database. A fake client records every statement and its bound values and answers
@@ -390,7 +391,9 @@ test('startup refuses a schema that is not exactly the bundled migrations', asyn
   const bundled = loadMigrations().map(({ version, checksum }) => ({ version, checksum }));
   const schema = (present, rows) =>
     fakeSql((text) => (text.includes('to_regclass') ? [{ present }] : rows)).sql;
-  await assertSchemaCurrent(schema(true, bundled));
+  assert.deepEqual(await assertSchemaCurrent(schema(true, bundled)), {
+    version: bundled.at(-1).version,
+  });
   for (const sql of [
     schema(false, bundled),
     schema(true, []),
@@ -401,4 +404,86 @@ test('startup refuses a schema that is not exactly the bundled migrations', asyn
     ),
   ])
     await assert.rejects(assertSchemaCurrent(sql), refused('schema-mismatch'));
+});
+
+// ------------------------------------------------------------ task 2.3: the readiness check
+
+const driverFault = (code) =>
+  Object.assign(new Error(`CANARY-driver-message ${code} password=CANARY-SECRET`), { code });
+
+test('the readiness check classifies by SQLSTATE and class, never by message, and never rejects', async () => {
+  const bundled = loadMigrations().map(({ version, checksum }) => ({ version, checksum }));
+  const cases = [
+    [() => bundled, { ready: true, reason: 'ready' }],
+    [() => bundled.slice(0, 1), { ready: false, reason: 'schema-mismatch' }],
+    [
+      () => [...bundled, { version: 99, checksum: 'f'.repeat(64) }],
+      { ready: false, reason: 'schema-mismatch' },
+    ],
+    [
+      () => bundled.map((m) => ({ ...m, checksum: '0'.repeat(64) })),
+      { ready: false, reason: 'schema-mismatch' },
+    ],
+    [() => Promise.reject(driverFault('42P01')), { ready: false, reason: 'schema-mismatch' }],
+    [() => Promise.reject(driverFault('28P01')), { ready: false, reason: 'role-refused' }],
+    [() => Promise.reject(driverFault('28000')), { ready: false, reason: 'role-refused' }],
+    [() => Promise.reject(driverFault('42501')), { ready: false, reason: 'role-refused' }],
+    [
+      () => Promise.reject(driverFault('ECONNREFUSED')),
+      { ready: false, reason: 'database-unreachable' },
+    ],
+    [() => Promise.reject(driverFault('57P01')), { ready: false, reason: 'database-unreachable' }],
+    [() => Promise.reject(driverFault('55000')), { ready: false, reason: 'database-unreachable' }],
+    [
+      () => Promise.reject(new Error('no code at all')),
+      { ready: false, reason: 'database-unreachable' },
+    ],
+    // A message that names another class changes nothing: the code decides.
+    [
+      () =>
+        Promise.reject(
+          Object.assign(new Error('relation does not exist 42P01'), { code: '08006' }),
+        ),
+      { ready: false, reason: 'database-unreachable' },
+    ],
+  ];
+  for (const [answer, expected] of cases) {
+    const { sql, calls } = fakeSql(answer);
+    const result = await createReadinessCheck({ sql })();
+    assert.deepEqual(result, expected, JSON.stringify(expected));
+    assert.equal(calls.length, 1, 'one query per check');
+    assert.equal(
+      calls[0].text,
+      'SELECT version, checksum FROM evidence.schema_migrations ORDER BY version',
+    );
+    assert.doesNotMatch(JSON.stringify(result), /CANARY/);
+  }
+  assert.throws(() => createReadinessCheck({}), TypeError);
+});
+
+test('a readiness query with no answer is cancelled at STORE_QUERY_TIMEOUT_MS and reads check-timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { sql, calls } = fakeSql(() => 'hang');
+  const pending = createReadinessCheck({ sql })();
+  await Promise.resolve();
+  t.mock.timers.tick(STORE_QUERY_TIMEOUT_MS);
+  assert.deepEqual(await pending, { ready: false, reason: 'check-timeout' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls[0].cancelled, true, 'the statement was cancelled');
+});
+
+test('the readiness check goes through run() and is not a method of the store', () => {
+  // From the check to the end of the file: the check and its classifier.
+  const check = CODE.slice(CODE.indexOf('export function createReadinessCheck'));
+  assert.match(
+    check,
+    /await run\(\s*sql`SELECT version, checksum FROM evidence\.schema_migrations ORDER BY version`/,
+  );
+  assert.doesNotMatch(check, /\.message\b/, 'a reason is never read from a message');
+  const { sql } = fakeSql();
+  assert.deepEqual(Object.keys(createPostgresEvidenceStore({ sql })).sort(), [
+    'append',
+    'list',
+    'listRecords',
+  ]);
 });

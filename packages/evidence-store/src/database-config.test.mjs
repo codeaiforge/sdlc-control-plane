@@ -11,6 +11,7 @@ import {
   StartupRefused,
   isLoopback,
   openDurableEvidenceStore,
+  openDurableService,
   readDatabaseConfig,
 } from './database-config.mjs';
 import { loadMigrations } from './migrate.mjs';
@@ -315,6 +316,45 @@ test('an unreachable server, an unsafe role or a stale schema refuses to start w
     openDurableEvidenceStore({ env: local({ PGUSER: undefined }), client: fakeClient().client }),
     refused('config-invalid'),
   );
+});
+
+// Task 2.3. The service's database side: the store, exactly the port's three methods (MIT-14,
+// store-conformance.mjs), the readiness check beside it rather than on it, and the bundled head
+// version for the startup line. Every refusal is the one openDurableEvidenceStore gives.
+test('openDurableService returns the port-only store, a readiness check beside it, and the bundled head version', async () => {
+  const fake = fakeClient();
+  const service = await openDurableService({ env: local(), client: fake.client });
+  assert.deepEqual(Object.keys(service).sort(), [
+    'checkReadiness',
+    'evidenceStore',
+    'schemaVersion',
+  ]);
+  assert.deepEqual(Object.keys(service.evidenceStore).sort(), ['append', 'list', 'listRecords']);
+  assert.equal(typeof service.checkReadiness, 'function');
+  assert.equal(service.schemaVersion, loadMigrations().at(-1).version);
+  assert.deepEqual(await service.checkReadiness(), { ready: true, reason: 'ready' });
+  assert.equal(fake.ended(), false, 'the pool stays open for the store and the check');
+});
+
+test('openDurableService refuses exactly what openDurableEvidenceStore refuses', async () => {
+  const driverError = Object.assign(new Error(`connect ECONNREFUSED ${SENTINEL}`), {
+    code: 'ECONNREFUSED',
+  });
+  for (const [options, code] of [
+    [{ env: local(), client: fakeClient({ fail: driverError }).client }, 'database-unreachable'],
+    [{ env: local(), client: fakeClient({ role: { owns: true } }).client }, 'role-unsafe'],
+    [{ env: remote(), client: fakeClient().client }, 'tls-not-negotiated'],
+    [{ env: local({ PGUSER: undefined }), client: fakeClient().client }, 'config-invalid'],
+  ]) {
+    for (const open of [openDurableService, openDurableEvidenceStore]) {
+      const error = await open(options).then(
+        () => assert.fail(`${open.name} started`),
+        (rejection) => rejection,
+      );
+      assert.ok(refused(code)(error), `${open.name}: ${code}`);
+      assert.equal(error.message, `control plane refused to start: ${code}`);
+    }
+  }
 });
 
 test('the migration CLI refuses an unusable configuration with its code, before connecting', () => {

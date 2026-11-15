@@ -22,6 +22,7 @@ import {
   assertSchemaCurrent,
   assertServiceRole,
   createPostgresEvidenceStore,
+  createReadinessCheck,
 } from './postgres-store.mjs';
 
 export { StartupRefused };
@@ -131,19 +132,21 @@ export function connect(env = process.env) {
   return postgres(readDatabaseConfig(env).options);
 }
 
-// The service's only constructor for its store. Refuses - exit 1, one fixed line from the caller -
-// on a configuration it cannot use safely, an unreachable server, a connection that did not
-// negotiate TLS where TLS is required, a role assertServiceRole refuses (an elevated attribute, a
-// membership of any other role, an ownership, or a grant that could change or remove a row of the
-// envelope log or its redaction table, or set a row's received_at or redacted_at - its comment
-// lists each), or a schema that is not exactly
-// the one bundled. Then constructs the adapter with requireWorkspace, always.
-export async function openDurableEvidenceStore({ env = process.env, client = postgres } = {}) {
+// The service's only constructor for its database side. Refuses - exit 1, one fixed line from the
+// caller - on a configuration it cannot use safely, an unreachable server, a connection that did
+// not negotiate TLS where TLS is required, a role assertServiceRole refuses (an elevated
+// attribute, a membership of any other role, an ownership, or a grant that could change or remove
+// a row of the envelope log or its redaction table, or set a row's received_at or redacted_at -
+// its comment lists each), or a schema that is not exactly the one bundled. Then constructs, on
+// the one pool: the adapter with requireWorkspace, always; beside it the readiness check behind
+// GET /ready (task 2.3), which is not on the port; and the schema version the startup line names.
+export async function openDurableService({ env = process.env, client = postgres } = {}) {
   const { options, loopback } = readDatabaseConfig(env);
   const sql = client(options);
+  let schema;
   try {
     await assertServiceRole(sql, { requireTls: !loopback });
-    await assertSchemaCurrent(sql);
+    schema = await assertSchemaCurrent(sql);
   } catch (error) {
     await Promise.resolve()
       .then(() => sql.end({ timeout: 1 }))
@@ -151,5 +154,14 @@ export async function openDurableEvidenceStore({ env = process.env, client = pos
     if (error instanceof StartupRefused) throw error;
     throw new StartupRefused('database-unreachable', { cause: error });
   }
-  return createPostgresEvidenceStore({ sql, requireWorkspace: true });
+  return {
+    evidenceStore: createPostgresEvidenceStore({ sql, requireWorkspace: true }),
+    checkReadiness: createReadinessCheck({ sql }),
+    schemaVersion: schema.version,
+  };
+}
+
+// The store alone, with every refusal of openDurableService.
+export async function openDurableEvidenceStore(options) {
+  return (await openDurableService(options)).evidenceStore;
 }

@@ -238,16 +238,64 @@ export async function assertServiceRole(sql, { requireTls = true } = {}) {
   if (requireTls && !role.ssl) throw new StartupRefused('tls-not-negotiated');
 }
 
+// Version for version and byte for byte by checksum, in order. Shared by the startup check and
+// the readiness check, so the two cannot disagree about what "the bundled schema" means.
+function isBundled(applied, migrations) {
+  const expected = migrations.map(({ version, checksum }) => `${version}:${checksum}`);
+  const actual = applied.map(({ version, checksum }) => `${version}:${checksum}`);
+  return expected.length === actual.length && expected.every((entry, i) => entry === actual[i]);
+}
+
 // D-16. What is applied must be exactly what this build bundles, version for version and byte
 // for byte by checksum. The service never migrates; a database behind or ahead of it is refused.
+// Returns the head version applied, which then equals the bundled head: the service names it in
+// its startup line (task 2.3). A caller that ignores the value is unaffected.
 export async function assertSchemaCurrent(sql, { migrations = loadMigrations() } = {}) {
   const [{ present }] = await sql`
     SELECT pg_catalog.to_regclass('evidence.schema_migrations') IS NOT NULL AS present`;
   if (!present) throw new StartupRefused('schema-mismatch');
   const applied =
     await sql`SELECT version, checksum FROM evidence.schema_migrations ORDER BY version`;
-  const expected = migrations.map(({ version, checksum }) => `${version}:${checksum}`);
-  const actual = applied.map(({ version, checksum }) => `${version}:${checksum}`);
-  if (expected.length !== actual.length || expected.some((entry, i) => entry !== actual[i]))
-    throw new StartupRefused('schema-mismatch');
+  if (!isBundled(applied, migrations)) throw new StartupRefused('schema-mismatch');
+  return { version: applied.length === 0 ? 0 : Number(applied.at(-1).version) };
+}
+
+// Task 2.3, the check behind GET /ready. It is beside the store, never on it: the port stays
+// append, list and listRecords (MIT-14, store-conformance.mjs). One query on the service's own
+// pool, as the service's own role, through run(), so a server that does not answer is cancelled
+// at STORE_QUERY_TIMEOUT_MS like any other statement. The answer is { ready, reason } with a
+// reason from a closed list, decided by error class and SQLSTATE, never by message, and the
+// returned function never rejects: the driver error is dropped here, as everywhere else.
+//
+// What it does not check, by design: the role's grants (assertServiceRole is a startup check,
+// D-16), and anything outside the database.
+export function createReadinessCheck({ sql, migrations = loadMigrations() } = {}) {
+  if (typeof sql !== 'function') throw new TypeError('createReadinessCheck needs a client');
+  return async () => {
+    try {
+      const applied = await run(
+        sql`SELECT version, checksum FROM evidence.schema_migrations ORDER BY version`,
+        'a readiness check',
+      );
+      return isBundled(applied, migrations)
+        ? { ready: true, reason: 'ready' }
+        : { ready: false, reason: 'schema-mismatch' };
+    } catch (error) {
+      return { ready: false, reason: readinessReason(error) };
+    }
+  };
+}
+
+// run() raises an EvidenceStoreFault with no cause only for its own timeout; every driver
+// rejection is kept as the cause. 42P01: no schema_migrations table, so not this schema. Class 28
+// (authorization: a wrong password, CONNECT revoked at login) and 42501 (insufficient privilege)
+// are the role refused. Anything else - refused connections, a terminated backend, a database not
+// accepting connections, a TLS failure - is the database unreachable.
+function readinessReason(error) {
+  if (error instanceof EvidenceStoreFault && error.cause === undefined) return 'check-timeout';
+  const code = error?.cause?.code;
+  if (code === '42P01') return 'schema-mismatch';
+  if (typeof code === 'string' && (code.startsWith('28') || code === '42501'))
+    return 'role-refused';
+  return 'database-unreachable';
 }

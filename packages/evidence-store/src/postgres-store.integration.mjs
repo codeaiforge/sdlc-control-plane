@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { isDeepStrictEqual } from 'node:util';
 import { closeHarness, createTestDatabase } from './pg-harness.mjs';
-import { STORE_QUERY_TIMEOUT_MS, createPostgresEvidenceStore } from './postgres-store.mjs';
+import {
+  STORE_QUERY_TIMEOUT_MS,
+  createPostgresEvidenceStore,
+  createReadinessCheck,
+} from './postgres-store.mjs';
 import { describeEvidenceStore } from './store-conformance.mjs';
 
 // Against a real PostgreSQL 16 server (pg-harness.mjs). Fails without one; never skips.
@@ -213,6 +217,31 @@ test('a server that refuses the role is a fault on every method, and the process
     await assert.rejects(call(), { name: 'EvidenceStoreFault' });
   await db.grantConnect('evidence_app');
   assert.equal((await store.list()).length, 1);
+});
+
+// Task 2.3: the readiness check behind GET /ready, on the service's own role. Each state is made
+// on the server, and each recovers on the same pool, with no new client.
+test('the readiness check reads ready, then schema-mismatch on a tampered checksum, and recovers', async (t) => {
+  const db = await database(t);
+  const check = createReadinessCheck({ sql: db.connectAs('evidence_app', { max: 1 }) });
+  assert.deepEqual(await check(), { ready: true, reason: 'ready' });
+  const [{ checksum }] =
+    await db.admin`SELECT checksum FROM evidence.schema_migrations WHERE version = 2`;
+  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${'0'.repeat(64)} WHERE version = 2`;
+  assert.deepEqual(await check(), { ready: false, reason: 'schema-mismatch' });
+  await db.admin`UPDATE evidence.schema_migrations SET checksum = ${checksum} WHERE version = 2`;
+  assert.deepEqual(await check(), { ready: true, reason: 'ready' });
+});
+
+test('the readiness check reads role-refused while CONNECT is revoked, and recovers on re-grant', async (t) => {
+  const db = await database(t);
+  const check = createReadinessCheck({ sql: db.connectAs('evidence_app', { max: 1 }) });
+  assert.deepEqual(await check(), { ready: true, reason: 'ready' });
+  await db.revokeConnect('evidence_app');
+  await db.terminate('evidence_app');
+  assert.deepEqual(await check(), { ready: false, reason: 'role-refused' });
+  await db.grantConnect('evidence_app');
+  assert.deepEqual(await check(), { ready: true, reason: 'ready' });
 });
 
 test('no driver error surfaced as an unhandled rejection while this file ran', async () => {
