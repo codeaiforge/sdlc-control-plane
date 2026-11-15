@@ -2,7 +2,7 @@
 
 **Prepared by**: codeaiforge
 **Version**: 0.3 — September 2026
-**Duration**: 6 weeks — Sprint 0 complete, then 3 sprints x 2 weeks (Sep 21 – Oct 30, 2026)
+**Duration**: Sprint 0 complete, then 3 sprints (Sep 21 – Dec 13, 2026; Sprint 3 extended from Oct 30 on 2026-11-15)
 **Team**: Solo developer (founder)
 **Methodology**: Vertical slices with proportionate, gate-computed SDLC controls
 
@@ -43,9 +43,9 @@ timeline
 | 0      | Sep 20 – Sep 21, 2026 (complete) | Architecture foundation | Nx project graph, contracts, policy seam, registry, indicators, control-map generator | Local graph and all project tests pass                          |
 | 1      | Sep 21 – Oct 2, 2026             | MVP service boundary    | HTTP composition seam, documented inbound/outbound contracts, integration test plan   | Valid evidence yields a deterministic technical disposition     |
 | 2      | Oct 5 – Oct 16, 2026             | Production hardening    | Identity, authorization, durable idempotent storage, audit events, observability      | Authenticated end-to-end ingestion is traceable and recoverable |
-| 3      | Oct 19 – Oct 30, 2026            | Workspace federation    | `ai-ready-nx-workspace` adapter and one named ALM/portfolio integration               | Contract and reconciliation tests pass in a sandbox             |
+| 3      | Oct 19 – Dec 13, 2026 (extended) | Workspace federation    | `ai-ready-nx-workspace` adapter and one named ALM/portfolio integration               | Contract and reconciliation tests pass in a sandbox             |
 
-**Target MVP**: Oct 30, 2026 — end of Sprint 3.
+**Target MVP**: Dec 13, 2026 — end of Sprint 3, extended from Oct 30 by the founder, 2026-11-15.
 **Buffer**: none built in. Sprint 2 is the pressure point; task 2.3 is a Should and is the
 planned release valve if it slips (see the Sprint 2 risk checkpoint).
 
@@ -73,7 +73,7 @@ Sprint 1, which is the first sprint executed through the pipeline.
 | 0         | 13       | Low        | 0.1 Nx boundaries + control map (5)         | Complete. All four tasks landed and the exit gate is verified green.                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 1         | 14       | Medium     | 1.4 OIDC issuer and authorization model (5) | Design-heavy: three of four produce documents, not running code. 1.4 added 2026-09-23 to give Gate 2's identity signal an owner, and re-estimated from 3 to 5 SP on 2026-09-29.                                                                                                                                                                                                                                                                                                                    |
 | 2         | 33       | **High**   | 2.2 durable store (10)                      | **Over capacity** — 33 SP against a ~20 SP solo sprint. 2.3 was deferred to Sprint 3 by the founder, 2026-10-22, bringing it to 28 SP. Both Musts are gated on human approval of the threat model. 2.4 was split out of 2.1 at 2.1's Phase ① gate, 2026-10-07; 2.5 out of 2.2 at 2.2's Phase ① gate, 2026-10-20; 2.2 was re-estimated from 8 to 10 SP at its Phase ② gate, the same day; 2.4 from 3 to 5 SP at its Phase ① gate, 2026-10-22; 2.5 from 3 to 5 SP at its Phase ① gate, the same day. |
-| 3         | 16       | Medium     | 3.2 portfolio/ALM integration (8)           | Depends on an external integration owner who is not yet named. Absorbs 2.3, deferred on 2026-10-22, taking the sprint to 21 SP. 3.3 split out of 3.1 at 3.1's Phase ① gate, 2026-11-14 (3 SP).                                                                                                                                                                                                                                                                                                     |
+| 3         | 16       | Medium     | 3.2 portfolio/ALM integration (8)           | 3.2's owner named 2026-11-15: the founder, for codeaiforge's demo Jira (Gate 3). Absorbs 2.3, deferred on 2026-10-22, taking the sprint to 21 SP. 3.3 split out of 3.1 at 3.1's Phase ① gate, 2026-11-14 (3 SP). Extended to Dec 13, 2026 by the founder, 2026-11-15.                                                                                                                                                                                                                              |
 | **Total** | **76**   |            |                                             | Average 19 SP per sprint against ~20 SP solo capacity.                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ### Task Priority (MoSCoW)
@@ -211,7 +211,7 @@ If 2.1 and 2.2 together exceed the sprint, 2.3 defers to Sprint 3 rather than be
 
 ---
 
-## Sprint 3: Federation integrations (Oct 19 – Oct 30, 2026)
+## Sprint 3: Federation integrations (Oct 19 – Dec 13, 2026, extended from Oct 30)
 
 **Goal:**
 
@@ -225,7 +225,7 @@ A real workspace publishes contract-valid evidence from its own gate without han
 | 3.2 | Integrate one named portfolio/ALM system                                | 8   | Should   | api     | 2.1        | FR-1.2, FR-3.2 | External Epic/capability references reconcile without granting automated portfolio authority.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 3.3 | Measure fork and Dependabot tokens and register `ai-ready-nx-workspace` | 3   | Should   | auth+ci | 3.1        | NFR-2.1        | A fork pull request is shown unable to mint, Dependabot and human-on-Dependabot runs' `actor_id`, the cross-repository pin claims and `runner_environment` are recorded from real runs (pinning `runner_environment` decided), a gate that exits 1 is shown to still submit, `REFUSED_ACTOR_IDS` is set from the measured value, the workflow's actions move to checkout v7, setup-node v7 and download-artifact v8, and the workspace is registered with its fork-token precondition confirmed and its gate wired to the adapter. |
 
-**Sprint total: 16 SP** — Medium risk. 3.2 depends on an external integration owner who is not yet named, which is an availability risk rather than a technical one. 3.3 was split out of 3.1 at 3.1's Phase ① gate, 2026-11-14: its measurements are paced by GitHub (a second account to open a fork pull request, Dependabot on a registered repository), not by code, and a registered workspace publishes nothing until a deploy target is selected (`stack.md` › Deploy). The goal's _real_ workspace is therefore met by 3.3 plus a deployment, not by 3.1, whose Done-when is a fixture.
+**Sprint total: 16 SP** — Medium risk. 3.2's owner is the founder, for codeaiforge's demo Jira (Gate 3, 2026-11-15): it proves the reconciliation mechanism on demo data, not a customer's mapping. The sprint passed its Oct 30 end with 3.1 open and was extended to Dec 13, 2026 by the founder, 2026-11-15; the order is 2.3, 3.2, 3.3. 3.3 was split out of 3.1 at 3.1's Phase ① gate, 2026-11-14: its measurements are paced by GitHub (a second account to open a fork pull request, Dependabot on a registered repository), not by code, and a registered workspace publishes nothing until a deploy target is selected (`stack.md` › Deploy). The goal's _real_ workspace is therefore met by 3.3 plus a deployment, not by 3.1, whose Done-when is a fixture.
 
 **Execution waves:**
 
@@ -258,7 +258,7 @@ If the fork measurement shows a fork pull request can mint, 3.3 stops at that re
 | Evidence contract reopens once a real store is chosen                              | Medium     | High   | 1.2 produces the store ADR before 2.2 writes any persistence code; a contract change found there stops Sprint 2.                                                    | Sprint 1 risk checkpoint         |
 | Sprint 2 is planned over solo capacity (33 SP vs ~20)                              | High       | Medium | 2.3 is a Should and was deferred to Sprint 3 by the founder (2026-10-22) rather than being compressed, taking Sprint 2 to 28 SP.                                    | Sprint 2 mid-point (Oct 9, 2026) |
 | Single point of failure — one developer, no redundancy                             | Medium     | High   | Every gate and control is written down and executable, so the work is resumable by someone else; no task depends on undocumented context.                           | Every sprint start               |
-| No named integration owner for 3.2                                                 | Medium     | Medium | 3.2 drops if no owner is named at Sprint 3 start; it has no downstream dependency.                                                                                  | Sprint 3 start                   |
+| No named integration owner for 3.2                                                 | Medium     | Medium | Owner named 2026-11-15: the founder, for codeaiforge's demo Jira; 3.2 still drops if the mapping is not approved at its Phase ② gate.                               | Sprint 3 start                   |
 | The control plane is read as portfolio governance                                  | Medium     | High   | FR-3.2 is enforced by tests, and the indicator payload carries its own disclaimer field in every response.                                                          | Every decision gate              |
 | Roadmap and framework templates drift apart again                                  | Medium     | Medium | The roadmap carries all eight task columns and per-sprint waves that `run-task.prompt.md` reads; a missing column breaks the pipeline visibly rather than silently. | Every sprint start               |
 | A real workspace cannot publish before ADR-0003's measurements and a deploy target | High       | Medium | 3.1 proves the path end to end against a fixture; 3.3 measures and registers; the real publish waits on the deploy-target decision (`stack.md` › Deploy).           | Sprint 3 start                   |
@@ -295,6 +295,8 @@ If the fork measurement shows a fork pull request can mint, 3.3 stops at that re
 **No-go actions**: Sprint 2 does not start. This gate is explicitly human — no automated check substitutes for the approval, per NFR-6.1.
 
 ### Gate 3: External integration (Before Sprint 3)
+
+**Owner named**: dsofianos (founder), 2026-11-15, for codeaiforge's demo Jira. The mapping and data classification are reviewed at 3.2's Phase ① and ② gates, and the gate passes then. The demo proves the mechanism, not a customer's mapping, which needs its own owner and this gate again; the owner is also the approver (RR-1).
 
 **Question**: Has the integration owner approved the mapping, data classification and reconciliation behaviour?
 
