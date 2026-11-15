@@ -10,7 +10,8 @@ import { adminEnv, closeHarness, createTestDatabase, rolePassword } from './pg-h
 // but a superuser can set it, so aged rows are inserted by the superuser relative to the server's
 // own clock, as expire.integration.mjs does. Every state it must find is made for real: a run that
 // did not happen, a run that was refused, a row skipped under a held lock, and an owner disabling,
-// replacing or dropping the guard. Fails without a server; never skips.
+// replacing, dropping or bending the guard, or hiding rows from the check. Fails without a server;
+// never skips.
 
 after(() => closeHarness());
 
@@ -61,6 +62,7 @@ const insertHeld = async (db, suffix, offset) =>
   )[0].id;
 
 const CLEAN_TAIL = [
+  "retention-check: redactions stamped later than this run's clock: 0 found",
   'retention-check: cannot see deleted rows, redacted bytes still in dead tuples, WAL or backups, or any value the owner or a superuser rewrote, received_at included',
   'retention-check: no violation found',
 ];
@@ -104,7 +106,7 @@ test('a payload 47 hours past the window is held but not overdue; at 49 hours it
     'retention-check: payloads held past 2160 hours + 48 hours grace: 1 found',
   );
   assert.equal(line(missed, 2), 'retention-check: oldest payload still held: 2209 hours');
-  assert.equal(line(missed, 6), 'retention-check: violation found: overdue-payload');
+  assert.equal(line(missed, 7), 'retention-check: violation found: overdue-payload');
   // A run of expire clears it: both payloads are past the window.
   assert.deepEqual(await expire(db.connectAs('evidence_retention', { max: 1 })), {
     redacted: 2,
@@ -112,11 +114,12 @@ test('a payload 47 hours past the window is held but not overdue; at 49 hours it
   });
   const after = await check(db.env('evidence_audit'));
   assert.equal(after.code, 0);
-  assert.deepEqual(lines(after).slice(1, 5), [
+  assert.deepEqual(lines(after).slice(1, 6), [
     'retention-check: payloads held past 2160 hours + 48 hours grace: 0 found',
     'retention-check: oldest payload still held: none held',
     'retention-check: redacted envelopes with no audit row: 0 found',
     'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
+    "retention-check: redactions stamped later than this run's clock: 0 found",
   ]);
 });
 
@@ -127,7 +130,7 @@ test('a refused expire run leaves the payload overdue, and a good one clears it'
   assert.deepEqual(refused, { code: 1, stdout: '', stderr: 'expire refused: not-retention\n' });
   const overdue = await check(db.env('evidence_audit'));
   assert.equal(overdue.code, 1);
-  assert.equal(line(overdue, 6), 'retention-check: violation found: overdue-payload');
+  assert.equal(line(overdue, 7), 'retention-check: violation found: overdue-payload');
   assert.equal((await run(EXPIRE, db.env('evidence_retention'))).code, 0);
   assert.equal((await check(db.env('evidence_audit'))).code, 0);
 });
@@ -185,7 +188,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     line(disabled, 0),
     'retention-check: guard trigger evidence_envelope_guard: disabled',
   );
-  assert.equal(line(disabled, 6), 'retention-check: violation found: guard-disabled');
+  assert.equal(line(disabled, 7), 'retention-check: violation found: guard-disabled');
   assert.ok(!lines(disabled).includes('retention-check: no violation found'));
 
   await owner`
@@ -198,7 +201,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     'retention-check: redactions earlier than 2160 hours after receipt: 1 found',
   ]);
   assert.equal(
-    line(bypassed, 6),
+    line(bypassed, 7),
     'retention-check: violation found: guard-disabled, unaudited-redaction, early-redaction',
   );
 
@@ -210,7 +213,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     'retention-check: guard trigger evidence_envelope_guard: enabled',
   );
   assert.equal(
-    line(reenabled, 6),
+    line(reenabled, 7),
     'retention-check: violation found: unaudited-redaction, early-redaction',
   );
 });
@@ -220,7 +223,7 @@ test('a replica-only, replaced or dropped guard is reported, and never as no vio
   const owner = db.connectAs('evidence_owner', { max: 1 });
   const guardLine = async () => {
     const result = await check(db.env('evidence_audit'));
-    return [result.code, line(result, 0), line(result, 6)];
+    return [result.code, line(result, 0), line(result, 7)];
   };
   await owner`ALTER TABLE evidence.evidence_envelope ENABLE REPLICA TRIGGER evidence_envelope_guard`;
   assert.deepEqual(await guardLine(), [
@@ -262,7 +265,7 @@ test('a guard recreated so that it does not fire, or a body that only quotes the
   const owner = db.connectAs('evidence_owner', { max: 1 });
   const guardLine = async () => {
     const result = await check(db.env('evidence_audit'));
-    return [result.code, line(result, 0), line(result, 6)];
+    return [result.code, line(result, 0), line(result, 7)];
   };
   const REPLACED = [
     1,
@@ -311,6 +314,215 @@ test('a guard recreated so that it does not fire, or a body that only quotes the
   assert.deepEqual(await guardLine(), ENABLED);
 });
 
+// Review B2-2, the class of B-1: each attribute below is one the owner can change, and each bends
+// what the guard refuses while the trigger, its name, function, body and enabled state are all
+// still the bundled ones. Each reads replaced, exit 1, and is undone before the next, so no case
+// is read through another's; the exact bundled guard reads enabled at the end.
+const REPLACED = [
+  1,
+  'retention-check: guard trigger evidence_envelope_guard: replaced',
+  'retention-check: violation found: guard-replaced',
+];
+const ENABLED = [
+  0,
+  'retention-check: guard trigger evidence_envelope_guard: enabled',
+  'retention-check: no violation found',
+];
+const guardLineOf = (db) => async () => {
+  const result = await check(db.env('evidence_audit'));
+  return [result.code, line(result, 0), line(result, 7)];
+};
+
+test("a guard function under another search path, security, volatility or language is replaced, and the shadowed clock's redaction is found", async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  const guardLine = guardLineOf(db);
+  const FN = 'evidence.guard_envelope_update()';
+  // The reviewer's measurement: a clock 100 days fast, earlier in the function's search path.
+  await owner`
+    CREATE FUNCTION evidence.statement_timestamp() RETURNS timestamptz LANGUAGE sql
+      AS $$ SELECT pg_catalog.statement_timestamp() + interval '100 days' $$`;
+  await owner.unsafe(`ALTER FUNCTION ${FN} SET search_path = evidence, pg_catalog, pg_temp`);
+  const young = await insertHeld(db, 'shadowed-clock', '-2150 hours');
+  const retention = db.connectAs('evidence_retention', { max: 1 });
+  const redacted = await retention`
+    UPDATE evidence.evidence_envelope SET evidence = NULL WHERE id = ${young}`;
+  assert.equal(redacted.count, 1, 'a 10-hour-old payload was redacted under the shadowed clock');
+  const shadowed = await check(db.env('evidence_audit'));
+  assert.equal(shadowed.code, 1);
+  assert.equal(
+    line(shadowed, 0),
+    'retention-check: guard trigger evidence_envelope_guard: replaced',
+  );
+  // Stamped 100 days ahead, so it is not early; only the future stamp shows the redaction.
+  assert.deepEqual(lines(shadowed).slice(3, 6), [
+    'retention-check: redacted envelopes with no audit row: 0 found',
+    'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
+    "retention-check: redactions stamped later than this run's clock: 1 found",
+  ]);
+  assert.equal(
+    line(shadowed, 7),
+    'retention-check: violation found: guard-replaced, future-redaction',
+  );
+  // The redacted row stays found; everything below is read on the guard line alone.
+  await db.admin`DELETE FROM evidence.evidence_redaction WHERE envelope_id = ${young}`;
+  await db.admin.begin(async (tx) => {
+    await tx`SET LOCAL session_replication_role = replica`;
+    await tx`DELETE FROM evidence.evidence_envelope WHERE id = ${young}`;
+  });
+  const restore = `ALTER FUNCTION ${FN} SET search_path = pg_catalog, pg_temp`;
+  for (const alteration of [
+    `ALTER FUNCTION ${FN} RESET ALL`,
+    `ALTER FUNCTION ${FN} SET search_path = pg_catalog, evidence, pg_temp`,
+    `ALTER FUNCTION ${FN} SET TimeZone = 'UTC'`,
+  ]) {
+    await owner.unsafe(alteration);
+    assert.deepEqual(await guardLine(), REPLACED, alteration);
+    await owner.unsafe(`ALTER FUNCTION ${FN} RESET ALL`);
+    await owner.unsafe(restore);
+  }
+  for (const [alteration, undo] of [
+    ['SECURITY INVOKER', 'SECURITY DEFINER'],
+    ['STABLE', 'VOLATILE'],
+  ]) {
+    await owner.unsafe(`ALTER FUNCTION ${FN} ${alteration}`);
+    assert.deepEqual(await guardLine(), REPLACED, alteration);
+    await owner.unsafe(`ALTER FUNCTION ${FN} ${undo}`);
+  }
+  // No owner path to another language exists on this image (plperl and pltcl do not load, and a
+  // SQL function cannot return trigger), so the superuser writes the catalog.
+  const setLanguage = (name) => db.admin`
+    UPDATE pg_catalog.pg_proc
+       SET prolang = (SELECT oid FROM pg_catalog.pg_language WHERE lanname = ${name})
+     WHERE oid = ${FN}::pg_catalog.regprocedure`;
+  await setLanguage('sql');
+  assert.deepEqual(await guardLine(), REPLACED, 'LANGUAGE sql');
+  await setLanguage('plpgsql');
+  assert.deepEqual(await guardLine(), ENABLED);
+});
+
+test('another trigger or rule on either table, a table inheriting the log, or a column of another type is replaced', async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  const guardLine = guardLineOf(db);
+  await owner`
+    CREATE FUNCTION evidence.rewrite() RETURNS trigger LANGUAGE plpgsql
+      AS $$ BEGIN NEW.redacted_at := NEW.redacted_at + interval '3000 hours'; RETURN NEW; END $$`;
+  for (const [alteration, undo] of [
+    // Fires after the guard (by name) and rewrites the row the guard let through.
+    [
+      'CREATE TRIGGER zz_after_guard BEFORE UPDATE ON evidence.evidence_envelope ' +
+        'FOR EACH ROW EXECUTE FUNCTION evidence.rewrite()',
+      'DROP TRIGGER zz_after_guard ON evidence.evidence_envelope',
+    ],
+    // Rewrites the audit row the guard writes.
+    [
+      'CREATE TRIGGER forge BEFORE INSERT ON evidence.evidence_redaction ' +
+        'FOR EACH ROW EXECUTE FUNCTION evidence.rewrite()',
+      'DROP TRIGGER forge ON evidence.evidence_redaction',
+    ],
+    [
+      'CREATE RULE skip AS ON UPDATE TO evidence.evidence_envelope DO INSTEAD NOTHING',
+      'DROP RULE skip ON evidence.evidence_envelope',
+    ],
+    [
+      'CREATE RULE skip AS ON INSERT TO evidence.evidence_redaction DO INSTEAD NOTHING',
+      'DROP RULE skip ON evidence.evidence_redaction',
+    ],
+    // Its rows are read through the log, and the log's trigger never fires on them.
+    [
+      'CREATE TABLE evidence.child () INHERITS (evidence.evidence_envelope)',
+      'DROP TABLE evidence.child',
+    ],
+    // The window then reads in the caller's TimeZone.
+    [
+      'ALTER TABLE evidence.evidence_envelope ALTER COLUMN received_at TYPE timestamp',
+      'ALTER TABLE evidence.evidence_envelope ALTER COLUMN received_at TYPE timestamptz',
+    ],
+    [
+      'ALTER TABLE evidence.evidence_redaction ALTER COLUMN redacted_by TYPE varchar(63)',
+      'ALTER TABLE evidence.evidence_redaction ALTER COLUMN redacted_by TYPE text',
+    ],
+  ]) {
+    await owner.unsafe(alteration);
+    assert.deepEqual(await guardLine(), REPLACED, alteration);
+    await owner.unsafe(undo);
+  }
+  assert.deepEqual(await guardLine(), ENABLED);
+});
+
+// The check's own reads, not the guard: a row-level policy hides rows from evidence_audit, and the
+// database's default search path - the owner's to set - puts an owner's operator before
+// pg_catalog's. Measured before the fix: with either, an overdue payload read 0 and exit 0.
+test('rows hidden from the check refuse it, and an owner search path does not change what it counts', async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  await insertHeld(db, 'hidden', '72 hours');
+  await owner`ALTER TABLE evidence.evidence_envelope ENABLE ROW LEVEL SECURITY`;
+  await owner`CREATE POLICY everyone ON evidence.evidence_envelope USING (true) WITH CHECK (true)`;
+  await owner`
+    CREATE POLICY hide ON evidence.evidence_envelope AS RESTRICTIVE FOR SELECT TO evidence_audit
+      USING (false)`;
+  assert.deepEqual(await check(db.env('evidence_audit')), {
+    code: 3,
+    stdout: '',
+    stderr: 'retention-check refused: schema-mismatch\n',
+  });
+  await owner`ALTER TABLE evidence.evidence_envelope DISABLE ROW LEVEL SECURITY`;
+  await owner`ALTER TABLE evidence.evidence_redaction ENABLE ROW LEVEL SECURITY`;
+  assert.equal((await check(db.env('evidence_audit'))).code, 3, 'either table');
+  await owner`ALTER TABLE evidence.evidence_redaction DISABLE ROW LEVEL SECURITY`;
+
+  await owner`
+    CREATE FUNCTION evidence.never(timestamptz, timestamptz) RETURNS boolean LANGUAGE sql
+      IMMUTABLE AS 'SELECT false'`;
+  await owner`
+    CREATE OPERATOR evidence.< (LEFTARG = timestamptz, RIGHTARG = timestamptz,
+                                FUNCTION = evidence.never)`;
+  await owner`
+    CREATE FUNCTION evidence.never(name, name) RETURNS boolean LANGUAGE sql
+      IMMUTABLE AS 'SELECT false'`;
+  await owner`
+    CREATE OPERATOR evidence.= (LEFTARG = name, RIGHTARG = name, FUNCTION = evidence.never)`;
+  await owner.unsafe(`ALTER DATABASE ${db.name} SET search_path = evidence, pg_catalog`);
+  const shadowed = await check(db.env('evidence_audit'));
+  assert.equal(shadowed.code, 1, shadowed.stderr);
+  assert.equal(
+    line(shadowed, 0),
+    'retention-check: guard trigger evidence_envelope_guard: enabled',
+  );
+  assert.equal(
+    line(shadowed, 1),
+    'retention-check: payloads held past 2160 hours + 48 hours grace: 1 found',
+  );
+  assert.equal(line(shadowed, 7), 'retention-check: violation found: overdue-payload');
+});
+
+// A redaction stamp later than the clock is impossible under the bundled guard, which stamps its
+// statement's start; only a bypass or a bent guard writes one. Inserted by the superuser with its
+// audit row and past the window, so only the future count can move.
+test('a redaction stamped later than the check clock is a violation', async (t) => {
+  const db = await database(t);
+  const [{ id }] = await db.admin`
+    INSERT INTO evidence.evidence_envelope
+      (envelope_version, workspace_id, change_id, received_at, redacted_at, evidence)
+    VALUES ('evidence-envelope/0', ${WORKSPACE}, ${`${CHANGE}-future`},
+            statement_timestamp() - interval '3000 hours',
+            statement_timestamp() + interval '1 hour', NULL)
+    RETURNING id`;
+  await db.admin`
+    INSERT INTO evidence.evidence_redaction (envelope_id, redacted_at, redacted_by)
+    SELECT id, redacted_at, 'evidence_retention' FROM evidence.evidence_envelope WHERE id = ${id}`;
+  const result = await check(db.env('evidence_audit'));
+  assert.equal(result.code, 1);
+  assert.deepEqual(lines(result).slice(3, 6), [
+    'retention-check: redacted envelopes with no audit row: 0 found',
+    'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
+    "retention-check: redactions stamped later than this run's clock: 1 found",
+  ]);
+  assert.equal(line(result, 7), 'retention-check: violation found: future-redaction');
+});
+
 // The trigger refuses a redaction while received_at >= now - window, so a legal one is strictly
 // later than the window; exactly at it is early, a second past it is not. Rows inserted already
 // redacted by the superuser, each with its audit row, so only the early count can move.
@@ -336,7 +548,7 @@ test('a redaction exactly 2160 hours after receipt is early; one a second later 
     'retention-check: redacted envelopes with no audit row: 0 found',
     'retention-check: redactions earlier than 2160 hours after receipt: 1 found',
   ]);
-  assert.equal(line(result, 6), 'retention-check: violation found: early-redaction');
+  assert.equal(line(result, 7), 'retention-check: violation found: early-redaction');
 });
 
 // ---------------------------------------------------------------- AC-11: who reads
