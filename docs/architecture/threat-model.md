@@ -441,7 +441,9 @@ holds the `evidence_retention` credential can redact only payloads already past 
 the expiry job would redact on its next run. What remains is the trust root above:
 `evidence_owner` can replace or disable the trigger, and a cluster superuser can also bypass it
 for a session (`session_replication_role`); an update made either way writes no
-`evidence_redaction` row and keeps the four names unless it nulls them itself (measured). The same rule means no payload can be removed early,
+`evidence_redaction` row and keeps the four names unless it nulls them itself (measured). The
+owner can also rewrite `received_at` without firing the trigger (`ALTER COLUMN ... TYPE ...
+USING`), after which the trigger itself lets a younger payload go (measured). The same rule means no payload can be removed early,
 for an erasure or a takedown, without a reviewed migration.
 
 **ABU-13 — classified evidence at rest. Answered by task 2.2 for the roles it creates (MIT-16).**
@@ -484,8 +486,8 @@ once. The store gives up on an abandoned check at 5 seconds and asks the server 
 partition the cancel may not arrive, and the abandoned query keeps its connection until the socket
 dies. What it still gives every peer is one bit — whether the database
 answers the service — which before 2.3 only an authorized caller could infer, from a 503 on a store
-route, and, from how long the answer takes, whether a not-ready database hangs or refuses; RR-16
-records both. The body carries the status and nothing else; the reason is in the log.
+route. From how long the answer takes it also learns whether a not-ready database hangs or
+refuses; RR-16 records both. The body carries the status and nothing else; the reason is in the log.
 
 ## Mitigations
 
