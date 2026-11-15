@@ -14,8 +14,10 @@ import {
   USAGE,
   VIOLATIONS,
   assertAuditRole,
+  bundledGuardBody,
   formatReport,
   parseArgs,
+  refuseUnfinished,
   refusalCode,
   retentionCheck,
 } from './retention-check.mjs';
@@ -31,7 +33,7 @@ const CODE = SOURCE.split('\n')
   .join('\n');
 
 const AUDIT = { name: 'evidence_audit', session: 'evidence_audit' };
-const ENABLED = { enabled: 'O', bundled: true, holds_window: true };
+const ENABLED = { enabled: 'O', bundled: true, bundled_body: true };
 
 // A fake client in expire.test.mjs's style: a tagged-template function that records every
 // statement with its bound values and answers by what the statement reads. `begin(mode, fn)`
@@ -96,11 +98,23 @@ test('the check refuses a superuser, an elevated attribute, a member of any role
     assert.equal(calls.length, 1, 'only the role query ran');
   }
   assert.equal(AUDIT_ROLE, 'evidence_audit');
-  // A failure of the first statement is the connection's, whatever the driver said.
-  const { sql } = fakeClient({
-    fail: { pg_auth_members: Object.assign(new Error('CANARY'), { code: 'SELF_SIGNED_CERT' }) },
-  });
-  await assert.rejects(assertAuditRole(sql), refusedWith('database-unreachable'));
+  // A failure of the first statement is the connection's, whatever the driver said - unless the
+  // server answered it with a SQLSTATE, which maps as any other statement's does (review N-1).
+  for (const [code, refusal] of [
+    ['SELF_SIGNED_CERT', 'database-unreachable'],
+    ['ECONNREFUSED', 'database-unreachable'],
+    [undefined, 'database-unreachable'],
+    ['28P01', 'database-unreachable'],
+    ['08006', 'database-unreachable'],
+    ['57014', 'timed-out'],
+    ['53300', 'failed'],
+    ['XX000', 'failed'],
+  ]) {
+    const { sql } = fakeClient({
+      fail: { pg_auth_members: Object.assign(new Error('CANARY'), { code }) },
+    });
+    await assert.rejects(assertAuditRole(sql), refusedWith(refusal), String(code));
+  }
 });
 
 test('every count is read in one repeatable-read, read-only transaction under the statement timeout', async () => {
@@ -121,9 +135,90 @@ test('every count is read in one repeatable-read, read-only transaction under th
   const guard = calls.find(({ text }) => text.includes('pg_trigger'));
   assert.deepEqual(guard.values, [
     'evidence.guard_envelope_update()',
-    `interval '${RETENTION_WINDOW}'`,
+    bundledGuardBody(),
     'evidence_envelope_guard',
   ]);
+});
+
+// Review B-1 and S-6: a trigger recreated WHEN (false), UPDATE OF one column, with arguments or on
+// more events is not the bundled one, and the function's source is compared whole. What the
+// catalog then holds is the integration test's; this pins the predicates the query reads.
+test('the guard reads bundled only as 0001 creates it, and the function only as the bundled body', async () => {
+  const { sql, calls } = fakeClient();
+  await retentionCheck(sql);
+  const guard = calls.find(({ text }) => text.includes('pg_trigger')).text.replace(/\s+/g, ' ');
+  for (const predicate of [
+    't.tgfoid = pg_catalog.to_regprocedure(?)',
+    't.tgtype = 19',
+    't.tgqual IS NULL',
+    "t.tgattr = ''::pg_catalog.int2vector",
+    't.tgnargs = 0 AS bundled',
+    'p.prosrc = ? AS bundled_body',
+  ])
+    assert.ok(guard.includes(predicate), predicate);
+  assert.doesNotMatch(guard, /tgtype &|strpos/, 'no bitmask or substring test is left');
+  // The body is the last migration's text between its dollar quotes, as prosrc holds it.
+  const body = bundledGuardBody();
+  assert.match(body, /^\nDECLARE\n/);
+  assert.match(body, /\nEND\n$/);
+  assert.ok(body.includes(`interval '${RETENTION_WINDOW}'`));
+  const last = loadMigrations()
+    .filter(({ text }) => text.includes('FUNCTION evidence.guard_envelope_update()'))
+    .at(-1);
+  assert.ok(last.text.includes(`AS $guard$${body}$guard$;`));
+  assert.throws(() => bundledGuardBody([]), refusedWith('failed'));
+  assert.throws(
+    () => bundledGuardBody([{ text: 'CREATE FUNCTION evidence.guard_envelope_update() x' }]),
+    refusedWith('failed'),
+  );
+});
+
+// Review N-2: a payload committed between BEGIN's clock and the snapshot is younger than the
+// clock; its age must read 0 hours, never -1, which whole() would refuse as failed.
+test('the oldest held age is floored at zero in the query, so a fresh payload is never a failure', async () => {
+  const { sql, calls } = fakeClient();
+  await retentionCheck(sql);
+  const held = calls.find(({ text }) => text.includes('AS overdue')).text.replace(/\s+/g, ' ');
+  assert.match(
+    held,
+    /floor\(max\(greatest\(0, extract\(epoch FROM .* - received_at\)\)\) \/ 3600\)::integer AS oldest_hours/,
+  );
+});
+
+// Review S-2: an uncaught exception or unhandled rejection would exit 1 - "violation found" - and
+// a loop that drains with main() unsettled would exit 0. Both read 3 with the fixed line.
+test('a run that does not finish exits 3 refused, never 0 or 1', () => {
+  const handlers = {};
+  const written = [];
+  const exits = [];
+  const proc = {
+    exitCode: undefined,
+    stderr: { write: (text) => written.push(text) },
+    on: (event, handler) => {
+      handlers[event] = handler;
+    },
+    exit: (code) => exits.push(code),
+  };
+  refuseUnfinished(proc);
+  assert.equal(proc.exitCode, EXIT.refused, 'before main() starts');
+  assert.deepEqual(Object.keys(handlers).sort(), ['uncaughtException', 'unhandledRejection']);
+  handlers.uncaughtException(Object.assign(new Error('CANARY EPIPE'), { code: 'EPIPE' }));
+  handlers.unhandledRejection(new Error('CANARY late driver error'));
+  assert.deepEqual(written, Array(2).fill('retention-check refused: failed\n'));
+  assert.deepEqual(exits, [EXIT.refused, EXIT.refused]);
+  // A stderr that is gone too still exits 3.
+  const silent = {
+    ...proc,
+    stderr: {
+      write: () => {
+        throw new Error('EPIPE');
+      },
+    },
+  };
+  refuseUnfinished(silent);
+  assert.doesNotThrow(() => handlers.uncaughtException(new Error('x')));
+  assert.equal(exits.at(-1), EXIT.refused);
+  assert.match(SOURCE, /\n {2}refuseUnfinished\(\);\n {2}main\(process\.argv\.slice\(2\)\)/);
 });
 
 test('a missing schema is refused, before any count', async () => {
@@ -140,10 +235,10 @@ test('each guard state is reported, and every state but enabled is a violation',
     [{ ...ENABLED, enabled: 'R' }, 'disabled', 'guard-disabled'],
     [null, 'absent', 'guard-absent'],
     [{ ...ENABLED, bundled: false }, 'replaced', 'guard-replaced'],
-    [{ ...ENABLED, holds_window: false }, 'replaced', 'guard-replaced'],
-    [{ ...ENABLED, holds_window: null }, 'replaced', 'guard-replaced'],
+    [{ ...ENABLED, bundled_body: false }, 'replaced', 'guard-replaced'],
+    [{ ...ENABLED, bundled_body: null }, 'replaced', 'guard-replaced'],
     // Replaced outranks disabled: the function in force is not the bundled one at all.
-    [{ enabled: 'D', bundled: false, holds_window: true }, 'replaced', 'guard-replaced'],
+    [{ enabled: 'D', bundled: false, bundled_body: true }, 'replaced', 'guard-replaced'],
   ]) {
     const result = await retentionCheck(fakeClient({ trigger }).sql);
     assert.equal(result.guard, guard, JSON.stringify(trigger));

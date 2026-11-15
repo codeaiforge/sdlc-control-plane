@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import test, { after } from 'node:test';
 import { RETENTION_WINDOW, expire } from './expire.mjs';
+import { bundledGuardBody } from './retention-check.mjs';
 import { adminEnv, closeHarness, createTestDatabase, rolePassword } from './pg-harness.mjs';
 
 // The retention check on a real PostgreSQL 16 server, as a real child process logged in as
@@ -250,6 +251,64 @@ test('a replica-only, replaced or dropped guard is reported, and never as no vio
     'retention-check: guard trigger evidence_envelope_guard: absent',
     'retention-check: violation found: guard-absent',
   ]);
+});
+
+// Review B-1 and S-6. Each guard below has the bundled name, function and enabled state, but never
+// fires on the update it exists to refuse, or runs a body that is not the bundled one while it
+// still holds the window's literal. The owner can make every one; each reads replaced. Recreating
+// the bundled trigger and function exactly reads enabled again, so exactness costs no false alarm.
+test('a guard recreated so that it does not fire, or a body that only quotes the window, is replaced', async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  const guardLine = async () => {
+    const result = await check(db.env('evidence_audit'));
+    return [result.code, line(result, 0), line(result, 6)];
+  };
+  const REPLACED = [
+    1,
+    'retention-check: guard trigger evidence_envelope_guard: replaced',
+    'retention-check: violation found: guard-replaced',
+  ];
+  const ENABLED = [
+    0,
+    'retention-check: guard trigger evidence_envelope_guard: enabled',
+    'retention-check: no violation found',
+  ];
+  const id = await insertHeld(db, 'disarmed', '-1000 hours');
+  // The owner's DDL is test code, so it may be raw text; the check's is never.
+  const recreate = async (timing, { when = '', args = '' } = {}) => {
+    await owner`DROP TRIGGER evidence_envelope_guard ON evidence.evidence_envelope`;
+    await owner.unsafe(
+      `CREATE TRIGGER evidence_envelope_guard ${timing} ON evidence.evidence_envelope ` +
+        `FOR EACH ROW ${when} EXECUTE FUNCTION evidence.guard_envelope_update(${args})`,
+    );
+  };
+  await recreate('BEFORE UPDATE', { when: 'WHEN (false)' });
+  assert.deepEqual(await guardLine(), REPLACED);
+  // Disarmed, the guard lets the owner rewrite the retention clock, which no count here sees.
+  await owner`
+    UPDATE evidence.evidence_envelope SET received_at = received_at - interval '1 hour'
+     WHERE id = ${id}`;
+  await recreate('BEFORE UPDATE OF policy_id');
+  assert.deepEqual(await guardLine(), REPLACED);
+  await recreate('BEFORE UPDATE OR DELETE');
+  assert.deepEqual(await guardLine(), REPLACED);
+  await recreate('BEFORE UPDATE', { args: "'x'" });
+  assert.deepEqual(await guardLine(), REPLACED);
+  await recreate('BEFORE UPDATE');
+  assert.deepEqual(await guardLine(), ENABLED);
+
+  // A body that keeps the window only in a comment, under the same name and oid.
+  const define = (body) =>
+    owner.unsafe(
+      'CREATE OR REPLACE FUNCTION evidence.guard_envelope_update() RETURNS trigger ' +
+        'LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp ' +
+        `AS $guard$${body}$guard$`,
+    );
+  await define(`\nBEGIN\n  -- interval '${RETENTION_WINDOW}'\n  RETURN NEW;\nEND\n`);
+  assert.deepEqual(await guardLine(), REPLACED);
+  await define(bundledGuardBody());
+  assert.deepEqual(await guardLine(), ENABLED);
 });
 
 // The trigger refuses a redaction while received_at >= now - window, so a legal one is strictly
