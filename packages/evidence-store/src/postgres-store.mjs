@@ -262,10 +262,11 @@ export async function assertSchemaCurrent(sql, { migrations = loadMigrations() }
 
 // Task 2.3, the check behind GET /ready. It is beside the store, never on it: the port stays
 // append, list and listRecords (MIT-14, store-conformance.mjs). One query on the service's own
-// pool, as the service's own role, through run(), so a server that does not answer is cancelled
-// at STORE_QUERY_TIMEOUT_MS like any other statement. The answer is { ready, reason } with a
-// reason from a closed list, decided by error class and SQLSTATE, never by message, and the
-// returned function never rejects: the driver error is dropped here, as everywhere else.
+// pool, as the service's own role, through run(), so a server that does not answer is given up on
+// at STORE_QUERY_TIMEOUT_MS, and asked to cancel the query, like any other statement. The answer
+// is { ready, reason } with a reason from a closed list, decided by error class and SQLSTATE,
+// never by message, and the returned function never rejects: the driver error is dropped here,
+// as everywhere else.
 //
 // What it does not check, by design: the role's grants (assertServiceRole is a startup check,
 // D-16), and anything outside the database.
