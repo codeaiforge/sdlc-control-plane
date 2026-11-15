@@ -9,8 +9,10 @@
 // - READINESS_CACHE_MS: a settled result is reused for 2 s, measured from when it settled, so at
 //   most one check starts per 2 s however many peers probe;
 // - READINESS_TIMEOUT_MS: no probe waits longer than 2 s. A check still running then is answered
-//   check-timeout and left to the store, whose run() cancels it at STORE_QUERY_TIMEOUT_MS, so at
-//   most two readiness queries are ever on the pool at once (one abandoned, one current).
+//   check-timeout and left to the store, whose run() gives up on it at STORE_QUERY_TIMEOUT_MS and
+//   asks the server to cancel it, so at most two readiness checks are ever pending here at once
+//   (one abandoned, one current). In a partition the cancel may not arrive, and an abandoned
+//   query keeps its connection until the socket dies.
 //
 // An answer is therefore at most 2 s old, and a database lost now reads not-ready to a probe
 // arriving at most 4 s later; recovery reads the same way, with no restart. The reason is for the
