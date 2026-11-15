@@ -1,8 +1,8 @@
 # Sprint 3 Progress
 
 **Sprint**: 3 — Federation integrations
-**Dates**: Oct 19 – Oct 30, 2026
-**Last updated**: 2026-11-14 (task 3.1 — Done)
+**Dates**: Oct 19 – Dec 13, 2026 (extended from Oct 30 by the founder, 2026-11-15)
+**Last updated**: 2026-11-15 (Gate 3 owner named; sprint extended)
 
 ---
 
@@ -11,7 +11,7 @@
 | #   | Task                                                                    | Status      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | --- | ----------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 3.1 | Build the `ai-ready-nx-workspace` evidence adapter                      | Done        | `feat/3.1-nx-workspace-evidence-adapter`, fast-forwarded to `main` without a PR — new leaf `packages/evidence-adapter` (mints per attempt for the fixed audience, sends the gate's bytes unchanged, bounded retries, token never printed, endpoint a reviewed constant, `null` until a deployment) and reusable workflow `submit-evidence.yml` (one `id-token` job, own source at `job.workflow_sha`, SHA-pinned actions, shape held exactly by a conformance test); E2E with the real `sdlc-controls` v0.2.0 over a fixture on PostgreSQL 16. 2 review cycles + a Nit round; Phase ⑥ Pass. Local tier gate: T3. Record: `.ai/sprints/sprint-3/tasks/3.1.md` |
-| 3.2 | Integrate one named portfolio/ALM system                                | Not started | Gate 3: no integration owner named; drops if none is named (risk checkpoint).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 3.2 | Integrate one named portfolio/ALM system                                | Not started | Gate 3: owner named 2026-11-15, the founder, for codeaiforge's demo Jira; the mapping and data classification are approved at its Phase ① and ② gates, or it drops. Needs a read-only Jira API token and the site URL.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 3.3 | Measure fork and Dependabot tokens and register `ai-ready-nx-workspace` | Not started | Split out of 3.1 at its Phase ① gate, 2026-11-14. Needs `evidence-adapter/v0.1.0` tagged on the GitHub mirror, a second GitHub account and Dependabot on the repository.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 2.3 | Add telemetry, health, and retention verification                       | Not started | Deferred from Sprint 2 by the founder, 2026-10-22; unblocked (2.5 done). Owns missed-run detection (2.5) and escaping `ai_tool` on any operator screen (2.4's I-4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
@@ -30,7 +30,7 @@
 
 ## Current Wave
 
-**Wave 2** — 3.3 is unblocked by 3.1 once the founder cuts `evidence-adapter/v0.1.0` on the GitHub mirror. Wave 1's 3.2 waits on Gate 3 (a named integration owner); 2.3, absorbed from Sprint 2, can run now.
+**Wave 2** — `evidence-adapter/v0.1.0` is cut (pre-release, 2026-11-15). Order: 2.3 now, then 3.2, then 3.3, which also waits on a second GitHub account and Dependabot.
 
 ## Sprint 3 Definition of Done
 
@@ -41,9 +41,9 @@
 
 ## Blockers / Decisions Needed
 
-- **Sprint window**: the planned end, Oct 30, 2026 — also the MVP target — passed with 3.1 still open; it was done on 2026-11-14 (3.1's Q-9 A). No replan yet: the founder's call.
-- **Task 3.2**: Gate 3 needs a named, accountable owner for the target system who approves the mapping and data classification; without one, 3.2 drops.
-- **Task 3.3**: the first tag, `evidence-adapter/v0.1.0`, is the founder's to cut; the fork and Dependabot measurements need a second GitHub account and Dependabot enabled.
+- **Sprint window**: the planned end, Oct 30, 2026 — also the MVP target — passed with 3.1 still open. The founder accepted the slip and moved both to Dec 13, 2026 (2026-11-15): 16 SP left in four weeks.
+- **Task 3.2**: the owner is the founder, for a demo system: it proves the mechanism, not a customer's mapping, and the owner is also the approver (RR-1). A read-only Jira API token and the site URL are needed at its start.
+- **Task 3.3**: the fork and Dependabot measurements need a second GitHub account and Dependabot enabled.
 - **Deploy target** (`stack.md` › Deploy, Not selected): until one is chosen, `CONTROL_PLANE_ENDPOINT` stays `null` and every wired workspace's submit job exits 2.
 - **ADR review before a real registration**: per-run change ids make indicators count gate runs, not changes (3.1's Q-4 B, RR-15).
 - **Task 3.1 — open by decision**: N-1, N-2 (review); N-4 (commit `7d3ace3`'s bullet overclaims retries of 500); O-1, O-2, O-4 (test); L-2's untested fail-closed checkout; I-1 → 3.3, I-2, I-3 (security). Listed in `.ai/sprints/sprint-3/tasks/3.1.md`.
