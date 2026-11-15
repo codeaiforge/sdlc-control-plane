@@ -17,6 +17,7 @@
     },
     "migrate": { "command": "node packages/evidence-store/src/migrate.mjs migrate" },
     "bootstrap": { "command": "node packages/evidence-store/src/migrate.mjs bootstrap" },
-    "expire": { "command": "node packages/evidence-store/src/expire.mjs" }
+    "expire": { "command": "node packages/evidence-store/src/expire.mjs" },
+    "retention-check": { "command": "node packages/evidence-store/src/retention-check.mjs" }
   }
 }
