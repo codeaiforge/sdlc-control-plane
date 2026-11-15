@@ -809,7 +809,9 @@ test('100 concurrent GET /ready over the seam run one check', async () => {
   assert.ok(settled.every(({ status }) => status === 200));
 });
 
-test('a probe that rejects is answered 503 handler-fault, and the handler resolves', async () => {
+// Review S-3: the contract's 503 on GET /ready is the closed not-ready body, so a fault there is
+// answered with it, never with the error envelope NotReadyResponse refuses.
+test('a probe that rejects is answered 503 not-ready as handler-fault, and the handler resolves', async () => {
   const lines = [];
   const handler = seam(undefined, {
     readiness: {
@@ -820,7 +822,7 @@ test('a probe that rejects is answered 503 handler-fault, and the handler resolv
     log: (event) => lines.push(event),
   });
   const answer = await wire(handler, anon('/ready'));
-  assert.deepEqual([answer.status, answer.body], [503, { error: 'service unavailable' }]);
+  assert.deepEqual([answer.status, answer.body], [503, { status: 'not-ready' }]);
   assert.deepEqual(
     lines.map(({ event, route, reason }) => [event, route, reason]),
     [['refusal', 'GET /ready', 'handler-fault']],

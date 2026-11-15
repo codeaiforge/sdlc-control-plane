@@ -272,7 +272,7 @@ test('a route with no auth field fails closed', async () => {
   // Since task 2.3 the probe dispatch sits inside the catch-all, awaited, so a probe that rejects
   // is answered 503 rather than left to reject.
   const source = readFileSync(new URL('./main.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(route\.auth === 'none'\) return await route\.handle/);
+  assert.match(source, /if \(route\.auth === 'none'\) await route\.handle/);
   assert.doesNotMatch(source, /route\.auth === 'workload'/);
 });
 
@@ -925,7 +925,7 @@ async function answeredBy(server, bytes) {
 
 const withoutRequest = (telemetry) => telemetry.snapshot().connections_without_request;
 
-test("a connection Node answers itself is counted once, and Node's own response is unchanged", async () => {
+test("a connection Node answers before it produces any request is counted once, and Node's own response is unchanged", async () => {
   const plain = createServer(() => assert.fail('no request reaches a handler'));
   plain.listen(0, '127.0.0.1');
   await once(plain, 'listening');

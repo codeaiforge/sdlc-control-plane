@@ -865,6 +865,27 @@ test('a store fault is a 503 the document declares, on both routes that reach th
   assert.doesNotMatch(document.paths['/v1/evidence'].post.description, /first five statuses/);
 });
 
+// Review S-3: a fault on the readiness route - here a probe that throws - is answered with the
+// closed NotReadyResponse the document declares for its 503, never with the error envelope it
+// refuses.
+test('a fault on GET /ready is a 503 the document declares, with the not-ready body', async () => {
+  const handler = seam(undefined, {
+    readiness: {
+      probe: async () => {
+        throw new Error('probe fault');
+      },
+    },
+  });
+  const { status, body, headers } = await call(handler, anonymous('/ready'));
+  assert.equal(status, 503);
+  assert.deepEqual(body, { status: 'not-ready' });
+  assert.deepEqual(conforms(body, responseSchema('/ready', 'get', 503)).errors, []);
+  assert.equal(headers.connection, 'close');
+  const { description } = document.paths['/ready'].get.responses['503'];
+  for (const cause of [/could not be reached/, /the check itself faulted/, /the route faulted/])
+    assert.match(description, cause);
+});
+
 test('a fault anywhere in an authenticated route is a 503 the document declares', async () => {
   const handler = seam(undefined, {
     registry: {

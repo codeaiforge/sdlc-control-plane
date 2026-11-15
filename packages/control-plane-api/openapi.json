@@ -63,7 +63,7 @@
             }
           },
           "503": {
-            "description": "The check did not find the database ready: it did not answer within 2 seconds, refused the service's role, or holds a schema this build does not bundle. Which one is logged, never answered. The connection is closed after the response.",
+            "description": "The check did not find the database ready, or failed: the database could not be reached or did not answer within 2 seconds, refused the service's role, or holds a schema this build does not bundle; the check itself faulted, or the service was built without one; or the route faulted while answering. Which one is logged, never answered, and the body is the same not-ready status for every one. The connection is closed after the response.",
             "content": {
               "application/json": {
                 "schema": {

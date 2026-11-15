@@ -18,7 +18,7 @@
 //   readiness { event, at, ready, reason }                                         first answer, each change
 //   startup   { event, at, policy_id, decision_id, schema_version, workspaces }    once, before listening
 //   telemetry { event, at, kind, started_at, uptime_s, counts, slow_threshold_ms, slow,
-//               late_faults, connections_without_request, ready }
+//               late_faults, telemetry_faults, connections_without_request, ready }
 //
 // The counts are this process's since it started: a restart resets them, two processes do not add
 // up, and a SIGKILL or an out-of-memory kill loses up to TELEMETRY_INTERVAL_MS of them - the
@@ -113,6 +113,7 @@ export function snapshotEvent({
   counts,
   slow,
   lateFaults,
+  telemetryFaults,
   connectionsWithoutRequest,
   ready,
 }) {
@@ -127,6 +128,7 @@ export function snapshotEvent({
     slow_threshold_ms: SLOW_RESPONSE_MS,
     slow,
     late_faults: lateFaults,
+    telemetry_faults: telemetryFaults,
     connections_without_request: connectionsWithoutRequest,
     ready,
   };
@@ -142,6 +144,7 @@ export function createTelemetry({ log, now = Date.now, monotonic = () => perform
   const counts = new Map();
   const slow = new Map();
   let lateFaults = 0;
+  let telemetryFaults = 0;
   let connectionsWithoutRequest = 0;
   let ready = null;
   let timer = null;
@@ -173,6 +176,7 @@ export function createTelemetry({ log, now = Date.now, monotonic = () => perform
       counts: entries,
       slow: [...slow].map(([route, n]) => ({ route, n })).sort((a, b) => compare(a.route, b.route)),
       lateFaults,
+      telemetryFaults,
       connectionsWithoutRequest,
       ready,
     });
@@ -209,6 +213,11 @@ export function createTelemetry({ log, now = Date.now, monotonic = () => perform
     // A second write attempt for a response that already has its event: counted, never lined.
     recordLateFault() {
       lateFaults += 1;
+    },
+    // A response whose record() threw - a seam defect, such as an outcome outside OUTCOMES. The
+    // response went out without its count or line; this makes that a number, never silence.
+    recordTelemetryFault() {
+      telemetryFaults += 1;
     },
     // A connection that closed without producing a request Node handed to the seam (gate decision
     // Q-13 on task 2.3): Node's own 400, 408 and 431, a port scan, a TCP health check. No reason.

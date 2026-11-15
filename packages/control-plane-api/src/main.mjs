@@ -159,7 +159,13 @@ function send(response, status, body, request, { headers = {}, outcome, caller }
       });
     }
   } catch {
-    // Telemetry is best-effort; the response goes out regardless.
+    // Telemetry is best-effort; the response goes out regardless, and the fault is a number in
+    // the snapshot (telemetry_faults), never silence.
+    try {
+      exchanges.get(request)?.telemetry.recordTelemetryFault();
+    } catch {
+      // Nothing left to count it with.
+    }
   }
   const payload = JSON.stringify(body);
   const close = REFUSED_UNREAD.has(status) || bodyUnread(request);
@@ -189,9 +195,9 @@ const READY = { status: 'ready' };
 const NOT_READY = { status: 'not-ready' };
 
 // Step 6, the one "authorized for W" predicate every route but the two probes applies (ADR-0003 ›
-// Route authorization; ADR-0005 for the probe routes): the verified triple binds to W, read back through registry.get; W is
-// active, admits the token's event and its pins match; and the actor is not refused. Every
-// failure is the same 403 on the wire; only the log tells them apart.
+// Route authorization; ADR-0005 for the probe routes): the verified triple binds to W, read back
+// through registry.get; W is active, admits the token's event and its pins match; and the actor is
+// not refused. Every failure is the same 403 on the wire; only the log tells them apart.
 function authorizeFor({ registry }, principal) {
   const workspaceId = registry.bindingFor(principal);
   if (workspaceId === undefined) return { ok: false, reason: 'no-binding' };
@@ -257,7 +263,10 @@ export const routes = [
     auth: 'none',
     probe: true,
     // Readiness: one bounded, single-flight, cached database check (readiness.mjs, MIT-22). The
-    // 503 closes the connection, as every 503 does.
+    // 503 closes the connection, as every 503 does. `fault` is the body the catch-all answers a
+    // fault on this route with: the contract's 503 here is the closed not-ready body, so a fault
+    // is answered with it too (outcome handler-fault, lined), never with an error envelope.
+    fault: NOT_READY,
     handle: async ({ readiness }, request, response) => {
       const answer = await readiness.probe();
       if (answer.ready) return send(response, 200, READY, request, { outcome: 'ready' });
@@ -470,20 +479,31 @@ export function createRequestHandler({
     // rejects: an unhandled rejection terminates the process under Node's default, which `nx serve`
     // runs with. If a response is already on the wire, all that is left to do is close it; that
     // response has its event already, so the fault is counted as late, not as a second response.
+    //
+    // The backstop: a path that returns without answering - an early `return;` a handler gains
+    // later - would otherwise hold the request to requestTimeout and leave no count and no line.
+    // It is answered 503 handler-fault here instead, so every exchange ends in a send().
     let caller = null;
     try {
       // The probes read no credential, even when one is sent. GET /health does no I/O.
-      if (route.auth === 'none') return await route.handle(context, request, response);
-      caller = await authorizeRequest(context, route, request, response);
-      if (caller === null) return;
-      return await route.handle(context, request, response, { ...caller, awaitsContinue });
+      if (route.auth === 'none') await route.handle(context, request, response);
+      else {
+        caller = await authorizeRequest(context, route, request, response);
+        if (caller !== null)
+          await route.handle(context, request, response, { ...caller, awaitsContinue });
+      }
+      if (!exchange.recorded && !response.headersSent)
+        send(response, 503, route.fault ?? SERVICE_UNAVAILABLE, request, {
+          outcome: 'handler-fault',
+          caller: caller ?? undefined,
+        });
     } catch {
       try {
         if (response.headersSent) {
           recorder.recordLateFault();
           request.destroy?.();
         } else
-          send(response, 503, SERVICE_UNAVAILABLE, request, {
+          send(response, 503, route.fault ?? SERVICE_UNAVAILABLE, request, {
             outcome: 'handler-fault',
             caller: caller ?? undefined,
           });

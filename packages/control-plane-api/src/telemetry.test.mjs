@@ -8,7 +8,7 @@ import { createKeySet } from '../../workload-identity/src/key-set.mjs';
 import { createRegistry } from '../../workspace-registry/src/registry.mjs';
 import { createInMemoryEvidenceStore } from '../../evidence-store/src/evidence-store.mjs';
 import { createSubmissionQuota } from './admission.mjs';
-import { announceStartup, createRequestHandler } from './main.mjs';
+import { announceStartup, createRequestHandler, routes } from './main.mjs';
 import { createReadiness } from './readiness.mjs';
 import { REFUSAL_REASONS } from './refusal-log.mjs';
 import {
@@ -38,6 +38,13 @@ const AUTHENTICATE = readFileSync(
 const REGISTRY_SOURCE = readFileSync(
   new URL('../../workspace-registry/src/registry.mjs', import.meta.url),
   'utf8',
+);
+const EVALUATE = readFileSync(
+  new URL('../../guardrail-policy/src/evaluate.mjs', import.meta.url),
+  'utf8',
+);
+const STORES = ['evidence-store.mjs', 'postgres-store.mjs'].map((file) =>
+  readFileSync(new URL(`../../evidence-store/src/${file}`, import.meta.url), 'utf8'),
 );
 
 const NOW_MS = Date.UTC(2026, 10, 15, 12, 0, 0);
@@ -245,9 +252,25 @@ const verifierReasons = (status) => [
   ),
 ];
 
+// Every string literal a `<key>: <expression>` property can take in a source, read whole: a plain
+// literal, or each branch of a conditional. A property whose value names no literal at all - a
+// variable - is returned as null, so the domain cannot silently shrink (review S-1 a).
+function literalValues(sources, key) {
+  const values = new Set();
+  for (const source of sources)
+    for (const match of source.matchAll(new RegExp(`\\b${key}:\\s*([^,}\\n]+)`, 'g'))) {
+      const literals = [...match[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1]);
+      if (literals.length === 0) return null;
+      for (const literal of literals) values.add(literal);
+    }
+  return [...values];
+}
+const without = (values, excluded) => values?.filter((value) => value !== excluded) ?? [];
+
 // The domain of each named expression a call site may pass as its outcome. 401/503 come from the
 // verifier's source; 403 from the predicate's own literals in main.mjs and admits() in the
-// registry; 422 and 202 are the two non-accepted dispositions and the two non-conflict outcomes.
+// registry; 422 from the evaluator's dispositions but 'accepted', and 202 from the two stores'
+// outcomes but 'conflict', which has its own call site.
 const EXPRESSIONS = {
   'result.reason': (status) => verifierReasons(status),
   'decision.reason': () => [
@@ -258,8 +281,8 @@ const EXPRESSIONS = {
       ),
     ].map((m) => m[1]),
   ],
-  'decision.disposition': () => ['rejected', 'needs-remediation'],
-  'appended.outcome': () => ['appended', 'duplicate'],
+  'decision.disposition': () => without(literalValues([EVALUATE], 'disposition'), 'accepted'),
+  'appended.outcome': () => without(literalValues(STORES, 'outcome'), 'conflict'),
 };
 
 function derivedPairs() {
@@ -285,13 +308,24 @@ function derivedPairs() {
 
 test('AC-1 from source: every send() call site names exactly one outcome, from a literal or a pinned expression', () => {
   const sites = sendCallSites(MAIN);
-  // The parser read every call site the plain sweep sees (openapi.contract.test.mjs's regex).
+  // The parser read every call site the plain sweep sees (openapi.contract.test.mjs's regex), and
+  // every call of send() at all, whatever its first argument is named, but its definition
+  // (review N-4): a call written send(res, ...) would escape both regexes and this count.
   assert.equal(sites.length, [...MAIN.matchAll(/(?<!function )send\(\s*response,/g)].length);
+  const code = MAIN.split('\n')
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, '$1'))
+    .join('\n');
+  assert.equal([...code.matchAll(/\bfunction send\(/g)].length, 1);
+  assert.equal(sites.length, [...code.matchAll(/\bsend\(/g)].length - 1);
   assert.ok(sites.length >= 19, `only ${sites.length} send() call sites were read`);
   const { pairs, problems } = derivedPairs();
   assert.deepEqual(problems, []);
   // The verifier's reasons as read from its source are exactly the 401 and 503 vocabulary.
   assert.equal(verifierReasons(401).length, 15);
+  // The 422 and 202 domains, as read from the evaluator's and the stores' own source.
+  assert.deepEqual(EXPRESSIONS['decision.disposition']().sort(), ['needs-remediation', 'rejected']);
+  assert.deepEqual(EXPRESSIONS['appended.outcome']().sort(), ['appended', 'duplicate']);
+  assert.equal(literalValues(['disposition: next,'], 'disposition'), null);
   assert.deepEqual(
     new Set(verifierReasons(503)),
     new Set(['key-set-unavailable', 'verifier-fault']),
@@ -539,6 +573,61 @@ test('AC-1 driven: a sink that throws, or a record that throws, changes no respo
   }
 });
 
+// Review S-1 b: a path that returns without a send() - an early `return;` a handler gains later -
+// is invisible to the source scan and to the drivers. The backstop answers it 503 handler-fault,
+// counted once and lined once; on GET /ready with the not-ready body the contract declares.
+test('a route that returns without answering is answered 503 handler-fault, counted and lined', async (t) => {
+  for (const [path, req, body] of [
+    ['/ready', () => request({ url: '/ready' }), { status: 'not-ready' }],
+    ['/v1/workspaces', () => request({ url: '/v1/workspaces' }), { error: 'service unavailable' }],
+    ['/v1/evidence', () => post(validEvidence), { error: 'service unavailable' }],
+  ]) {
+    const route = routes.find((candidate) => candidate.path === path);
+    const handle = route.handle;
+    route.handle = async () => {};
+    t.after(() => {
+      route.handle = handle;
+    });
+    const { handler, lines, telemetry } = seamWith({
+      readiness: readinessOf({ ready: true, reason: 'ready' }),
+    });
+    const answered = await call(handler, req());
+    route.handle = handle;
+    assert.deepEqual([answered.status, JSON.parse(answered.body)], [503, body], path);
+    const name = `${route.method} ${path}`;
+    assert.deepEqual(telemetry.snapshot().counts, [
+      { route: name, status: 503, outcome: 'handler-fault', n: 1 },
+    ]);
+    const events = lines.map((line) => JSON.parse(line)).filter((e) => e.event === 'refusal');
+    assert.deepEqual(
+      events.map(({ route: lined, reason }) => [lined, reason]),
+      [[name, 'handler-fault']],
+    );
+    if (path !== '/ready') assert.equal(events[0].principal.workspace_id, 'payments-art', path);
+  }
+});
+
+// Review S-1 b: a record() that throws - an outcome outside OUTCOMES - leaves the response without
+// its count or line, so the snapshot counts it, and it is never silence.
+test('a record that throws is a telemetry fault in the snapshot, and the response still goes out', async () => {
+  const base = createTelemetry({ log: () => {}, now: () => NOW_MS });
+  const telemetry = {
+    ...base,
+    record: () => {
+      throw new TypeError('outcome is not in the list');
+    },
+  };
+  const { handler } = seamWith({ telemetry });
+  assert.equal(base.snapshot().telemetry_faults, 0);
+  const answered = await call(handler, request({ url: '/health' }));
+  assert.equal(answered.status, 200);
+  await call(handler, request({ url: '/v1/nope' }));
+  const snapshot = base.snapshot();
+  assert.equal(snapshot.telemetry_faults, 2);
+  assert.deepEqual(snapshot.counts, []);
+  assert.equal(snapshot.late_faults, 0);
+});
+
 // The interval timer and the signal handler call snapshot() with nobody to catch a throw: a sink
 // that throws there would end the process. Every entry point swallows it.
 test('a sink that throws never escapes any entry point: record, snapshot, readiness, startup', () => {
@@ -643,6 +732,7 @@ test('every event has exactly its closed key set', () => {
     'slow_threshold_ms',
     'slow',
     'late_faults',
+    'telemetry_faults',
     'connections_without_request',
     'ready',
   ]);
