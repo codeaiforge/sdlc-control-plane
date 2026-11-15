@@ -18,11 +18,11 @@ import {
 const evidence = {
   schema_version: 'evidence/0',
   change_id: 'PR-42',
-  binding_used: 'git-native-baseline@1',
+  binding_used: 'git-native-baseline@2',
   computed_at: '2026-09-18T00:00:00Z',
   tier: 'T1',
   affected_set: ['orders'],
-  tool: { name: 'sdlc-controls', version: '0.2.0' },
+  tool: { name: 'sdlc-controls', version: '0.3.0' },
   verification: { verified: ['CAF-SDLC-002:tier'] },
   result: { pass: true },
   ai_assisted: false,

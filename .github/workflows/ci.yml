@@ -33,7 +33,7 @@ jobs:
       PGDATABASE: postgres
       # The gate's pin (sdlc-controls.yml). evidence-adapter.integration.mjs runs this binary over
       # a fixture workspace and refuses a record from any other version.
-      SDLC_CONTROLS_VERSION: v0.2.0
+      SDLC_CONTROLS_VERSION: v0.3.0
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

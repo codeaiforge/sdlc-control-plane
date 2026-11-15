@@ -818,7 +818,7 @@ Each of these is outside this task's scope to fix and inside Gate 2's to decide.
    attacker-supplied. Task 3.1's adapter does not dereference `evidence_endpoint`: its endpoint is
    a constant of the adapter, not read from a registration.
 8. **The PR gate TB-6 relies on runs mutable references.** `.github/workflows/sdlc-controls.yml`
-   installs `sdlc-controls@v0.2.0` by tag and pins its actions by tag, not by commit, so what
+   installs `sdlc-controls@v0.3.0` by tag and pins its actions by tag, not by commit, so what
    computes the tier can change without a change to this repository. Task 3.1's submit workflow
    pins its actions by SHA; the gate's tag pins are unchanged.
 9. **Gate 2 outcome (founder, 2026-10-01).** Every residual risk then reading `pending Gate 2`

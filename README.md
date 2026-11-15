@@ -149,12 +149,12 @@ docker stop evidence-pg
 `pnpm test:integration` also needs the gate binary at exactly the version the gate pins, and its schema. Install it inside `.git/`, where nothing tracks it, and name both:
 
 ```sh
-GOBIN=$PWD/.git/sdlc-controls go install github.com/codeaiforge/git-native-sdlc-controls/cmd/sdlc-controls@v0.2.0
+GOBIN=$PWD/.git/sdlc-controls go install github.com/codeaiforge/git-native-sdlc-controls/cmd/sdlc-controls@v0.3.0
 export SDLC_CONTROLS_BIN=$PWD/.git/sdlc-controls/sdlc-controls
-export SDLC_CONTROLS_SCHEMA=$(go env GOMODCACHE)/github.com/codeaiforge/git-native-sdlc-controls@v0.2.0/schemas/evidence/0/evidence.schema.json
+export SDLC_CONTROLS_SCHEMA=$(go env GOMODCACHE)/github.com/codeaiforge/git-native-sdlc-controls@v0.3.0/schemas/evidence/0/evidence.schema.json
 ```
 
-The suite fails rather than skips without them, and refuses any binary whose records are not 0.2.0.
+The suite fails rather than skips without them, and refuses any binary whose records are not 0.3.0.
 
 The `PG*` variables name a cluster administrator; the harness creates the service's roles and a fresh database per test. Use `127.0.0.1`, not `localhost`: any host that is not a literal loopback address requires verified TLS. Point it only at a throwaway cluster, never one that serves the control plane: the roles are cluster-wide with fixed names, and the harness resets their passwords.
 

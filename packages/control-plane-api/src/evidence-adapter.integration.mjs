@@ -23,14 +23,14 @@ import { closeHarness, createTestDatabase, roleEnv } from '../../evidence-store/
 //
 // Needs PostgreSQL (PG*, the harness's rule) AND the pinned gate binary and its schema:
 // SDLC_CONTROLS_BIN, SDLC_CONTROLS_SCHEMA (README › Tests; installed by ci.yml). Fails without
-// them, never skips, and refuses any binary whose records are not 0.2.0: a different producer is
+// them, never skips, and refuses any binary whose records are not 0.3.0: a different producer is
 // a different proof.
 
 after(() => closeHarness());
 
 const BIN = process.env.SDLC_CONTROLS_BIN;
 const SCHEMA_PATH = process.env.SDLC_CONTROLS_SCHEMA;
-const PINNED_VERSION = '0.2.0';
+const PINNED_VERSION = '0.3.0';
 const MISSING_GATE =
   'evidence-adapter.integration.mjs needs the pinned gate: set SDLC_CONTROLS_BIN to sdlc-controls ' +
   `v${PINNED_VERSION} and SDLC_CONTROLS_SCHEMA to its schemas/evidence/0/evidence.schema.json`;
@@ -244,7 +244,7 @@ function runGate(fixture, { changeId, approvers, base = 'main' }) {
 
 // ----------------------------------------------------------------- the pinned schema, checked
 
-// The keywords evidence/0 at v0.2.0 uses, and nothing else: any other keyword throws, so a schema
+// The keywords evidence/0 at v0.3.0 uses, and nothing else: any other keyword throws, so a schema
 // this reader does not understand fails loudly rather than passing unchecked. `format` is an
 // annotation here, as the gate's own ajv step does not assert it.
 const KEYWORDS = new Set([
