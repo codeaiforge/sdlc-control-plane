@@ -73,6 +73,10 @@ test('expire refuses a superuser, an elevated attribute, a member of any role, a
     const { sql, calls } = fakeClient({ role });
     await assert.rejects(expire(sql), refusedWith(code), JSON.stringify(role));
     assert.equal(calls.length, 1, 'only the role query ran');
+    // 2.3 follow-up A: it runs under the database's default search path, which the owner sets, so
+    // every comparison in it names pg_catalog's operator.
+    assert.doesNotMatch(calls[0].text, /\s=\s/, 'no bare = in the role query');
+    assert.equal(calls[0].text.match(/OPERATOR\(pg_catalog\.=\)/g).length, 2);
   }
 });
 
@@ -127,6 +131,8 @@ test('expire runs batches until one redacts nothing, each in its own transaction
   );
   for (const { text, values } of calls.filter(({ text }) => text.includes('set_config'))) {
     assert.match(text, /set_config\('statement_timeout', \?, true\)/);
+    // 2.3 follow-up A: the search path is pinned before the UPDATE, in the same statement.
+    assert.match(text, /set_config\('search_path', 'pg_catalog, pg_temp', true\)/);
     assert.deepEqual(values, ['200']);
   }
   for (const { values } of updates(calls)) assert.deepEqual(values, [RETENTION_WINDOW, 3]);

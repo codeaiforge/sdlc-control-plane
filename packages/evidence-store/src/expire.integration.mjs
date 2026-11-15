@@ -347,6 +347,55 @@ test('a member of any role, or a role with an elevated attribute, is refused as 
   assert.equal(await count(db, 'evidence_redaction'), 0);
 });
 
+// 2.3 follow-up A. The database's default search path is the owner's to set, and an operator it
+// creates earlier in that path answers every comparison a session does not qualify or pin. Here
+// `=` on oids always reads false, which would hide a membership from the role check; `=` on names
+// always reads false, which would find no role row at all; and `<` on timestamps always reads
+// false, which would select nothing, so a run would redact nothing and report success. The job names pg_catalog's operator in its role check and pins its search path in
+// every batch, so neither moves.
+test("an owner's default search path bends neither the role check nor the selection", async (t) => {
+  const db = await database(t);
+  const id = await insertAt(db, 'PR-old', '1 hour');
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  for (const type of ['oid', 'name', 'timestamptz'])
+    await owner.unsafe(
+      `CREATE FUNCTION evidence.never(${type}, ${type}) RETURNS boolean LANGUAGE sql IMMUTABLE ` +
+        `AS 'SELECT false'`,
+    );
+  await owner`CREATE OPERATOR evidence.= (LEFTARG = oid, RIGHTARG = oid, FUNCTION = evidence.never)`;
+  await owner`CREATE OPERATOR evidence.= (LEFTARG = name, RIGHTARG = name, FUNCTION = evidence.never)`;
+  await owner`
+    CREATE OPERATOR evidence.< (LEFTARG = timestamptz, RIGHTARG = timestamptz,
+                                FUNCTION = evidence.never)`;
+  await owner.unsafe(`ALTER DATABASE ${db.name} SET search_path = evidence, pg_catalog`);
+
+  const name = `evidence_copy_${process.pid}_${Math.random().toString(16).slice(2, 10)}`;
+  const role = db.admin(name);
+  await db.admin.unsafe(
+    `CREATE ROLE ${name} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${rolePassword(process.env.PGPASSWORD, name)}'`,
+  );
+  const copy = db.connectAs(name, { max: 1 });
+  try {
+    await db.admin`GRANT CONNECT ON DATABASE ${db.admin(db.name)} TO ${role}`;
+    // USAGE, so the owner's operators are in this role's path too.
+    await db.admin`GRANT USAGE ON SCHEMA evidence TO ${role}`;
+    await db.admin`GRANT evidence_audit TO ${role}`;
+    const [{ shadowed }] = await copy`SELECT 1::oid = 1::oid AS shadowed`;
+    assert.equal(shadowed, false, "the owner's = answers an unqualified comparison");
+    await assert.rejects(expire(copy), refusedWith('role-unsafe'), 'the membership is still seen');
+  } finally {
+    await copy.end({ timeout: 1 }).catch(() => {});
+    await db.admin`DROP OWNED BY ${role}`;
+    await db.admin`DROP ROLE ${role}`;
+  }
+
+  assert.deepEqual(await expire(db.connectAs('evidence_retention', { max: 1 })), {
+    redacted: 1,
+    batches: 1,
+  });
+  assert.equal(await payloadOf(db, id), null);
+});
+
 test('a database still at 0001, or with a tampered schema record, is refused as schema-mismatch', async (t) => {
   const stale = await createEmptyDatabase();
   t.after(() => stale.dispose());

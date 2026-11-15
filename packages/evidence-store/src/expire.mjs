@@ -40,13 +40,17 @@ export class ExpiryRefused extends Error {
 // would), a role with CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS (as the service's startup
 // check refuses), or a member of any role (a NOINHERIT member can still SET ROLE to it); as
 // not-retention, any session that did not log in as, and is not running as, evidence_retention.
+// It runs under the database's default search path, which the owner sets (ALTER DATABASE), so each
+// comparison names pg_catalog's operator: an owner's `=` earlier in that path would otherwise hide
+// a membership (as retention-check.mjs's assertAuditRole; 2.3 review B2-2, follow-up A).
 export async function assertRetentionRole(sql) {
   const [role] = await sql`
     SELECT current_user AS name, session_user AS session, r.rolsuper AS superuser,
            r.rolcreaterole OR r.rolcreatedb OR r.rolreplication OR r.rolbypassrls AS attributes,
-           EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member = r.oid) AS member
+           EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+                    WHERE m.member OPERATOR(pg_catalog.=) r.oid) AS member
       FROM pg_catalog.pg_roles r
-     WHERE r.rolname = current_user`;
+     WHERE r.rolname OPERATOR(pg_catalog.=) current_user`;
   if (role === undefined || role.superuser || role.attributes || role.member)
     throw new ExpiryRefused('role-unsafe');
   if (role.name !== RETENTION_ROLE || role.session !== RETENTION_ROLE)
@@ -76,8 +80,11 @@ function assertBound(name, value, max) {
 // through 0002's partial index, so it never walks the tombstones. The subselect and the trigger
 // read the same statement_timestamp(), so a row selected here (`<`) is never one the trigger
 // refuses (`>=`). The outer `redacted_at IS NULL` repeats the subselect's so that no reading of the
-// statement can reach a tombstone, which the trigger would refuse. A failed batch rolls back
-// alone; batches already committed stay, and a re-run continues from them.
+// statement can reach a tombstone, which the trigger would refuse. Each batch pins its search path
+// first, as the trigger pins its own: under the owner's default an operator or a function earlier
+// in the path would answer the selection, and a run would redact nothing and report success (2.3
+// follow-up A, measured). A failed batch rolls back alone; batches already committed stay, and a
+// re-run continues from them.
 export async function expire(
   sql,
   { batchSize = BATCH_SIZE, statementTimeoutMs = BATCH_STATEMENT_TIMEOUT_MS } = {},
@@ -91,7 +98,9 @@ export async function expire(
   for (;;) {
     const count = await sql.begin(async (tx) => {
       // SET LOCAL takes no bound parameter; set_config(..., true) is its transaction-scoped form.
-      await tx`SELECT pg_catalog.set_config('statement_timeout', ${String(statementTimeoutMs)}, true)`;
+      await tx`
+        SELECT pg_catalog.set_config('statement_timeout', ${String(statementTimeoutMs)}, true),
+               pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)`;
       const result = await tx`
         UPDATE evidence.evidence_envelope SET evidence = NULL
          WHERE id IN (SELECT id FROM evidence.evidence_envelope
