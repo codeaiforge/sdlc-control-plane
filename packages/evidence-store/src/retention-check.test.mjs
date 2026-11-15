@@ -15,6 +15,7 @@ import {
   VIOLATIONS,
   assertAuditRole,
   bundledGuardBody,
+  bundledPairCheck,
   formatReport,
   parseArgs,
   refuseUnfinished,
@@ -39,6 +40,7 @@ const ENABLED = {
   bundled_function: true,
   sole: true,
   bundled_columns: true,
+  bundled_constraints: true,
 };
 
 // A fake client in expire.test.mjs's style: a tagged-template function that records every
@@ -52,6 +54,7 @@ function fakeClient({
   unaudited = 0,
   early = 0,
   future = 0,
+  futureReceipts = 0,
   fail = {},
 } = {}) {
   const calls = [];
@@ -67,7 +70,8 @@ function fakeClient({
     if (text.includes('pg_trigger')) return Promise.resolve(trigger === null ? [] : [trigger]);
     if (text.includes('AS overdue')) return Promise.resolve([held]);
     if (text.includes('AS unaudited')) return Promise.resolve([{ unaudited }]);
-    if (text.includes('AS early')) return Promise.resolve([{ early, future }]);
+    if (text.includes('AS early'))
+      return Promise.resolve([{ early, future, future_receipts: futureReceipts }]);
     return Promise.resolve([{}]);
   };
   const sql = (strings, ...values) => {
@@ -138,7 +142,7 @@ test('every count is read in one repeatable-read, read-only transaction under th
   assert.match(calls[begin + 1].text, /set_config\('search_path', 'pg_catalog, pg_temp', true\)/);
   assert.deepEqual(calls[begin + 1].values, [String(CHECK_STATEMENT_TIMEOUT_MS)]);
   const reads = calls.slice(begin + 2, -1).map(({ text }) => text);
-  assert.equal(reads.length, 5, 'schema, guard, held, unaudited, early and future');
+  assert.equal(reads.length, 5, 'schema, guard, held, unaudited, then early and both futures');
   assert.equal(calls.at(-1).text, 'COMMIT');
   // The window and the grace are bound, never written into the text.
   const held = calls.find(({ text }) => text.includes('AS overdue'));
@@ -149,6 +153,8 @@ test('every count is read in one repeatable-read, read-only transaction under th
   assert.deepEqual(guard.values, [
     'evidence.guard_envelope_update()',
     bundledGuardBody(),
+    'evidence_envelope_redaction_pair',
+    bundledPairCheck(),
     'evidence_envelope_guard',
   ]);
 });
@@ -181,13 +187,55 @@ test('the guard reads bundled only as the migrations make the trigger, the funct
     'WHERE o.tgrelid IN (SELECT rel FROM guarded) AND NOT o.tgisinternal AND o.oid <> t.oid',
     'WHERE r.ev_class IN (SELECT rel FROM guarded)',
     'WHERE i.inhparent IN (SELECT rel FROM guarded)) AS sole',
-    "('envelope', 'received_at', 'timestamp with time zone')",
-    "('redaction', 'redacted_by', 'text')) AS c (rel, name, type)",
+    "('envelope', 'received_at', 'timestamp with time zone', 5)",
+    "('envelope', 'redacted_at', 'timestamp with time zone', 9)",
+    "('redaction', 'redacted_by', 'text', 4)) AS c (rel, name, type, num)",
     'pg_catalog.format_type(a.atttypid, a.atttypmod) = c.type',
-    '= 11 AS bundled_columns',
+    // Review S3-1: by position, so a column renamed away and another added in its name is not it.
+    'AND a.attnum = c.num',
+    // Review S3-2: the database default on text, none on the others.
+    "AND a.attcollation = (CASE c.type WHEN 'text' THEN 'pg_catalog.default' ELSE '-' END)::pg_catalog.regcollation",
+    'WHERE NOT a.attisdropped) = 11 AS bundled_columns',
+    // Review S3-1: the pairing CHECK the counts rely on, and the audit table's key to this log.
+    "k.conname = ? AND k.contype = 'c' AND k.convalidated AND k.conkey = '{8,9}'::pg_catalog.int2[] AND pg_catalog.pg_get_constraintdef(k.oid) = ?)",
+    "k.contype = 'f' AND k.convalidated AND k.confrelid = pg_catalog.to_regclass('evidence.evidence_envelope') AND k.conkey = '{2}'::pg_catalog.int2[] AND k.confkey = '{1}'::pg_catalog.int2[]) AS bundled_constraints",
   ])
     assert.ok(guard.includes(predicate), predicate);
   assert.equal(guard.match(/\('(?:envelope|redaction)', '/g).length, 11, 'eleven pinned columns');
+  // The positions are 0001's column order; the payload is the eighth column and is not listed.
+  const table = (name) => {
+    const text = loadMigrations()[0].text;
+    const body = text.slice(text.indexOf(`CREATE TABLE evidence.${name} (`));
+    return body.slice(0, body.indexOf('\n);'));
+  };
+  // A column line starts with its lower-case name; CONSTRAINT and comment lines do not.
+  const columns = (name) => [...table(name).matchAll(/^ {2}([a-z_]+) [a-z]/gm)].map((m) => m[1]);
+  assert.deepEqual(columns('evidence_envelope'), [
+    'id',
+    'envelope_version',
+    'workspace_id',
+    'change_id',
+    'received_at',
+    'policy_id',
+    'submitted_by',
+    'evidence',
+    'redacted_at',
+  ]);
+  assert.deepEqual(columns('evidence_redaction'), [
+    'id',
+    'envelope_id',
+    'redacted_at',
+    'redacted_by',
+  ]);
+  for (const [, rel, name, num] of guard.matchAll(
+    /\('(envelope|redaction)', '(\w+)', '[^']+', (\d+)\)/g,
+  ))
+    assert.equal(columns(`evidence_${rel}`).indexOf(name) + 1, Number(num), name);
+  assert.ok(
+    table('evidence_redaction').includes(
+      'envelope_id bigint NOT NULL REFERENCES evidence.evidence_envelope (id)',
+    ),
+  );
   assert.doesNotMatch(guard, /tgtype &|strpos/, 'no bitmask or substring test is left');
   // The literals above are the declaration the last defining migration writes.
   const last = lastDefinition();
@@ -204,6 +252,22 @@ test('the guard reads bundled only as the migrations make the trigger, the funct
   assert.ok(body.includes(`interval '${RETENTION_WINDOW}'`));
   assert.ok(last.text.includes(`AS $guard$${body}$guard$;`));
   assert.throws(() => bundledGuardBody([]), refusedWith('failed'));
+  // Review S3-1: the pairing CHECK as the server prints the declaration the migration writes.
+  assert.equal(bundledPairCheck(), 'CHECK (((evidence IS NULL) = (redacted_at IS NOT NULL)))');
+  assert.ok(
+    loadMigrations()[0].text.includes(
+      'CONSTRAINT evidence_envelope_redaction_pair CHECK ((evidence IS NULL) = (redacted_at IS NOT NULL))',
+    ),
+  );
+  const later = {
+    text: 'ALTER TABLE x ADD CONSTRAINT evidence_envelope_redaction_pair CHECK (a = (b));',
+  };
+  assert.equal(bundledPairCheck([...loadMigrations(), later]), 'CHECK ((a = (b)))');
+  assert.throws(() => bundledPairCheck([]), refusedWith('failed'));
+  assert.throws(
+    () => bundledPairCheck([{ text: 'CONSTRAINT evidence_envelope_redaction_pair CHECK ((a)' }]),
+    refusedWith('failed'),
+  );
   assert.throws(
     () => bundledGuardBody([{ text: 'CREATE FUNCTION evidence.guard_envelope_update() x' }]),
     refusedWith('failed'),
@@ -319,6 +383,8 @@ test('each guard state is reported, and every state but enabled is a violation',
     [{ ...ENABLED, sole: null }, 'replaced', 'guard-replaced'],
     [{ ...ENABLED, bundled_columns: false }, 'replaced', 'guard-replaced'],
     [{ ...ENABLED, bundled_columns: null }, 'replaced', 'guard-replaced'],
+    [{ ...ENABLED, bundled_constraints: false }, 'replaced', 'guard-replaced'],
+    [{ ...ENABLED, bundled_constraints: null }, 'replaced', 'guard-replaced'],
     // Replaced outranks disabled: the function in force is not the bundled one at all.
     [{ ...ENABLED, enabled: 'D', bundled: false }, 'replaced', 'guard-replaced'],
   ]) {
@@ -339,6 +405,7 @@ test('violations are named in the fixed order, whatever finds them', async () =>
       unaudited: 2,
       early: 1,
       future: 4,
+      futureReceipts: 5,
     }).sql,
   );
   assert.deepEqual(result, {
@@ -348,12 +415,14 @@ test('violations are named in the fixed order, whatever finds them', async () =>
     unaudited: 2,
     early: 1,
     future: 4,
+    futureReceipts: 5,
     violations: [
       'guard-disabled',
       'overdue-payload',
       'unaudited-redaction',
       'early-redaction',
       'future-redaction',
+      'future-receipt',
     ],
   });
   assert.deepEqual(VIOLATIONS, [
@@ -364,11 +433,12 @@ test('violations are named in the fixed order, whatever finds them', async () =>
     'unaudited-redaction',
     'early-redaction',
     'future-redaction',
+    'future-receipt',
   ]);
   assert.equal(Object.isFrozen(VIOLATIONS), true);
 });
 
-test('the report is eight fixed lines: counts and hours only, the ceiling every time', async () => {
+test('the report is nine fixed lines: counts and hours only, the ceiling every time', async () => {
   const clean = await retentionCheck(fakeClient().sql);
   assert.deepEqual(formatReport(clean), [
     'retention-check: guard trigger evidence_envelope_guard: enabled',
@@ -377,6 +447,7 @@ test('the report is eight fixed lines: counts and hours only, the ceiling every 
     'retention-check: redacted envelopes with no audit row: 0 found',
     'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
     "retention-check: redactions stamped later than this run's clock: 0 found",
+    "retention-check: envelopes stamped as received later than this run's clock: 0 found",
     'retention-check: cannot see deleted rows, redacted bytes still in dead tuples, WAL or backups, or any value the owner or a superuser rewrote, received_at included',
     'retention-check: no violation found',
   ]);
@@ -394,6 +465,35 @@ test('the report is eight fixed lines: counts and hours only, the ceiling every 
     formatReport(dirty).at(-1),
     'retention-check: violation found: overdue-payload, unaudited-redaction',
   );
+  const received = await retentionCheck(fakeClient({ futureReceipts: 2 }).sql);
+  assert.deepEqual(formatReport(received).slice(6), [
+    "retention-check: envelopes stamped as received later than this run's clock: 2 found",
+    'retention-check: cannot see deleted rows, redacted bytes still in dead tuples, WAL or backups, or any value the owner or a superuser rewrote, received_at included',
+    'retention-check: violation found: future-receipt',
+  ]);
+});
+
+// Review N3-2: both future counts read the counting statement's clock. A stamp is taken before its
+// row commits, and the snapshot after BEGIN's clock, so transaction_timestamp() would read a
+// redaction or a receipt committed between BEGIN and the snapshot as one from the future
+// (measured on PostgreSQL 16: 1 against 0).
+test('the future counts read statement_timestamp(), never the transaction clock', async () => {
+  const { sql, calls } = fakeClient();
+  await retentionCheck(sql);
+  const last = calls.find(({ text }) => text.includes('AS early')).text.replace(/\s+/g, ' ');
+  assert.ok(
+    last.includes(
+      'count(*) FILTER (WHERE redacted_at > pg_catalog.statement_timestamp())::integer AS future,',
+    ),
+    last,
+  );
+  assert.ok(
+    last.includes(
+      'count(*) FILTER (WHERE received_at > pg_catalog.statement_timestamp())::integer AS future_receipts',
+    ),
+    last,
+  );
+  assert.doesNotMatch(last, /transaction_timestamp|now\(\)|WHERE redacted_at IS NOT NULL/);
 });
 
 test('a value that is not a whole count is never printed: the run is refused as failed', async () => {
@@ -406,6 +506,10 @@ test('a value that is not a whole count is never printed: the run is refused as 
     await assert.rejects(retentionCheck(fakeClient({ held }).sql), refusedWith('failed'));
   await assert.rejects(retentionCheck(fakeClient({ unaudited: '7' }).sql), refusedWith('failed'));
   await assert.rejects(retentionCheck(fakeClient({ future: -1 }).sql), refusedWith('failed'));
+  await assert.rejects(
+    retentionCheck(fakeClient({ futureReceipts: 'CANARY' }).sql),
+    refusedWith('failed'),
+  );
   assert.throws(
     () =>
       formatReport({
@@ -415,6 +519,7 @@ test('a value that is not a whole count is never printed: the run is refused as 
         unaudited: 0,
         early: 0,
         future: 0,
+        futureReceipts: 0,
         violations: [],
       }),
     refusedWith('failed'),
@@ -428,6 +533,7 @@ test('a value that is not a whole count is never printed: the run is refused as 
         unaudited: 0,
         early: 0,
         future: 0,
+        futureReceipts: 0,
         violations: ['CANARY'],
       }),
     refusedWith('failed'),

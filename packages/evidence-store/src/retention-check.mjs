@@ -3,15 +3,18 @@
 // whether the guard trigger 0002 installs is in force on the envelope log; how many payloads are
 // still held more than OVERDUE_GRACE past the window, which is how a run of expire that did not
 // happen, failed, or skipped a locked row shows (2.5 SEC-1); the age of the oldest payload still
-// held; and how many redactions have no audit row, came earlier than the window or are stamped
-// later than the check's clock, which only an owner or a superuser bypassing or bending the trigger
-// can make (2.5 SEC-2).
+// held; how many redactions have no audit row, came earlier than the window or are stamped later
+// than the check's clock, which only an owner or a superuser bypassing or bending the trigger can
+// make (2.5 SEC-2); and how many envelopes are stamped as received later than that clock, which
+// only an owner or a superuser rewriting received_at or its default can make.
 //
 // It runs as evidence_audit and as nothing else, with that role's grants unchanged: every column
 // but the payload, and the redaction table. Every count comes from one REPEATABLE READ READ ONLY
-// transaction, so from one snapshot and one instant. It prints counts and hours, never an id, a
-// change_id, a workspace_id, a row's timestamp or a driver message, and it says on every run what
-// it cannot see. "No violation found" is what it found, not a statement that the store complies.
+// transaction, so from one snapshot; the window is read against the transaction's clock and the
+// future stamps against its last statement's (review N3-1). It prints counts and hours, never an
+// id, a change_id, a workspace_id, a row's timestamp or a driver message, and it says on every run
+// what it cannot see. "No violation found" is what it found, not a statement that the store
+// complies.
 // Nothing schedules it; the deployment's scheduler runs it after expire (README "Retention").
 // statement_timeout bounds every statement on the server, not the client's wait: a frozen or
 // partitioned server can hold the run, and the scheduler's own timeout bounds the process, as it
@@ -31,6 +34,7 @@ export const CHECK_STATEMENT_TIMEOUT_MS = 30000;
 const TIMEOUT_SETTING = String(CHECK_STATEMENT_TIMEOUT_MS);
 const GUARD_TRIGGER = 'evidence_envelope_guard';
 const GUARD_FUNCTION = 'evidence.guard_envelope_update()';
+const PAIR_CHECK = 'evidence_envelope_redaction_pair';
 
 // The kinds a run can find, in the order the last line names them.
 export const VIOLATIONS = Object.freeze([
@@ -41,6 +45,7 @@ export const VIOLATIONS = Object.freeze([
   'unaudited-redaction',
   'early-redaction',
   'future-redaction',
+  'future-receipt',
 ]);
 
 // A scheduler tells "found something" (1) from "no result" (3). expire's 1 is a refusal; this
@@ -105,9 +110,11 @@ export async function assertAuditRole(sql) {
 
 // The guard as the catalog holds it. 'O' fires in the default mode and 'A' always; 'D' is
 // disabled, and 'R' fires only under session_replication_role = replica, so neither holds for an
-// ordinary session. Every other attribute the owner can change and that bends what the guard
-// refuses is pinned to what the migrations make, and any difference reads replaced (review B-1,
-// B2-2; each measured on PostgreSQL 16 in retention-check.integration.mjs):
+// ordinary session. The attributes below, each one the owner can change and each one bending what
+// the guard refuses or what this check counts, are pinned to what the migrations make, and any
+// difference reads replaced (review B-1, B2-2, S3-1, S3-2; each measured on PostgreSQL 16 in
+// retention-check.integration.mjs). Attributes measured to change neither - the function's
+// strictness, parallel safety, cost and ACL, among others - are left unpinned:
 // - `bundled`: the trigger exactly as 0001 creates it: the bundled function, tgtype exactly 19
 //   (ROW | BEFORE | UPDATE), no WHEN clause, no UPDATE OF column list and no arguments - a trigger
 //   recreated WHEN (false) or UPDATE OF one column never fires on the update it exists to refuse.
@@ -120,12 +127,28 @@ export async function assertAuditRole(sql) {
 //   rewrites the row it let through, one on evidence_redaction rewrites or drops the audit row - no
 //   rule on either, which rewrites the update or the audit insert, and no table inheriting from
 //   either, whose rows the parent's trigger never sees.
-// - `bundled_columns`: the type of each column the guard compares or assigns, so no owner-made
-//   type and cast can answer its comparisons. The payload is not among them: the guard only asks
-//   whether it is null, which no type changes.
+// - `bundled_columns`: each column the guard compares or assigns, by type, position and collation:
+//   its type, so no owner-made type and cast can answer its comparisons; its attnum, so a column
+//   renamed away and another added under its name - a received_at with a default of the owner's
+//   choosing - is not read as the original (review S3-1); and its collation, the database default
+//   on a text column and none on the others, so no nondeterministic collation makes `old` and
+//   `OLD` the same identity under rule 3 (review S3-2). The payload is not among them: the guard
+//   only asks whether it is null, which no type changes; its identity is pinned by the next pin.
+// - `bundled_constraints`: the pairing CHECK 0001 creates, validated, over the same two columns
+//   and with the definition the bundled migration gives it, since the held and the redacted counts
+//   below rely on it; and a validated foreign key from evidence_redaction.envelope_id to the id of
+//   the table counted here, so the log cannot be renamed away and a decoy counted in its place
+//   (review S3-1).
 // All of it says what the catalog holds at this snapshot, never what an owner did between runs or
-// what a rewritten value was: the ceiling line says so.
-const GUARD_PINS = ['bundled', 'bundled_function', 'sole', 'bundled_columns'];
+// what a rewritten value was: the ceiling line says so. A value rewritten in place, received_at by
+// ALTER COLUMN ... TYPE ... USING included, leaves no trace here.
+const GUARD_PINS = [
+  'bundled',
+  'bundled_function',
+  'sole',
+  'bundled_columns',
+  'bundled_constraints',
+];
 function guardState(trigger) {
   if (trigger === undefined) return 'absent';
   if (!GUARD_PINS.every((pin) => trigger[pin] === true)) return 'replaced';
@@ -150,13 +173,36 @@ export function bundledGuardBody(migrations = loadMigrations()) {
   return body[2];
 }
 
+// The pairing CHECK as pg_get_constraintdef prints what the last bundled migration that declares
+// it writes: the operands between the parentheses after CHECK, as the migration parenthesises
+// them, inside the two pairs the server adds - one around the operator, one after CHECK. A
+// declaration this cannot read is a defect; a server that prints it otherwise reads replaced,
+// never enabled, and the clean-store integration test fails.
+const DECLARES_PAIR = new RegExp(`\\bCONSTRAINT ${PAIR_CHECK} CHECK \\(`, 'g');
+export function bundledPairCheck(migrations = loadMigrations()) {
+  const text = migrations.filter((migration) => migration.text.match(DECLARES_PAIR)).at(-1)?.text;
+  const match = text && [...text.matchAll(DECLARES_PAIR)].at(-1);
+  if (!match) throw new RetentionCheckRefused('failed');
+  const start = match.index + match[0].length - 1;
+  let depth = 0;
+  for (let at = start; at < text.length; at += 1) {
+    if (text[at] === '(') depth += 1;
+    else if (text[at] === ')') depth -= 1;
+    if (depth === 0) return `CHECK ((${text.slice(start + 1, at)}))`;
+  }
+  throw new RetentionCheckRefused('failed');
+}
+
 // A count or an hour is a non-negative integer; anything else is a defect, never printed.
 function whole(value) {
   if (!Number.isInteger(value) || value < 0) throw new RetentionCheckRefused('failed');
   return value;
 }
 
-export async function retentionCheck(sql, { guardBody = bundledGuardBody() } = {}) {
+export async function retentionCheck(
+  sql,
+  { guardBody = bundledGuardBody(), pairCheck = bundledPairCheck() } = {},
+) {
   await assertAuditRole(sql);
   const facts = await sql.begin('isolation level repeatable read read only', async (tx) => {
     // SET LOCAL takes no bound parameter; set_config(..., true) is its transaction-scoped form.
@@ -199,21 +245,35 @@ export async function retentionCheck(sql, { guardBody = bundledGuardBody() } = {
                AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i
                                 WHERE i.inhparent IN (SELECT rel FROM guarded)) AS sole,
              (SELECT count(*) FROM pg_catalog.pg_attribute a
-                JOIN (VALUES ('envelope', 'id', 'bigint'),
-                             ('envelope', 'envelope_version', 'text'),
-                             ('envelope', 'workspace_id', 'text'),
-                             ('envelope', 'change_id', 'text'),
-                             ('envelope', 'received_at', 'timestamp with time zone'),
-                             ('envelope', 'policy_id', 'text'),
-                             ('envelope', 'submitted_by', 'jsonb'),
-                             ('envelope', 'redacted_at', 'timestamp with time zone'),
-                             ('redaction', 'envelope_id', 'bigint'),
-                             ('redaction', 'redacted_at', 'timestamp with time zone'),
-                             ('redaction', 'redacted_by', 'text')) AS c (rel, name, type)
+                JOIN (VALUES ('envelope', 'id', 'bigint', 1),
+                             ('envelope', 'envelope_version', 'text', 2),
+                             ('envelope', 'workspace_id', 'text', 3),
+                             ('envelope', 'change_id', 'text', 4),
+                             ('envelope', 'received_at', 'timestamp with time zone', 5),
+                             ('envelope', 'policy_id', 'text', 6),
+                             ('envelope', 'submitted_by', 'jsonb', 7),
+                             ('envelope', 'redacted_at', 'timestamp with time zone', 9),
+                             ('redaction', 'envelope_id', 'bigint', 2),
+                             ('redaction', 'redacted_at', 'timestamp with time zone', 3),
+                             ('redaction', 'redacted_by', 'text', 4)) AS c (rel, name, type, num)
                   ON a.attrelid = pg_catalog.to_regclass('evidence.evidence_' || c.rel)
                  AND a.attname = c.name
                  AND pg_catalog.format_type(a.atttypid, a.atttypmod) = c.type
-               WHERE a.attnum > 0 AND NOT a.attisdropped) = 11 AS bundled_columns
+                 AND a.attnum = c.num
+                 AND a.attcollation = (CASE c.type WHEN 'text' THEN 'pg_catalog.default'
+                                                   ELSE '-' END)::pg_catalog.regcollation
+               WHERE NOT a.attisdropped) = 11 AS bundled_columns,
+             EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                      WHERE k.conrelid = pg_catalog.to_regclass('evidence.evidence_envelope')
+                        AND k.conname = ${PAIR_CHECK} AND k.contype = 'c' AND k.convalidated
+                        AND k.conkey = '{8,9}'::pg_catalog.int2[]
+                        AND pg_catalog.pg_get_constraintdef(k.oid) = ${pairCheck})
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k
+                            WHERE k.conrelid = pg_catalog.to_regclass('evidence.evidence_redaction')
+                              AND k.contype = 'f' AND k.convalidated
+                              AND k.confrelid = pg_catalog.to_regclass('evidence.evidence_envelope')
+                              AND k.conkey = '{2}'::pg_catalog.int2[]
+                              AND k.confkey = '{1}'::pg_catalog.int2[]) AS bundled_constraints
         FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid
        WHERE t.tgrelid = pg_catalog.to_regclass('evidence.evidence_envelope')
          AND t.tgname = ${GUARD_TRIGGER} AND NOT t.tgisinternal`;
@@ -235,17 +295,23 @@ export async function retentionCheck(sql, { guardBody = bundledGuardBody() } = {
        WHERE e.redacted_at IS NOT NULL
          AND NOT EXISTS (SELECT 1 FROM evidence.evidence_redaction r WHERE r.envelope_id = e.id)`;
     // The trigger refuses received_at >= ts - window, so a legal redaction is strictly later.
-    // It stamps redacted_at with its statement's start, which is before that redaction commits;
-    // a redaction this snapshot sees committed before it was taken, so its stamp is earlier than
-    // this statement's start. transaction_timestamp() is not: BEGIN's clock precedes the snapshot,
-    // and a redaction committed between the two would read as one from the future.
-    const [{ early, future }] = await tx`
+    // It stamps redacted_at with its statement's start, which is before that redaction commits,
+    // and received_at's default stamps a receipt the same way; a row this snapshot sees committed
+    // before it was taken, so both its stamps are earlier than this statement's start.
+    // transaction_timestamp() is not: BEGIN's clock precedes the snapshot, and a redaction or a
+    // receipt committed between the two would read as one from the future. A receipt stamped
+    // later is an owner's or a superuser's rewrite of received_at or of its default; such a row
+    // would never come due. redacted_at is null on a held row, so the first two FILTERs read only
+    // tombstones and the third reads every row.
+    const [{ early, future, future_receipts: futureReceipts }] = await tx`
       SELECT count(*) FILTER (WHERE redacted_at - received_at
                                     <= ${RETENTION_WINDOW}::interval)::integer AS early,
              count(*) FILTER (WHERE redacted_at > pg_catalog.statement_timestamp())::integer
-               AS future
-        FROM evidence.evidence_envelope WHERE redacted_at IS NOT NULL`;
-    return { trigger, held, unaudited, early, future };
+               AS future,
+             count(*) FILTER (WHERE received_at > pg_catalog.statement_timestamp())::integer
+               AS future_receipts
+        FROM evidence.evidence_envelope`;
+    return { trigger, held, unaudited, early, future, futureReceipts };
   });
   const guard = guardState(facts.trigger);
   const result = {
@@ -255,6 +321,7 @@ export async function retentionCheck(sql, { guardBody = bundledGuardBody() } = {
     unaudited: whole(facts.unaudited),
     early: whole(facts.early),
     future: whole(facts.future),
+    futureReceipts: whole(facts.futureReceipts),
   };
   const found = new Set();
   if (guard !== 'enabled') found.add(`guard-${guard}`);
@@ -262,6 +329,7 @@ export async function retentionCheck(sql, { guardBody = bundledGuardBody() } = {
   if (result.unaudited > 0) found.add('unaudited-redaction');
   if (result.early > 0) found.add('early-redaction');
   if (result.future > 0) found.add('future-redaction');
+  if (result.futureReceipts > 0) found.add('future-receipt');
   return { ...result, violations: VIOLATIONS.filter((kind) => found.has(kind)) };
 }
 
@@ -274,6 +342,7 @@ export function formatReport({
   unaudited,
   early,
   future,
+  futureReceipts,
   violations,
 }) {
   const prefix = 'retention-check:';
@@ -289,6 +358,7 @@ export function formatReport({
     `${prefix} redacted envelopes with no audit row: ${whole(unaudited)} found`,
     `${prefix} redactions earlier than ${RETENTION_WINDOW} after receipt: ${whole(early)} found`,
     `${prefix} redactions stamped later than this run's clock: ${whole(future)} found`,
+    `${prefix} envelopes stamped as received later than this run's clock: ${whole(futureReceipts)} found`,
     `${prefix} ${CEILING}`,
     violations.length === 0
       ? `${prefix} no violation found`

@@ -41,6 +41,8 @@ function run(script, env) {
 const check = (env) => run(SCRIPT, env);
 const lines = ({ stdout }) => stdout.trimEnd().split('\n');
 const line = (result, index) => lines(result)[index];
+// The report is nine lines; the last names what was found.
+const VERDICT = 8;
 
 async function database(t) {
   const db = await createTestDatabase();
@@ -63,6 +65,7 @@ const insertHeld = async (db, suffix, offset) =>
 
 const CLEAN_TAIL = [
   "retention-check: redactions stamped later than this run's clock: 0 found",
+  "retention-check: envelopes stamped as received later than this run's clock: 0 found",
   'retention-check: cannot see deleted rows, redacted bytes still in dead tuples, WAL or backups, or any value the owner or a superuser rewrote, received_at included',
   'retention-check: no violation found',
 ];
@@ -106,7 +109,7 @@ test('a payload 47 hours past the window is held but not overdue; at 49 hours it
     'retention-check: payloads held past 2160 hours + 48 hours grace: 1 found',
   );
   assert.equal(line(missed, 2), 'retention-check: oldest payload still held: 2209 hours');
-  assert.equal(line(missed, 7), 'retention-check: violation found: overdue-payload');
+  assert.equal(line(missed, VERDICT), 'retention-check: violation found: overdue-payload');
   // A run of expire clears it: both payloads are past the window.
   assert.deepEqual(await expire(db.connectAs('evidence_retention', { max: 1 })), {
     redacted: 2,
@@ -114,12 +117,13 @@ test('a payload 47 hours past the window is held but not overdue; at 49 hours it
   });
   const after = await check(db.env('evidence_audit'));
   assert.equal(after.code, 0);
-  assert.deepEqual(lines(after).slice(1, 6), [
+  assert.deepEqual(lines(after).slice(1, 7), [
     'retention-check: payloads held past 2160 hours + 48 hours grace: 0 found',
     'retention-check: oldest payload still held: none held',
     'retention-check: redacted envelopes with no audit row: 0 found',
     'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
     "retention-check: redactions stamped later than this run's clock: 0 found",
+    "retention-check: envelopes stamped as received later than this run's clock: 0 found",
   ]);
 });
 
@@ -130,7 +134,7 @@ test('a refused expire run leaves the payload overdue, and a good one clears it'
   assert.deepEqual(refused, { code: 1, stdout: '', stderr: 'expire refused: not-retention\n' });
   const overdue = await check(db.env('evidence_audit'));
   assert.equal(overdue.code, 1);
-  assert.equal(line(overdue, 7), 'retention-check: violation found: overdue-payload');
+  assert.equal(line(overdue, VERDICT), 'retention-check: violation found: overdue-payload');
   assert.equal((await run(EXPIRE, db.env('evidence_retention'))).code, 0);
   assert.equal((await check(db.env('evidence_audit'))).code, 0);
 });
@@ -188,7 +192,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     line(disabled, 0),
     'retention-check: guard trigger evidence_envelope_guard: disabled',
   );
-  assert.equal(line(disabled, 7), 'retention-check: violation found: guard-disabled');
+  assert.equal(line(disabled, VERDICT), 'retention-check: violation found: guard-disabled');
   assert.ok(!lines(disabled).includes('retention-check: no violation found'));
 
   await owner`
@@ -201,7 +205,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     'retention-check: redactions earlier than 2160 hours after receipt: 1 found',
   ]);
   assert.equal(
-    line(bypassed, 7),
+    line(bypassed, VERDICT),
     'retention-check: violation found: guard-disabled, unaudited-redaction, early-redaction',
   );
 
@@ -213,7 +217,7 @@ test("an owner's bypass is found: guard disabled, then a redaction with no audit
     'retention-check: guard trigger evidence_envelope_guard: enabled',
   );
   assert.equal(
-    line(reenabled, 7),
+    line(reenabled, VERDICT),
     'retention-check: violation found: unaudited-redaction, early-redaction',
   );
 });
@@ -223,7 +227,7 @@ test('a replica-only, replaced or dropped guard is reported, and never as no vio
   const owner = db.connectAs('evidence_owner', { max: 1 });
   const guardLine = async () => {
     const result = await check(db.env('evidence_audit'));
-    return [result.code, line(result, 0), line(result, 7)];
+    return [result.code, line(result, 0), line(result, VERDICT)];
   };
   await owner`ALTER TABLE evidence.evidence_envelope ENABLE REPLICA TRIGGER evidence_envelope_guard`;
   assert.deepEqual(await guardLine(), [
@@ -265,7 +269,7 @@ test('a guard recreated so that it does not fire, or a body that only quotes the
   const owner = db.connectAs('evidence_owner', { max: 1 });
   const guardLine = async () => {
     const result = await check(db.env('evidence_audit'));
-    return [result.code, line(result, 0), line(result, 7)];
+    return [result.code, line(result, 0), line(result, VERDICT)];
   };
   const REPLACED = [
     1,
@@ -330,7 +334,7 @@ const ENABLED = [
 ];
 const guardLineOf = (db) => async () => {
   const result = await check(db.env('evidence_audit'));
-  return [result.code, line(result, 0), line(result, 7)];
+  return [result.code, line(result, 0), line(result, VERDICT)];
 };
 
 test("a guard function under another search path, security, volatility or language is replaced, and the shadowed clock's redaction is found", async (t) => {
@@ -361,7 +365,7 @@ test("a guard function under another search path, security, volatility or langua
     "retention-check: redactions stamped later than this run's clock: 1 found",
   ]);
   assert.equal(
-    line(shadowed, 7),
+    line(shadowed, VERDICT),
     'retention-check: violation found: guard-replaced, future-redaction',
   );
   // The redacted row stays found; everything below is read on the guard line alone.
@@ -451,6 +455,132 @@ test('another trigger or rule on either table, a table inheriting the log, or a 
   assert.deepEqual(await guardLine(), ENABLED);
 });
 
+// Review S3-1: each route below leaves the trigger, its function and its enabled state as bundled,
+// and each read enabled, exit 0, before the fix (the reviewer's cycle-3 probes). Each runs in its
+// own database, since a decoy log or a dropped column cannot be undone in place.
+test('a received_at renamed away and replaced, a pairing CHECK or audit key dropped, unvalidated or changed, or a decoy log is replaced', async (t) => {
+  const cases = {
+    // A new received_at with the owner's default; the guard then lets a 10-hour-old payload go.
+    async swapReceivedAt(db, owner) {
+      await owner`ALTER TABLE evidence.evidence_envelope RENAME COLUMN received_at TO received_at_true`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope
+          ADD COLUMN received_at timestamptz NOT NULL DEFAULT '2000-01-01'`;
+      await owner`
+        GRANT SELECT (received_at) ON evidence.evidence_envelope
+          TO evidence_audit, evidence_retention`;
+      const retention = db.connectAs('evidence_retention', { max: 1 });
+      const redacted = await retention`
+        UPDATE evidence.evidence_envelope SET evidence = NULL WHERE redacted_at IS NULL`;
+      assert.equal(redacted.count, 2, 'the 10-hour-old payload was redacted with the old one');
+    },
+    // With the CHECK gone, a held payload can be marked redacted and read as a tombstone.
+    async dropPairCheck(db, owner, id) {
+      await owner`
+        ALTER TABLE evidence.evidence_envelope DROP CONSTRAINT evidence_envelope_redaction_pair`;
+      // DDL takes no bound parameter; the owner's DDL is test code, so it may be raw text.
+      await owner.unsafe(
+        'ALTER TABLE evidence.evidence_envelope ALTER COLUMN redacted_at TYPE timestamptz ' +
+          `USING CASE WHEN id = ${Number(id)} THEN received_at + interval '2200 hours' END`,
+      );
+    },
+    async unvalidatedPairCheck(db, owner) {
+      await owner`
+        ALTER TABLE evidence.evidence_envelope DROP CONSTRAINT evidence_envelope_redaction_pair`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope ADD CONSTRAINT evidence_envelope_redaction_pair
+          CHECK ((evidence IS NULL) = (redacted_at IS NOT NULL)) NOT VALID`;
+    },
+    // A weaker CHECK under the same name: a payload and a redaction time may then coexist.
+    async otherPairCheck(db, owner) {
+      await owner`
+        ALTER TABLE evidence.evidence_envelope DROP CONSTRAINT evidence_envelope_redaction_pair`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope ADD CONSTRAINT evidence_envelope_redaction_pair
+          CHECK ((evidence IS NOT NULL) OR (redacted_at IS NOT NULL))`;
+    },
+    // The audit table's key dropped and restated without validating what it already holds.
+    async unvalidatedForeignKey(db, owner) {
+      await owner`
+        ALTER TABLE evidence.evidence_redaction DROP CONSTRAINT evidence_redaction_envelope_id_fkey`;
+      await owner`
+        ALTER TABLE evidence.evidence_redaction ADD CONSTRAINT evidence_redaction_envelope_id_fkey
+          FOREIGN KEY (envelope_id) REFERENCES evidence.evidence_envelope (id)
+          ON DELETE RESTRICT NOT VALID`;
+    },
+    // The payload column dropped (its CHECKs with it) and re-added under its name, with the
+    // pairing CHECK restated over the new column.
+    async payloadReadded(db, owner) {
+      await owner`ALTER TABLE evidence.evidence_envelope DROP COLUMN evidence`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope ADD COLUMN evidence jsonb DEFAULT '{"fake":1}'::jsonb`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope ADD CONSTRAINT evidence_envelope_redaction_pair
+          CHECK ((evidence IS NULL) = (redacted_at IS NOT NULL))`;
+    },
+    // The log renamed away, a decoy with the same guard in its place, and the real guard off.
+    async decoyLog(db, owner) {
+      await owner`ALTER TABLE evidence.evidence_envelope RENAME TO evidence_envelope_real`;
+      await owner`
+        CREATE TABLE evidence.evidence_envelope
+          (LIKE evidence.evidence_envelope_real INCLUDING ALL)`;
+      await owner`
+        CREATE TRIGGER evidence_envelope_guard BEFORE UPDATE ON evidence.evidence_envelope
+          FOR EACH ROW EXECUTE FUNCTION evidence.guard_envelope_update()`;
+      await owner`
+        GRANT SELECT (id, envelope_version, workspace_id, change_id, received_at, policy_id,
+                      submitted_by, redacted_at)
+          ON evidence.evidence_envelope TO evidence_audit`;
+      await owner`
+        ALTER TABLE evidence.evidence_envelope_real DISABLE TRIGGER evidence_envelope_guard`;
+    },
+  };
+  for (const [name, alter] of Object.entries(cases)) {
+    const db = await database(t);
+    await insertHeld(db, 'young', '-2150 hours');
+    const old = await insertHeld(db, 'old', '49 hours');
+    const owner = db.connectAs('evidence_owner', { max: 1 });
+    await alter(db, owner, old);
+    const result = await check(db.env('evidence_audit'));
+    assert.equal(result.code, 1, `${name} ${result.stderr}`);
+    assert.equal(
+      line(result, 0),
+      'retention-check: guard trigger evidence_envelope_guard: replaced',
+      name,
+    );
+    assert.match(line(result, VERDICT), /violation found: guard-replaced/, name);
+  }
+});
+
+// Review S3-2: a collation on an identity column changes what rule 3 calls the same value. With a
+// nondeterministic one, an owner redaction that also renames change_id `old` to `OLD` passes the
+// guard (measured below); a deterministic non-default one reads replaced too, as the exact
+// bundled column is the only one pinned. Restored, it reads enabled.
+test('an identity column under a non-default collation is replaced', async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  const guardLine = guardLineOf(db);
+  const [{ id }] = await db.admin`
+    INSERT INTO evidence.evidence_envelope
+      (envelope_version, workspace_id, change_id, received_at, evidence)
+    VALUES ('evidence-envelope/0', ${WORKSPACE}, 'old',
+            statement_timestamp() - ${RETENTION_WINDOW}::interval - interval '1 hour', '{}'::jsonb)
+    RETURNING id`;
+  await owner`
+    CREATE COLLATION evidence.ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)`;
+  await owner`ALTER TABLE evidence.evidence_envelope DROP CONSTRAINT evidence_envelope_idempotency`;
+  await owner`ALTER TABLE evidence.evidence_envelope ALTER COLUMN change_id TYPE text COLLATE evidence.ci`;
+  assert.deepEqual(await guardLine(), REPLACED, 'nondeterministic');
+  const renamed = await owner`
+    UPDATE evidence.evidence_envelope SET evidence = NULL, change_id = 'OLD' WHERE id = ${id}`;
+  assert.equal(renamed.count, 1, 'rule 3 let the identity change through');
+  await owner`ALTER TABLE evidence.evidence_envelope ALTER COLUMN workspace_id TYPE text COLLATE "C"`;
+  await owner`ALTER TABLE evidence.evidence_envelope ALTER COLUMN change_id TYPE text COLLATE "default"`;
+  assert.deepEqual(await guardLine(), REPLACED, 'deterministic "C"');
+  await owner`ALTER TABLE evidence.evidence_envelope ALTER COLUMN workspace_id TYPE text COLLATE "default"`;
+  assert.deepEqual(await guardLine(), ENABLED);
+});
+
 // The check's own reads, not the guard: a row-level policy hides rows from evidence_audit, and the
 // database's default search path - the owner's to set - puts an owner's operator before
 // pg_catalog's. Measured before the fix: with either, an overdue payload read 0 and exit 0.
@@ -495,7 +625,7 @@ test('rows hidden from the check refuse it, and an owner search path does not ch
     line(shadowed, 1),
     'retention-check: payloads held past 2160 hours + 48 hours grace: 1 found',
   );
-  assert.equal(line(shadowed, 7), 'retention-check: violation found: overdue-payload');
+  assert.equal(line(shadowed, VERDICT), 'retention-check: violation found: overdue-payload');
 });
 
 // A redaction stamp later than the clock is impossible under the bundled guard, which stamps its
@@ -520,7 +650,45 @@ test('a redaction stamped later than the check clock is a violation', async (t) 
     'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
     "retention-check: redactions stamped later than this run's clock: 1 found",
   ]);
-  assert.equal(line(result, 7), 'retention-check: violation found: future-redaction');
+  assert.equal(line(result, VERDICT), 'retention-check: violation found: future-redaction');
+});
+
+// Follow-up B: received_at's default is the owner's to change, and a row stamped as received in
+// the future never comes due. The service's own insert is stamped by that default here, as it
+// would be in a deployment; the guard is untouched, so only the receipt count moves.
+test('an envelope stamped as received later than the check clock is a violation', async (t) => {
+  const db = await database(t);
+  const owner = db.connectAs('evidence_owner', { max: 1 });
+  await owner`
+    ALTER TABLE evidence.evidence_envelope
+      ALTER COLUMN received_at SET DEFAULT statement_timestamp() + interval '1 year'`;
+  const app = db.connectAs('evidence_app', { max: 1 });
+  await app`
+    INSERT INTO evidence.evidence_envelope (envelope_version, workspace_id, change_id, evidence)
+    VALUES ('evidence-envelope/0', ${WORKSPACE}, ${`${CHANGE}-future-receipt`}, '{}'::jsonb)`;
+  const result = await check(db.env('evidence_audit'));
+  assert.equal(result.code, 1, result.stderr);
+  assert.deepEqual(lines(result).slice(0, 7), [
+    'retention-check: guard trigger evidence_envelope_guard: enabled',
+    'retention-check: payloads held past 2160 hours + 48 hours grace: 0 found',
+    'retention-check: oldest payload still held: 0 hours',
+    'retention-check: redacted envelopes with no audit row: 0 found',
+    'retention-check: redactions earlier than 2160 hours after receipt: 0 found',
+    "retention-check: redactions stamped later than this run's clock: 0 found",
+    "retention-check: envelopes stamped as received later than this run's clock: 1 found",
+  ]);
+  assert.equal(line(result, VERDICT), 'retention-check: violation found: future-receipt');
+  // The default restored and the row re-stamped an hour ago, nothing is found.
+  await owner`
+    ALTER TABLE evidence.evidence_envelope ALTER COLUMN received_at SET DEFAULT statement_timestamp()`;
+  await db.admin.begin(async (tx) => {
+    await tx`SET LOCAL session_replication_role = replica`;
+    await tx`
+      UPDATE evidence.evidence_envelope SET received_at = statement_timestamp() - interval '1 hour'`;
+  });
+  const restored = await check(db.env('evidence_audit'));
+  assert.equal(restored.code, 0, restored.stderr);
+  assert.equal(line(restored, 2), 'retention-check: oldest payload still held: 1 hours');
 });
 
 // The trigger refuses a redaction while received_at >= now - window, so a legal one is strictly
@@ -548,7 +716,7 @@ test('a redaction exactly 2160 hours after receipt is early; one a second later 
     'retention-check: redacted envelopes with no audit row: 0 found',
     'retention-check: redactions earlier than 2160 hours after receipt: 1 found',
   ]);
-  assert.equal(line(result, 7), 'retention-check: violation found: early-redaction');
+  assert.equal(line(result, VERDICT), 'retention-check: violation found: early-redaction');
 });
 
 // ---------------------------------------------------------------- AC-11: who reads
